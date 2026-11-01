@@ -1,0 +1,82 @@
+from types import SimpleNamespace as NS
+from unittest import mock
+
+import pytest
+from plexapi.exceptions import NotFound
+
+from plexnfc.config import Config
+from plexnfc.plex import Plex, PlexNFCError, movie_key
+from plexnfc.server import create_app
+
+CONFIG = Config("http://plex:32400", "tok", "Movies", "Living Room", "http://nfc.local:8080", True)
+
+
+def make_movie(title="The Matrix", guids=("imdb://tt0133093", "tmdb://603"), offset=0):
+    return NS(title=title, year=1999, ratingKey=42, thumb="/t.jpg", viewOffset=offset,
+              guids=[NS(id=g) for g in guids])
+
+
+@pytest.fixture
+def plex():
+    movie = make_movie()
+    client = mock.Mock(title="Living Room")
+    section = mock.Mock()
+    section.getGuid.side_effect = lambda g: movie if g in [x.id for x in movie.guids] else (_ for _ in ()).throw(NotFound())
+    section.all.return_value = [movie]
+    server = mock.Mock()
+    server.library.section.return_value = section
+    server.client.side_effect = lambda n: client if n == "Living Room" else (_ for _ in ()).throw(NotFound())
+    server.myPlexAccount.return_value.resource.side_effect = NotFound()
+    server.clients.return_value = [client]
+    p = Plex(CONFIG, server=server)
+    p._movie, p._client = movie, client
+    return p
+
+
+def test_movie_key_prefers_tmdb():
+    assert movie_key(make_movie()) == "tmdb-603"
+    assert movie_key(make_movie(guids=["imdb://tt1"])) == "imdb-tt1"
+    assert movie_key(make_movie(guids=[])) == "rk-42"
+
+
+def test_play_starts_movie_on_client(plex):
+    app = create_app(CONFIG, plex).test_client()
+    r = app.get("/m/tmdb-603")
+    assert r.status_code == 200 and b"The Matrix" in r.data
+    plex._client.playMedia.assert_called_once_with(plex._movie, offset=0)
+
+
+def test_play_resumes(plex):
+    plex._movie.viewOffset = 5000
+    create_app(CONFIG, plex).test_client().get("/m/tmdb-603")
+    plex._client.playMedia.assert_called_once_with(plex._movie, offset=5000)
+    plex._client.playMedia.reset_mock()
+    create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=0")
+    plex._client.playMedia.assert_called_once_with(plex._movie, offset=0)
+
+
+def test_unknown_movie_and_bad_key(plex):
+    app = create_app(CONFIG, plex).test_client()
+    assert app.get("/m/tmdb-999").status_code == 404
+    assert app.get("/m/garbage").status_code == 404
+
+
+def test_unknown_client_lists_available(plex):
+    r = create_app(CONFIG, plex).test_client().get("/m/tmdb-603?client=Bedroom")
+    assert r.status_code == 404 and b"Living Room" in r.data
+
+
+def test_controls(plex):
+    app = create_app(CONFIG, plex).test_client()
+    assert app.get("/pause").status_code == 200
+    plex._client.pause.assert_called_once()
+
+
+def test_tags_page(plex):
+    r = create_app(CONFIG, plex).test_client().get("/tags")
+    assert b"http://nfc.local:8080/m/tmdb-603" in r.data
+
+
+def test_bad_key_rejected():
+    with pytest.raises(PlexNFCError):
+        Plex(CONFIG, server=mock.Mock()).find_movie("../etc")
