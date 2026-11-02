@@ -44,6 +44,7 @@ class Plex:
         self.config = config
         self._server = server
         self._account = None
+        self._session_keys: dict[int, str] = {}  # ratingKey -> tag key, see _session_key
         self.ha = ha
         if self.ha is None and config.ha_url and config.ha_token:
             self.ha = HomeAssistant(config.ha_url, config.ha_token)
@@ -223,12 +224,33 @@ class Plex:
                 return session
         return None
 
+    def _session_key(self, session) -> str:
+        """The tag key for a playing movie.
+
+        Session items come without their TMDB/IMDb IDs, so movie_key() would give
+        ``rk-...`` rather than the key on the tag. Look the full item up once per
+        movie (the Movie Remote asks every couple of seconds).
+        """
+        if session.type != "movie":
+            return f"rk-{session.ratingKey}"
+        key = movie_key(session)
+        if not key.startswith("rk-"):
+            return key
+        rating_key = int(session.ratingKey)
+        if rating_key not in self._session_keys:
+            try:
+                self._session_keys[rating_key] = movie_key(self.server.fetchItem(rating_key))
+            except Exception as e:
+                log.debug("Couldn't look up %s: %s", rating_key, e)
+                return key
+        return self._session_keys[rating_key]
+
     def now_playing(self, client_name: str | None = None) -> dict:
         session = self.current_session(client_name)
         if session is None:
             return {"state": "idle"}
         player = session.player
-        key = movie_key(session) if session.type == "movie" else f"rk-{session.ratingKey}"
+        key = self._session_key(session)
         return {
             "state": player.state,  # playing / paused / buffering
             "title": session.title,

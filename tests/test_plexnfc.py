@@ -383,3 +383,23 @@ def test_ha_playback_reports_player_never_ready(plex):
     while app.get("/now").json["state"] == "starting" and time.monotonic() < deadline:
         time.sleep(0.05)
     assert app.get("/now").json["state"] == "error"
+
+
+def test_now_uses_tag_key_when_session_has_no_guids(plex):
+    session = add_session(plex)
+    session.guids = []  # what Plex sends for a playing item
+    plex.server.fetchItem.return_value = make_movie()
+    app = create_app(CONFIG, plex).test_client()
+    assert app.get("/now").json["key"] == "tmdb-603"
+    assert app.get("/now").json["poster"] == "/poster/tmdb-603"
+    plex.server.fetchItem.assert_called_once_with(42)  # looked up once, then cached
+
+
+def test_async_play_clears_starting_once_session_matches(plex):
+    plex.server.sessions.return_value = []
+    app = create_app(CONFIG, plex).test_client()
+    app.get("/m/tmdb-603?async=1")
+    session = add_session(plex)
+    session.guids = []
+    plex.server.fetchItem.return_value = make_movie()
+    assert app.get("/now").json["state"] == "playing"
