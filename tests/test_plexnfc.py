@@ -429,3 +429,109 @@ def test_resume_does_not_rewind(plex):
     plex._client.playMedia.side_effect = lambda *a, **k: add_session(plex, offset=658_000)
     create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=1")
     plex._client.seekTo.assert_not_called()
+
+
+# ---- Jellyfin ------------------------------------------------------------------
+
+def jf_plex(plex, **cfg):
+    from dataclasses import replace
+    from plexnfc.jellyfin import Jellyfin
+    plex.config = replace(CONFIG, **{"jellyfin_url": "http://jf:8096", "jellyfin_api_key": "k",
+                                     "jellyfin_player": "AppleTV", **cfg})
+    plex.jellyfin = mock.Mock(spec=Jellyfin)
+    plex.jellyfin.find_movie.return_value = {"Id": "abc", "Name": "The Matrix"}
+    plex.jellyfin.session.return_value = {"Id": "s1", "DeviceName": "AppleTV"}
+    return plex
+
+
+def test_jellyfin_play_starts_over_on_jellyfin_player(plex):
+    plex = jf_plex(plex)
+    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603?resume=0")
+    assert r.status_code == 200 and b"AppleTV" in r.data
+    plex.jellyfin.find_movie.assert_called_once_with("The Matrix", 1999, "tmdb-603")
+    plex.jellyfin.play.assert_called_once_with({"Id": "s1", "DeviceName": "AppleTV"}, "abc", start_seconds=0)
+    plex._client.playMedia.assert_not_called()
+
+
+def test_jellyfin_resume_leaves_start_to_the_app(plex):
+    plex = jf_plex(plex)
+    create_app(plex.config, plex).test_client().get("/m/tmdb-603?resume=1")
+    assert plex.jellyfin.play.call_args.kwargs == {"start_seconds": None}
+
+
+def test_jellyfin_player_not_open_lists_players(plex):
+    plex = jf_plex(plex)
+    plex.jellyfin.session.return_value = None
+    plex.jellyfin.players.return_value = ["Bedroom"]
+    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    assert r.status_code == 404 and b"Jellyfin player named" in r.data and b"Bedroom" in r.data
+
+
+def test_client_param_picks_plex_or_jellyfin(plex):
+    plex = jf_plex(plex, jellyfin_player="")
+    app = create_app(plex.config, plex).test_client()
+    app.get("/m/tmdb-603")  # no Jellyfin player set: Plex as before
+    plex._client.playMedia.assert_called_once()
+    app.get("/m/tmdb-603?client=jellyfin:AppleTV")
+    plex.jellyfin.session.assert_called_with("AppleTV")
+    plex.jellyfin.play.assert_called_once()
+
+
+def test_jellyfin_controls_and_now(plex):
+    plex = jf_plex(plex)
+    plex.jellyfin.session.return_value = {
+        "Id": "s1", "DeviceName": "AppleTV",
+        "NowPlayingItem": {"Id": "abc", "Name": "The Matrix", "ProductionYear": 1999,
+                           "RunTimeTicks": 7200 * 10_000_000, "ProviderIds": {"Tmdb": "603"}},
+        "PlayState": {"PositionTicks": 60 * 10_000_000, "IsPaused": False}}
+    app = create_app(plex.config, plex).test_client()
+    now = app.get("/now").json
+    assert now["state"] == "playing" and now["key"] == "tmdb-603" and now["position"] == 60
+    app.get("/toggle")
+    plex.jellyfin.command.assert_called_with(plex.jellyfin.session.return_value, "Pause")
+    app.get("/stop")
+    plex.jellyfin.command.assert_called_with(plex.jellyfin.session.return_value, "Stop")
+    app.get("/seek?by=30")
+    plex.jellyfin.seek.assert_called_once_with(plex.jellyfin.session.return_value, 90)
+
+
+def test_jellyfin_without_settings_is_reported(plex):
+    from dataclasses import replace
+    plex.config = replace(CONFIG, jellyfin_player="AppleTV")
+    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    assert r.status_code == 404 and b"JELLYFIN_API_KEY" in r.data
+
+
+@pytest.mark.parametrize("items,expected", [
+    ([{"Id": "old", "Name": "3:10 to Yuma", "ProviderIds": {"Tmdb": "14168"}},
+      {"Id": "new", "Name": "3:10 to Yuma", "ProviderIds": {"Tmdb": "5176"}}], "new"),
+    ([{"Id": "only", "Name": "3:10 to Yuma", "ProviderIds": {}}], "only"),
+])
+def test_jellyfin_find_movie_matches_tag_id(monkeypatch, items, expected):
+    from plexnfc.jellyfin import Jellyfin
+    req = mock.Mock(return_value=mock.Mock(ok=True, status_code=200, content=b"x",
+                                           json=lambda: {"Items": items}))
+    monkeypatch.setattr("plexnfc.jellyfin.requests.request", req)
+    item = Jellyfin("http://jf:8096", "k").find_movie("3:10 to Yuma", 2007, "tmdb-5176")
+    assert item["Id"] == expected
+    params = req.call_args.kwargs["params"]
+    assert params["searchTerm"] == "3:10 to Yuma" and params["years"] == 2007
+    assert req.call_args.kwargs["headers"]["Authorization"] == 'MediaBrowser Token="k"'
+
+
+def test_jellyfin_find_movie_ambiguous(monkeypatch):
+    from plexnfc.jellyfin import Jellyfin, JellyfinError
+    items = [{"Id": "a", "Name": "Dune", "ProviderIds": {}}, {"Id": "b", "Name": "Dune", "ProviderIds": {}}]
+    monkeypatch.setattr("plexnfc.jellyfin.requests.request", mock.Mock(
+        return_value=mock.Mock(ok=True, status_code=200, content=b"x", json=lambda: {"Items": items})))
+    with pytest.raises(JellyfinError, match="Couldn't find Dune"):
+        Jellyfin("http://jf:8096", "k").find_movie("Dune", None, "tmdb-1")
+
+
+def test_jellyfin_play_sends_session_command(monkeypatch):
+    from plexnfc.jellyfin import Jellyfin
+    req = mock.Mock(return_value=mock.Mock(ok=True, status_code=204, content=b""))
+    monkeypatch.setattr("plexnfc.jellyfin.requests.request", req)
+    Jellyfin("http://jf:8096", "k").play({"Id": "s1"}, "abc", start_seconds=0)
+    assert req.call_args.args == ("POST", "http://jf:8096/Sessions/s1/Playing")
+    assert req.call_args.kwargs["params"] == {"playCommand": "PlayNow", "itemIds": "abc", "startPositionTicks": 0}

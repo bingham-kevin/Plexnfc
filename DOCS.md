@@ -18,6 +18,16 @@ Tap an NFC-tagged movie poster with your phone (or hold it to the Movie Remote) 
 
 You don't need a token for any of this. The app talks to Home Assistant directly. The repository's `docs/home-assistant.md` has example scripts for Apple TV, Shield, LG and other TVs.
 
+## Optional: play on Jellyfin (Swiftfin on Apple TV)
+
+Plex for Apple TV can't be started from another device, but Swiftfin, the Jellyfin app, can. If your movies are also in Jellyfin, taps can play there instead, while Plex still makes the book:
+
+1. In Jellyfin, open **Dashboard → API Keys** and add a key for plexnfc.
+2. Fill in **Jellyfin server URL**, **Jellyfin API key** and **Jellyfin player**: the Jellyfin app's device name, for example `AppleTV`. Leave the app open on the TV; it only shows up as a player while it's open. A tap that can't find it lists the Jellyfin players it can see.
+3. For the get-ready script, open Swiftfin instead of Plex (`media_player.select_source` with source `Swiftfin tvOS`).
+
+The movie is matched in Jellyfin by title and year and checked against the tag's TMDB/IMDb ID. A single tag can pick a Jellyfin player with `?client=jellyfin:NAME`.
+
 ## Making the book and the tags
 
 In the **Movie Book** sidebar panel:

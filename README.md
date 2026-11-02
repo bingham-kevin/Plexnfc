@@ -86,6 +86,10 @@ Put the stickers on the **back** of the page, or between pages in a page protect
 
 plexnfc can run a Home Assistant script before every movie. The script can turn the TV on, switch to the right HDMI input and open Plex, so one tap goes from a dark TV to the movie playing. Home Assistant can also start the movie itself through its Plex integration, which is the recommended setup for Apple TV. See [docs/home-assistant.md](docs/home-assistant.md) for setup and example scripts for Apple TV, Shield, LG, Samsung and Google TV.
 
+## Optional: play on Jellyfin
+
+Plex for Apple TV can't be remote-started, but Swiftfin (Jellyfin's Apple TV app) can. With `JELLYFIN_URL`, `JELLYFIN_API_KEY` and `JELLYFIN_PLAYER` set, taps, controls and `/now` go to that Jellyfin app instead of the Plex player. Plex still makes the book and the tag list, so the movies need to be in both libraries. `?client=jellyfin:NAME` picks a Jellyfin player for one tag.
+
 ## Optional: a "Movie Remote" with a screen
 
 [esphome/](esphome/) has firmware for an ESP32-S3 box with an NFC reader and a 3.5" touchscreen. Hold a page to the box and the movie starts. The screen then shows the poster, the progress, and play/pause, ±30 s, stop and TV-off buttons. It costs about $40 in parts. The parts list and wiring are in [esphome/README.md](esphome/README.md).
