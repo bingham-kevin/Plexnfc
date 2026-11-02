@@ -283,7 +283,9 @@ def test_tags_csv(plex):
 
 def test_index_links_are_relative(plex):
     r = create_app(CONFIG, plex).test_client().get("/")
-    assert b'href="tags"' in r.data and b'action="book"' in r.data and b'href="/' not in r.data
+    assert b'href="tags"' in r.data and b'href="/' not in r.data
+    # The book opens in a new tab, which ingress won't serve, so it uses the tag address
+    assert b'action="http://nfc.local:8080/book" target="_blank"' in r.data
 
 
 def test_ha_app_options(tmp_path, monkeypatch):

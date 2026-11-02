@@ -22,7 +22,7 @@ You don't need a token for any of this. The app talks to Home Assistant directly
 
 In the **Movie Book** sidebar panel:
 
-- **Open printable book**: choose a title, a Plex collection and a layout. Wait for all the posters to load, then print with margins set to *None* and background graphics turned on.
+- **Open printable book**: choose a title, a Plex collection and a layout. The book opens in a new tab from the **Tag base URL**, so do this on your home network. Wait for all the posters to load, then print with margins set to *None* and background graphics turned on. A whole library makes a very large book, so a Plex collection is recommended.
 - **Tag URLs** / **tags.csv**: the URL to write onto each sticker with the NFC Tools app.
 
 ## Movie Remote

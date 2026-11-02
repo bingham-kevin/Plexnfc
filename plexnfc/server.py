@@ -295,6 +295,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     @app.get("/")
     def index():
         # Links are relative so this page works inside the Home Assistant sidebar (ingress).
+        # The book is the exception: it opens in a new tab, and ingress turns away any
+        # request that isn't from inside the panel, so it goes to the tag address instead.
         warn = ""
         if "localhost" in config.public_base_url or "127.0.0.1" in config.public_base_url:
             warn = ('<p class="err">public_base_url is set to localhost. Phones can\'t reach that: '
@@ -313,7 +315,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
           <p>Tags point at <code>{escape(config.public_base_url)}</code>, playing on
              <b>{escape(config.ha_player or config.client or "(no player set)")}</b></p>{warn}
           <h1>Make the book</h1>
-          <form action="book" target="_blank" style="display:inline-grid;gap:8px;text-align:left">
+          <form action="{escape(config.public_base_url)}/book" target="_blank"
+                style="display:inline-grid;gap:8px;text-align:left">
             <label>Title <input name="title" value="Movie Night"></label>
             <label>Plex collection (blank = whole library) <input name="collection"></label>
             <label>Layout <select name="layout"><option value="full">1 per page</option>
