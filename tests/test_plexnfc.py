@@ -440,7 +440,9 @@ def jf_plex(plex, **cfg):
                                      "jellyfin_player": "AppleTV", **cfg})
     plex.jellyfin = mock.Mock(spec=Jellyfin)
     plex.jellyfin.find_movie.return_value = {"Id": "abc", "Name": "The Matrix"}
-    plex.jellyfin.session.return_value = {"Id": "s1", "DeviceName": "AppleTV"}
+    # Already playing with subtitles off, so the subtitle check finishes at once
+    plex.jellyfin.session.return_value = {"Id": "s1", "DeviceName": "AppleTV", "NowPlayingItem": {"Id": "abc"},
+                                          "PlayState": {"SubtitleStreamIndex": -1}}
     return plex
 
 
@@ -449,7 +451,7 @@ def test_jellyfin_play_starts_over_on_jellyfin_player(plex):
     r = create_app(plex.config, plex).test_client().get("/m/tmdb-603?resume=0")
     assert r.status_code == 200 and b"AppleTV" in r.data
     plex.jellyfin.find_movie.assert_called_once_with("The Matrix", 1999, "tmdb-603")
-    plex.jellyfin.play.assert_called_once_with({"Id": "s1", "DeviceName": "AppleTV"}, "abc", start_seconds=0)
+    plex.jellyfin.play.assert_called_once_with(plex.jellyfin.session.return_value, "abc", start_seconds=0)
     plex._client.playMedia.assert_not_called()
 
 
@@ -561,3 +563,35 @@ def test_started_script_not_run_when_play_fails(plex):
     plex = ha_plex(plex, ha_started_script="script.hide_controls")
     create_app(plex.config, plex).test_client().get("/m/tmdb-999")
     plex.ha.call_service.assert_not_called()
+
+
+def test_jellyfin_turns_on_subtitles_off_once_playing(plex, monkeypatch):
+    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
+    plex = jf_plex(plex)
+    idle = {"Id": "s1", "DeviceName": "AppleTV"}
+    playing = {**idle, "NowPlayingItem": {"Id": "abc"}, "PlayState": {"SubtitleStreamIndex": 3}}
+    plex.jellyfin.session.side_effect = [idle, idle, playing]
+    plex.jellyfin.subtitles_off.return_value = True
+    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    plex.jellyfin.subtitles_off.assert_called_once_with(playing)
+
+
+def test_jellyfin_leaves_subtitles_already_off(plex, monkeypatch):
+    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
+    plex = jf_plex(plex)
+    plex.jellyfin.session.return_value = {"Id": "s1", "DeviceName": "AppleTV", "NowPlayingItem": {"Id": "abc"},
+                                          "PlayState": {"SubtitleStreamIndex": -1}}
+    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    plex.jellyfin.subtitles_off.assert_not_called()
+
+
+def test_jellyfin_subtitles_off_command(monkeypatch):
+    from plexnfc.jellyfin import Jellyfin
+    req = mock.Mock(return_value=mock.Mock(ok=True, status_code=204, content=b""))
+    monkeypatch.setattr("plexnfc.jellyfin.requests.request", req)
+    jf = Jellyfin("http://jf:8096", "k")
+    assert not jf.subtitles_off({"Id": "s1", "SupportedCommands": ["DisplayMessage"]})
+    req.assert_not_called()
+    assert jf.subtitles_off({"Id": "s1", "SupportedCommands": ["SetSubtitleStreamIndex"]})
+    assert req.call_args.args == ("POST", "http://jf:8096/Sessions/s1/Command")
+    assert req.call_args.kwargs["json"] == {"Name": "SetSubtitleStreamIndex", "Arguments": {"Index": "-1"}}

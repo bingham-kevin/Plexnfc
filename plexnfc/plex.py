@@ -258,7 +258,34 @@ class Plex:
             self.jellyfin.play(session, item["Id"], start_seconds=None if resume else 0)
         except JellyfinError as e:
             raise PlexNFCError(str(e)) from None
+        self._jellyfin_subtitles_off(name, item)
         return movie, SimpleNamespace(title=name)
+
+    def _jellyfin_subtitles_off(self, name: str, item: dict, wait: float = 20) -> None:
+        """Turn subtitles off once the movie is playing.
+
+        Swiftfin ignores the subtitle index in the play command and the user's
+        Jellyfin subtitle setting, and turns on a movie's default subtitle track.
+        """
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            try:
+                session = self.jellyfin.session(name)
+                playing = (session or {}).get("NowPlayingItem") or {}
+                if playing.get("Id") == item["Id"]:
+                    index = (session.get("PlayState") or {}).get("SubtitleStreamIndex")
+                    if index is None or index < 0:
+                        return
+                    if self.jellyfin.subtitles_off(session):
+                        log.info("Turned off subtitle track %s on %s", index, name)
+                    else:
+                        log.info("%s doesn't support turning subtitles off remotely", name)
+                    return
+            except JellyfinError as e:  # never let this stop a movie that's already playing
+                log.debug("Couldn't check subtitles on %s: %s", name, e)
+                return
+            time.sleep(1)
+        log.debug("%s didn't report %s playing; subtitles left as they are", name, item.get("Name"))
 
     def _jellyfin_command(self, name: str, command: str, *args):
         session = self._jellyfin_session(name)

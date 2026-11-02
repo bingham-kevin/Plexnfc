@@ -26,9 +26,9 @@ class Jellyfin:
         self.url = url.rstrip("/")
         self.api_key = api_key
 
-    def _request(self, method: str, path: str, **params):
+    def _request(self, method: str, path: str, body: dict | None = None, **params):
         try:
-            r = requests.request(method, f"{self.url}{path}", params=params, timeout=15,
+            r = requests.request(method, f"{self.url}{path}", params=params, json=body, timeout=15,
                                  headers={"Authorization": f'MediaBrowser Token="{self.api_key}"'})
         except requests.RequestException as e:
             raise JellyfinError(f"Couldn't reach Jellyfin: {e}") from e
@@ -76,6 +76,14 @@ class Jellyfin:
         if start_seconds is not None:
             params["startPositionTicks"] = start_seconds * TICKS_PER_SECOND
         self._request("POST", f"/Sessions/{session['Id']}/Playing", **params)
+
+    def subtitles_off(self, session: dict) -> bool:
+        """Ask a playing app to turn subtitles off. False if it doesn't support that."""
+        if "SetSubtitleStreamIndex" not in (session.get("SupportedCommands") or []):
+            return False
+        self._request("POST", f"/Sessions/{session['Id']}/Command",
+                      body={"Name": "SetSubtitleStreamIndex", "Arguments": {"Index": "-1"}})
+        return True
 
     def command(self, session: dict, command: str) -> None:
         """``Pause``, ``Unpause`` or ``Stop``."""
