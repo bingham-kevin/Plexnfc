@@ -535,3 +535,15 @@ def test_jellyfin_play_sends_session_command(monkeypatch):
     Jellyfin("http://jf:8096", "k").play({"Id": "s1"}, "abc", start_seconds=0)
     assert req.call_args.args == ("POST", "http://jf:8096/Sessions/s1/Playing")
     assert req.call_args.kwargs["params"] == {"playCommand": "PlayNow", "itemIds": "abc", "startPositionTicks": 0}
+
+
+def test_starting_screen_names_jellyfin_player(plex):
+    import threading
+    plex = jf_plex(plex)
+    gate = threading.Event()
+    plex.jellyfin.play.side_effect = lambda *a, **k: gate.wait(5)
+    app = create_app(plex.config, plex).test_client()
+    app.get("/m/tmdb-603?async=1")
+    plex.jellyfin.session.return_value = {"Id": "s1", "DeviceName": "AppleTV"}  # nothing playing yet
+    assert app.get("/now").json["player"] == "AppleTV"
+    gate.set()

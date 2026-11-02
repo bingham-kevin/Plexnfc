@@ -146,7 +146,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                 else:
                     return jsonify(state="starting", title=pending["title"], year=pending["year"],
                                    key=pending["key"], poster=f"/poster/{pending['key']}",
-                                   position=0, duration=0, player=client or config.client)
+                                   position=0, duration=0, player=client or config.jellyfin_player or config.client)
         return jsonify(status)
 
     def json_action(fn):
