@@ -66,6 +66,13 @@ def test_unknown_client_lists_available(plex):
     assert r.status_code == 404 and b"Living Room" in r.data
 
 
+def test_unknown_client_lists_account_players(plex):
+    plex.server.myPlexAccount.return_value.resources.return_value = [
+        NS(name="Den", provides="client,player"), NS(name="Plex Server", provides="server")]
+    r = create_app(CONFIG, plex).test_client().get("/m/tmdb-603?client=Bedroom")
+    assert b"Den" in r.data and b"Plex Server" not in r.data
+
+
 def test_controls(plex):
     app = create_app(CONFIG, plex).test_client()
     assert app.get("/pause").status_code == 200

@@ -100,6 +100,16 @@ class Plex:
             log.debug("Player %r not reachable via plex.tv: %s", name, e)
         return None
 
+    def _account_players(self) -> list[str]:
+        """Players on your plex.tv account (Apple TVs, smart TVs...), which local discovery misses."""
+        try:
+            if self._account is None:
+                self._account = self.server.myPlexAccount()
+            return [r.name for r in self._account.resources() if "player" in (r.provides or "")]
+        except Exception as e:
+            log.debug("Couldn't list plex.tv players: %s", e)
+            return []
+
     def get_client(self, name: str | None = None, wait: float = 0):
         """Find a player by name, retrying for up to ``wait`` seconds.
 
@@ -119,7 +129,7 @@ class Plex:
             if time.monotonic() >= deadline:
                 break
             time.sleep(3)
-        available = sorted({c.title for c in self.server.clients()})
+        available = sorted({c.title for c in self.server.clients()} | set(self._account_players()))
         hint = f" Players found: {', '.join(available)}." if available else ""
         raise PlexNFCError(f"Couldn't find a Plex player named '{name}'. Is it switched on?{hint}")
 
