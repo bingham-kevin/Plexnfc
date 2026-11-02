@@ -186,12 +186,34 @@ class Plex:
             client = self.get_client(client_name, wait=wait)
         except PlexNFCError as e:
             raise PlexNFCError(f"{e} (Home Assistant: {ha_error})" if ha_error else str(e)) from None
-        # Plex for Roku reads an offset of 0 as "no offset" and resumes where the movie
-        # was left off, so starting over asks for 1 ms instead.
-        offset = movie.viewOffset if resume and getattr(movie, "viewOffset", 0) else 1
+        offset = movie.viewOffset if resume and getattr(movie, "viewOffset", 0) else 0
         log.info("Playing %s (%s) on %s from %sms", movie.title, key, client.title, offset)
         client.playMedia(movie, offset=offset)
+        if not resume and getattr(movie, "viewOffset", 0):
+            self._rewind_when_playing(client, movie)
         return movie, client
+
+    def _rewind_when_playing(self, client, movie, wait: float = 20) -> None:
+        """Seek back to the start once the movie is playing.
+
+        Some players (Plex for Roku) ignore the start offset and always resume from
+        the saved spot, so a movie that should start over is rewound instead.
+        """
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            try:
+                session = self.current_session(client.title)
+                if session is not None and str(session.ratingKey) == str(movie.ratingKey):
+                    if (session.viewOffset or 0) > 5000:
+                        log.info("%s resumed %s at %sms; seeking to the start",
+                                 client.title, movie.title, session.viewOffset)
+                        client.seekTo(0)
+                    return
+            except Exception as e:  # never let this stop a movie that's already playing
+                log.debug("Couldn't check where %s started: %s", movie.title, e)
+                return
+            time.sleep(1)
+        log.debug("%s didn't report %s playing; not rewinding", client.title, movie.title)
 
     def tv_off(self) -> None:
         if not (self.ha and self.config.ha_off_script):

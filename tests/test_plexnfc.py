@@ -43,7 +43,7 @@ def test_play_starts_movie_on_client(plex):
     app = create_app(CONFIG, plex).test_client()
     r = app.get("/m/tmdb-603")
     assert r.status_code == 200 and b"The Matrix" in r.data
-    plex._client.playMedia.assert_called_once_with(plex._movie, offset=1)
+    plex._client.playMedia.assert_called_once_with(plex._movie, offset=0)
 
 
 def test_play_resumes(plex):
@@ -52,7 +52,7 @@ def test_play_resumes(plex):
     plex._client.playMedia.assert_called_once_with(plex._movie, offset=5000)
     plex._client.playMedia.reset_mock()
     create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=0")
-    plex._client.playMedia.assert_called_once_with(plex._movie, offset=1)
+    plex._client.playMedia.assert_called_once_with(plex._movie, offset=0)
 
 
 def test_unknown_movie_and_bad_key(plex):
@@ -405,3 +405,27 @@ def test_async_play_clears_starting_once_session_matches(plex):
     session.guids = []
     plex.server.fetchItem.return_value = make_movie()
     assert app.get("/now").json["state"] == "playing"
+
+
+def test_start_over_rewinds_player_that_resumed(plex, monkeypatch):
+    """Plex for Roku ignores the start offset and resumes; plexnfc seeks back to 0."""
+    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
+    plex._movie.viewOffset = 658_000
+    plex._client.playMedia.side_effect = lambda *a, **k: add_session(plex, offset=658_000)
+    create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=0")
+    plex._client.seekTo.assert_called_once_with(0)
+
+
+def test_start_over_leaves_player_that_started_at_zero(plex, monkeypatch):
+    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
+    plex._movie.viewOffset = 658_000
+    plex._client.playMedia.side_effect = lambda *a, **k: add_session(plex, offset=1_000)
+    create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=0")
+    plex._client.seekTo.assert_not_called()
+
+
+def test_resume_does_not_rewind(plex):
+    plex._movie.viewOffset = 658_000
+    plex._client.playMedia.side_effect = lambda *a, **k: add_session(plex, offset=658_000)
+    create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=1")
+    plex._client.seekTo.assert_not_called()
