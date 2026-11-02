@@ -58,17 +58,22 @@ class Config:
     ha_off_script: str = ""
     ha_player: str = ""
     player_wait: int = 45
+    auth_file: str = ""  # where "Sign in with Plex" keeps its token
 
     @classmethod
     def from_env(cls) -> "Config":
         _load_ha_app_options()
         _load_dotenv()
-        missing = [k for k in ("PLEX_URL", "PLEX_TOKEN") if not os.environ.get(k)]
-        if missing:
-            raise SystemExit(f"Missing required settings: {', '.join(missing)} (see .env.example)")
+        if not os.environ.get("PLEX_URL"):
+            raise SystemExit("Missing required setting: PLEX_URL (see .env.example)")
+        auth_file = os.environ.get("PLEX_AUTH_FILE") or (
+            "/data/plex_auth.json" if os.path.exists(HA_APP_OPTIONS) else ".plex_auth.json")
+        # A token set by hand wins; otherwise use the one from "Sign in with Plex", if any.
+        from .plexauth import saved_token
+
         return cls(
             plex_url=os.environ["PLEX_URL"].rstrip("/"),
-            plex_token=os.environ["PLEX_TOKEN"],
+            plex_token=os.environ.get("PLEX_TOKEN") or saved_token(auth_file),
             library=os.environ.get("PLEX_LIBRARY", "Movies"),
             client=os.environ.get("PLEX_CLIENT", ""),
             public_base_url=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8080").rstrip("/"),
@@ -79,4 +84,5 @@ class Config:
             ha_off_script=os.environ.get("HA_OFF_SCRIPT", ""),
             ha_player=os.environ.get("HA_PLAYER", ""),
             player_wait=int(os.environ.get("PLAYER_WAIT", "45")),
+            auth_file=auth_file,
         )

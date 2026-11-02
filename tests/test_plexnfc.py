@@ -291,3 +291,57 @@ def test_ha_app_options(tmp_path, monkeypatch):
     c = cfg.Config.from_env()
     assert c.plex_url == "http://plex:32400" and c.resume is False and c.player_wait == 30
     assert c.ha_url == "http://supervisor/core" and c.ha_token == "sup" and c.ha_player == ""
+
+
+def test_sign_in_with_plex(plex, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from plexnfc import plexauth
+    auth = str(tmp_path / "auth.json")
+    config = replace(CONFIG, plex_token="", auth_file=auth)
+    plex.config = config
+    calls = []
+
+    def fake_post(url, params, headers, timeout):
+        calls.append(headers["X-Plex-Client-Identifier"])
+        return mock.Mock(json=lambda: {"id": 7, "code": "abcd"})
+
+    approved = {"authToken": None}
+    monkeypatch.setattr(plexauth.requests, "post", fake_post)
+    monkeypatch.setattr(plexauth.requests, "get", lambda *a, **k: mock.Mock(json=lambda: approved))
+    app = create_app(config, plex).test_client()
+
+    assert b'href="plex/login"' in app.get("/").data
+    r = app.get("/plex/login")
+    assert b"app.plex.tv/auth#?clientID=" in r.data and b"code=abcd" in r.data
+    assert app.get("/plex/check?id=99").status_code == 404  # not a PIN we asked for
+    assert app.get("/plex/check?id=7").json == {"signed_in": False}
+    approved["authToken"] = "newtok"
+    assert app.get("/plex/check?id=7").json == {"signed_in": True}
+    assert config.plex_token == "newtok" and plexauth.saved_token(auth) == "newtok"
+    assert plexauth.client_id(auth) == calls[0]  # same device ID every time
+    assert b"newtok" not in app.get("/").data and b"Sign out" in app.get("/").data
+
+    app.post("/plex/logout")
+    assert config.plex_token == "" and plexauth.saved_token(auth) == ""
+
+
+def test_not_signed_in_is_reported():
+    from dataclasses import replace
+    p = Plex(replace(CONFIG, plex_token=""))
+    with pytest.raises(PlexNFCError, match="Sign in with Plex"):
+        p.find_movie("tmdb-603")
+
+
+def test_saved_token_used_when_none_configured(tmp_path, monkeypatch):
+    import json
+    from plexnfc import config as cfg
+    (tmp_path / "auth.json").write_text(json.dumps({"client_id": "x", "token": "saved"}))
+    for k in ("PLEX_TOKEN",):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("PLEX_URL", "http://plex:32400")
+    monkeypatch.setenv("PLEX_AUTH_FILE", str(tmp_path / "auth.json"))
+    monkeypatch.setattr(cfg, "HA_APP_OPTIONS", str(tmp_path / "none.json"))
+    monkeypatch.chdir(tmp_path)
+    assert cfg.Config.from_env().plex_token == "saved"
+    monkeypatch.setenv("PLEX_TOKEN", "manual")
+    assert cfg.Config.from_env().plex_token == "manual"

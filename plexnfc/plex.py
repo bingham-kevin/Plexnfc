@@ -51,8 +51,16 @@ class Plex:
     @property
     def server(self) -> PlexServer:
         if self._server is None:
+            if not self.config.plex_token:
+                raise PlexNFCError("Not signed in to Plex yet. Open plexnfc's page and choose Sign in with Plex.")
             self._server = PlexServer(self.config.plex_url, self.config.plex_token)
         return self._server
+
+    def set_token(self, token: str) -> None:
+        """Use a new token (after Sign in with Plex) from the next request on."""
+        self.config.plex_token = token
+        self._server = None
+        self._account = None
 
     @property
     def section(self):

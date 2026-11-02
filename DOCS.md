@@ -5,10 +5,10 @@ Tap an NFC-tagged movie poster with your phone (or hold it to the Movie Remote) 
 ## Setup
 
 1. Fill in the **Configuration** tab:
-   - **Plex server URL** and **Plex token**. To find the token, see [Finding an authentication token](https://support.plex.tv/articles/204059436).
+   - **Plex server URL**. Leave **Plex token** blank: you'll sign in from the panel in step 2.
    - **Plex player**: the player's name as Plex shows it, for example `Living Room`.
    - **Tag base URL**: this Home Assistant machine's fixed IP address on port 8080, for example `http://192.168.1.20:8080`. It is written onto every tag, so give Home Assistant a fixed IP in your router first.
-2. Start the app and open **Movie Book** in the sidebar.
+2. Start the app and open **Movie Book** in the sidebar. (If it isn't there, turn on **Show in sidebar** on the app's **Info** tab.) Choose **Sign in with Plex** and approve plexnfc on plex.tv. The token is saved inside the app, so you only do this once.
 
 ## Optional: let Home Assistant get the TV ready
 

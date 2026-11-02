@@ -38,7 +38,7 @@ git clone <this repo> && cd Plexnfc
 cp .env.example .env      # then fill in your Plex URL, token, library and player name
 ```
 
-To get your Plex token, follow [Finding an authentication token](https://support.plex.tv/articles/204059436). `PLEX_CLIENT` is the player's name as it appears in Plex.
+You can leave `PLEX_TOKEN` out: open `http://<that-machine>:8080/` and choose **Sign in with Plex**, which saves the token to `.plex_auth.json`. To set it by hand instead, follow [Finding an authentication token](https://support.plex.tv/articles/204059436). `PLEX_CLIENT` is the player's name as it appears in Plex.
 
 Run it with Docker:
 

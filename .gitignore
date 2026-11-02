@@ -6,3 +6,4 @@ venv/
 out/
 esphome/secrets.yaml
 esphome/.esphome/
+.plex_auth.json

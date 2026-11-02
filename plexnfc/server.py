@@ -9,6 +9,7 @@ Routes
   /off                 run the Home Assistant HA_OFF_SCRIPT (e.g. TV off)
   /tags                list every movie with the URL to write onto its tag (/tags.csv to download)
   /book                the printable book (?layout=grid&collection=NAME&title=...)
+  /plex/login          Sign in with Plex (saves the token, so nobody has to find it by hand)
   /poster/<key>        poster image (proxied so your Plex token stays private)
                        ?w=200&h=300 returns a resized baseline JPEG (for the ESP32 screen)
 
@@ -29,6 +30,7 @@ from html import escape
 import requests
 from flask import Flask, Response, abort, jsonify, request
 
+from . import plexauth
 from .config import Config
 from .plex import Plex, PlexNFCError, movie_key
 
@@ -41,6 +43,7 @@ PAGE = """<!doctype html>
   h1{{font-size:1.4rem;margin:20px 0 4px}} p{{color:#aaa;margin:4px}} .err{{color:#ff8a80}}
   table{{margin:auto;border-collapse:collapse;text-align:left}} td{{padding:6px 10px;border-bottom:1px solid #333}}
   code{{user-select:all}} button{{font:inherit;padding:4px 10px}}
+  .btn{{display:inline-block;background:#e5a00d;color:#111;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:600}}
 </style></head><body>{body}</body></html>"""
 
 
@@ -234,6 +237,61 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         return Response(buf.getvalue(), mimetype="text/csv",
                         headers={"Content-Disposition": "attachment; filename=tags.csv"})
 
+    # PINs this server asked plex.tv for, so /plex/check only polls our own.
+    pins: set[int] = set()
+
+    @app.get("/plex/login")
+    def plex_login():
+        try:
+            pin_id, auth_url = plexauth.start_pin(config.auth_file)
+        except requests.RequestException as e:
+            return page("Sign in", f'<h1 class="err">Couldn\'t reach plex.tv</h1><p>{escape(str(e))}</p>', 502)
+        pins.add(pin_id)
+        # Relative URLs so this works behind Home Assistant's ingress proxy.
+        return page("Sign in with Plex", f"""
+          <h1>Sign in with Plex</h1>
+          <p><a class="btn" href="{escape(auth_url)}" target="_blank" rel="noopener">Open plex.tv to sign in</a></p>
+          <p id="status">Sign in on the tab that opens, then come back here.</p>
+          <script>
+            const started = Date.now();
+            async function poll() {{
+              if (Date.now() - started > 10 * 60 * 1000) {{
+                document.getElementById('status').textContent = 'That took too long. Reload this page to try again.';
+                return;
+              }}
+              try {{
+                const r = await (await fetch('check?id={pin_id}')).json();
+                if (r.signed_in) {{
+                  document.getElementById('status').textContent = 'Signed in.';
+                  location.href = '../';
+                  return;
+                }}
+              }} catch (e) {{}}
+              setTimeout(poll, 2000);
+            }}
+            poll();
+          </script>""")
+
+    @app.get("/plex/check")
+    def plex_check():
+        pin_id = request.args.get("id", type=int)
+        if pin_id not in pins:
+            return jsonify(signed_in=False), 404
+        try:
+            token = plexauth.check_pin(config.auth_file, pin_id)
+        except requests.RequestException:
+            return jsonify(signed_in=False)
+        if token:
+            pins.discard(pin_id)
+            plex.set_token(token)
+        return jsonify(signed_in=bool(token))
+
+    @app.post("/plex/logout")
+    def plex_logout():
+        plexauth.forget_token(config.auth_file)
+        plex.set_token("")
+        return page("Signed out", '<h1>Signed out of Plex</h1><p><a href="../">Back</a></p>')
+
     @app.get("/")
     def index():
         # Links are relative so this page works inside the Home Assistant sidebar (ingress).
@@ -241,8 +299,17 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         if "localhost" in config.public_base_url or "127.0.0.1" in config.public_base_url:
             warn = ('<p class="err">public_base_url is set to localhost. Phones can\'t reach that: '
                     "set it to this machine's IP address, e.g. http://192.168.1.20:8080</p>")
+        if not config.plex_token:
+            signin = ('<p class="err">plexnfc isn\'t signed in to Plex yet.</p>'
+                      '<p><a class="btn" href="plex/login">Sign in with Plex</a></p>')
+        elif plexauth.saved_token(config.auth_file) == config.plex_token:
+            signin = ('<form action="plex/logout" method="post"><p>Signed in to Plex '
+                      '<button>Sign out</button></p></form>')
+        else:
+            signin = ""  # token set by hand in the settings
         return page("plexnfc", f"""
           <h1>plexnfc</h1>
+          {signin}
           <p>Tags point at <code>{escape(config.public_base_url)}</code>, playing on
              <b>{escape(config.ha_player or config.client or "(no player set)")}</b></p>{warn}
           <h1>Make the book</h1>

@@ -7,3 +7,4 @@ esphome
 docs
 **/__pycache__
 .env
+.plex_auth.json
