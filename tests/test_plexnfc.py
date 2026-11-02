@@ -43,7 +43,7 @@ def test_play_starts_movie_on_client(plex):
     app = create_app(CONFIG, plex).test_client()
     r = app.get("/m/tmdb-603")
     assert r.status_code == 200 and b"The Matrix" in r.data
-    plex._client.playMedia.assert_called_once_with(plex._movie, offset=0)
+    plex._client.playMedia.assert_called_once_with(plex._movie, offset=1)
 
 
 def test_play_resumes(plex):
@@ -52,7 +52,7 @@ def test_play_resumes(plex):
     plex._client.playMedia.assert_called_once_with(plex._movie, offset=5000)
     plex._client.playMedia.reset_mock()
     create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=0")
-    plex._client.playMedia.assert_called_once_with(plex._movie, offset=0)
+    plex._client.playMedia.assert_called_once_with(plex._movie, offset=1)
 
 
 def test_unknown_movie_and_bad_key(plex):

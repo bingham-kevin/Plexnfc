@@ -186,7 +186,9 @@ class Plex:
             client = self.get_client(client_name, wait=wait)
         except PlexNFCError as e:
             raise PlexNFCError(f"{e} (Home Assistant: {ha_error})" if ha_error else str(e)) from None
-        offset = movie.viewOffset if resume and getattr(movie, "viewOffset", 0) else 0
+        # Plex for Roku reads an offset of 0 as "no offset" and resumes where the movie
+        # was left off, so starting over asks for 1 ms instead.
+        offset = movie.viewOffset if resume and getattr(movie, "viewOffset", 0) else 1
         log.info("Playing %s (%s) on %s from %sms", movie.title, key, client.title, offset)
         client.playMedia(movie, offset=offset)
         return movie, client
