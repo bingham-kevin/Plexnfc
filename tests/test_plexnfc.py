@@ -595,3 +595,16 @@ def test_jellyfin_subtitles_off_command(monkeypatch):
     assert jf.subtitles_off({"Id": "s1", "SupportedCommands": ["SetSubtitleStreamIndex"]})
     assert req.call_args.args == ("POST", "http://jf:8096/Sessions/s1/Command")
     assert req.call_args.kwargs["json"] == {"Name": "SetSubtitleStreamIndex", "Arguments": {"Index": "-1"}}
+
+
+def test_jellyfin_subtitles_wait_for_the_new_start(plex, monkeypatch):
+    """Switching to the movie that's already playing: ignore the old playback's report."""
+    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
+    plex = jf_plex(plex)
+    old = {"Id": "s1", "DeviceName": "AppleTV", "NowPlayingItem": {"Id": "abc"},
+           "PlayState": {"SubtitleStreamIndex": 3, "PositionTicks": 900 * 10_000_000}}
+    new = {**old, "PlayState": {"SubtitleStreamIndex": 3, "PositionTicks": 2 * 10_000_000}}
+    plex.jellyfin.session.side_effect = [old, old, new]  # find player, then two checks
+    plex.jellyfin.subtitles_off.return_value = True
+    create_app(plex.config, plex).test_client().get("/m/tmdb-603?resume=0")
+    plex.jellyfin.subtitles_off.assert_called_once_with(new)
