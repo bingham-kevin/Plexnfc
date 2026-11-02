@@ -7,7 +7,8 @@ Routes
   /m/<key>             play a movie   (?client=NAME to pick a player, ?resume=0 to start over)
   /pause /play /stop   control tags for the back cover of the book
   /off                 run the Home Assistant HA_OFF_SCRIPT (e.g. TV off)
-  /tags                list every movie with the URL to write onto its tag
+  /tags                list every movie with the URL to write onto its tag (/tags.csv to download)
+  /book                the printable book (?layout=grid&collection=NAME&title=...)
   /poster/<key>        poster image (proxied so your Plex token stays private)
                        ?w=200&h=300 returns a resized baseline JPEG (for the ESP32 screen)
 
@@ -202,9 +203,62 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
           }</script>"""
         return page("NFC tags", f"<h1>NFC tag URLs</h1><table>{''.join(rows)}{controls}</table>{script}")
 
+    @app.get("/book")
+    def book_page():
+        """The printable book, built on the fly (used from the Home Assistant sidebar)."""
+        from .book import LAYOUTS, render_html
+
+        layout = request.args.get("layout", "full")
+        if layout not in LAYOUTS:
+            abort(400)
+        try:
+            movies = list(plex.movies(request.args.get("collection") or None))
+        except Exception as e:
+            return page("Book", f'<h1 class="err">Couldn\'t load movies</h1><p>{escape(str(e))}</p>', 500)
+        html = render_html(
+            plex, config.public_base_url, movies, layout,
+            title=request.args.get("title") or "Movie Night",
+            qr=request.args.get("qr", "1") == "1",
+            page_size=request.args.get("page_size") or "letter",
+            # Relative, so it also works behind Home Assistant's ingress proxy
+            poster_src=lambda m: f"poster/{movie_key(m)}?w=1200&h=1800",
+        )
+        return Response(html, mimetype="text/html")
+
+    @app.get("/tags.csv")
+    def tags_csv():
+        from .book import tag_rows, write_csv
+
+        buf = io.StringIO()
+        write_csv(tag_rows(plex, config.public_base_url, plex.movies(request.args.get("collection") or None)), buf)
+        return Response(buf.getvalue(), mimetype="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=tags.csv"})
+
     @app.get("/")
     def index():
-        return page("plexnfc", '<h1>plexnfc is running</h1><p><a style="color:#8ab4f8" href="/tags">Tag list</a></p>')
+        # Links are relative so this page works inside the Home Assistant sidebar (ingress).
+        warn = ""
+        if "localhost" in config.public_base_url or "127.0.0.1" in config.public_base_url:
+            warn = ('<p class="err">public_base_url is set to localhost. Phones can\'t reach that: '
+                    "set it to this machine's IP address, e.g. http://192.168.1.20:8080</p>")
+        return page("plexnfc", f"""
+          <h1>plexnfc</h1>
+          <p>Tags point at <code>{escape(config.public_base_url)}</code>, playing on
+             <b>{escape(config.ha_player or config.client or "(no player set)")}</b></p>{warn}
+          <h1>Make the book</h1>
+          <form action="book" target="_blank" style="display:inline-grid;gap:8px;text-align:left">
+            <label>Title <input name="title" value="Movie Night"></label>
+            <label>Plex collection (blank = whole library) <input name="collection"></label>
+            <label>Layout <select name="layout"><option value="full">1 per page</option>
+              <option value="grid">4 per page</option></select></label>
+            <label>Paper <select name="page_size"><option>letter</option><option>A4</option></select></label>
+            <label><input type="checkbox" name="qr" value="1" checked> QR code fallback</label>
+            <button>Open printable book</button>
+          </form>
+          <p>Wait for all the posters to load, then print with margins <i>None</i> and background graphics on.</p>
+          <h1>Write the tags</h1>
+          <p><a style="color:#8ab4f8" href="tags">Tag URLs</a> &middot;
+             <a style="color:#8ab4f8" href="tags.csv">Download tags.csv</a></p>""")
 
     return app
 

@@ -15,6 +15,35 @@ def _load_dotenv(path: str = ".env") -> None:
             os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+# Home Assistant app: Supervisor writes the app's options here.
+HA_APP_OPTIONS = "/data/options.json"
+
+
+def _load_ha_app_options(path: str | None = None) -> None:
+    """When running as a Home Assistant app, take settings from the app's options.
+
+    Options are named like the .env settings, in lower case. Inside the app,
+    Home Assistant itself is reached through the Supervisor with the token it
+    provides, so no long-lived access token is needed.
+    """
+    path = path or HA_APP_OPTIONS
+    if not os.path.exists(path):
+        return
+    import json
+
+    with open(path) as f:
+        options = json.load(f)
+    for key, value in options.items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        os.environ.setdefault(key.upper(), str(value))
+    if os.environ.get("SUPERVISOR_TOKEN"):
+        os.environ.setdefault("HA_URL", "http://supervisor/core")
+        os.environ.setdefault("HA_TOKEN", os.environ["SUPERVISOR_TOKEN"])
+
+
 @dataclass
 class Config:
     plex_url: str
@@ -32,6 +61,7 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
+        _load_ha_app_options()
         _load_dotenv()
         missing = [k for k in ("PLEX_URL", "PLEX_TOKEN") if not os.environ.get(k)]
         if missing:

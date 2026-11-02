@@ -76,22 +76,40 @@ def data_uri(url: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(r.content).decode()}"
 
 
-def build(plex: Plex, base_url: str, layout: str, title: str, collection: str | None,
-          qr: bool, page_size: str, out_dir: str) -> tuple[str, int]:
+def control_actions(plex: Plex) -> list[tuple[str, str]]:
     actions = [("pause", "Pause"), ("play", "Resume"), ("stop", "Stop")]
     if plex.config.ha_off_script:
         actions.append(("off", "TV off"))
+    return actions
+
+
+def tag_rows(plex: Plex, base_url: str, movies) -> list[tuple]:
+    """(title, year, url) for every tag: one per movie, then the control tags."""
+    rows = [(m.title, m.year or "", f"{base_url}/m/{movie_key(m)}") for m in movies]
+    rows += [(f"[{action}]", "", f"{base_url}/{action}") for action, _ in control_actions(plex)]
+    return rows
+
+
+def write_csv(rows, f) -> None:
+    w = csv.writer(f)
+    w.writerow(["title", "year", "url"])
+    w.writerows(rows)
+
+
+def render_html(plex: Plex, base_url: str, movies, layout: str = "full", title: str = "Movie Night",
+                qr: bool = True, page_size: str = "letter", poster_src=None) -> str:
+    """The printable book as one HTML page.
+
+    ``poster_src(movie)`` gives each <img> src: a data: URI for a standalone
+    file, or a URL when the page is served by plexnfc (Home Assistant app).
+    """
     spec = LAYOUTS[layout]
     per_sheet = spec["cols"] * spec["rows"]
-    movies = list(plex.movies(collection))
-    os.makedirs(out_dir, exist_ok=True)
-
-    cards, rows = [], []
-    for i, movie in enumerate(movies, 1):
+    cards = []
+    for movie in movies:
         url = f"{base_url}/m/{movie_key(movie)}"
-        rows.append((movie.title, movie.year or "", url))
-        print(f"[{i}/{len(movies)}] {movie.title}")
-        poster = f'<img class="poster" src="{data_uri(plex.poster_url(movie, 1200, 1800))}" alt="">' if movie.thumb else ""
+        src = poster_src(movie) if poster_src and movie.thumb else ""
+        poster = f'<img class="poster" src="{escape(src)}" alt="">' if src else ""
         year = f' <span class="year">({movie.year})</span>' if movie.year else ""
         cards.append(
             f'<div class="card">{poster}<div class="caption">'
@@ -102,9 +120,9 @@ def build(plex: Plex, base_url: str, layout: str, title: str, collection: str | 
     sheets = ["".join(cards[i:i + per_sheet]) for i in range(0, len(cards), per_sheet)]
     controls = "".join(
         f'<div><div class="tap">NFC</div>{label}<small>{base_url}/{action}</small></div>'
-        for action, label in actions
+        for action, label in control_actions(plex)
     )
-    html = (
+    return (
         f"<!doctype html><html><head><meta charset='utf-8'><title>{escape(title)}</title>"
         f"<style>{CSS % dict(spec, page=page_size)}</style></head><body>"
         f'<section class="cover"><h1>{escape(title)}</h1><p>Tap a poster with your phone to watch it.</p></section>'
@@ -113,15 +131,25 @@ def build(plex: Plex, base_url: str, layout: str, title: str, collection: str | 
           f'<div class="controls">{controls}</div></section>'
         "</body></html>"
     )
+
+
+def build(plex: Plex, base_url: str, layout: str, title: str, collection: str | None,
+          qr: bool, page_size: str, out_dir: str) -> tuple[str, int]:
+    """Write a standalone book.html (posters embedded) and tags.csv into out_dir."""
+    movies = list(plex.movies(collection))
+    os.makedirs(out_dir, exist_ok=True)
+    count = iter(range(1, len(movies) + 1))
+
+    def embed(movie):
+        print(f"[{next(count)}/{len(movies)}] {movie.title}")
+        return data_uri(plex.poster_url(movie, 1200, 1800))
+
+    html = render_html(plex, base_url, movies, layout, title, qr, page_size, poster_src=embed)
     book_path = os.path.join(out_dir, "book.html")
     with open(book_path, "w") as f:
         f.write(html)
     with open(os.path.join(out_dir, "tags.csv"), "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["title", "year", "url"])
-        w.writerows(rows)
-        for action, _ in actions:
-            w.writerow([f"[{action}]", "", f"{base_url}/{action}"])
+        write_csv(tag_rows(plex, base_url, movies), f)
     return book_path, len(movies)
 
 

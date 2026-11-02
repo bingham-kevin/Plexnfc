@@ -259,3 +259,35 @@ def test_resize_jpeg_is_exact_and_baseline():
     Image.new("RGB", (600, 900), "red").save(src, "JPEG", progressive=True)
     out = Image.open(io.BytesIO(resize_jpeg(src.getvalue(), 200, 300)))
     assert out.size == (200, 300) and not out.info.get("progressive")
+
+
+def test_book_page_uses_relative_poster_urls(plex):
+    r = create_app(CONFIG, plex).test_client().get("/book?layout=grid&title=Our+Movies")
+    assert r.status_code == 200
+    assert b'src="poster/tmdb-603?w=1200&amp;h=1800"' in r.data and b"Our Movies" in r.data
+
+
+def test_tags_csv(plex):
+    r = create_app(CONFIG, plex).test_client().get("/tags.csv")
+    assert b"The Matrix,1999,http://nfc.local:8080/m/tmdb-603" in r.data
+
+
+def test_index_links_are_relative(plex):
+    r = create_app(CONFIG, plex).test_client().get("/")
+    assert b'href="tags"' in r.data and b'action="book"' in r.data and b'href="/' not in r.data
+
+
+def test_ha_app_options(tmp_path, monkeypatch):
+    import json
+    from plexnfc import config as cfg
+    opts = tmp_path / "options.json"
+    opts.write_text(json.dumps({"plex_url": "http://plex:32400", "plex_token": "abc", "resume": False,
+                                "ha_player": "", "player_wait": 30}))
+    for k in ("PLEX_URL", "PLEX_TOKEN", "RESUME", "HA_PLAYER", "PLAYER_WAIT", "HA_URL", "HA_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "sup")
+    monkeypatch.setattr(cfg, "HA_APP_OPTIONS", str(opts))
+    monkeypatch.chdir(tmp_path)
+    c = cfg.Config.from_env()
+    assert c.plex_url == "http://plex:32400" and c.resume is False and c.player_wait == 30
+    assert c.ha_url == "http://supervisor/core" and c.ha_token == "sup" and c.ha_player == ""
