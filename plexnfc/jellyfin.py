@@ -71,7 +71,8 @@ class Jellyfin:
                        if s.get("SupportsRemoteControl") and s.get("DeviceName")})
 
     def play(self, session: dict, item_id: str, start_seconds: int | None = 0) -> None:
-        params = {"playCommand": "PlayNow", "itemIds": item_id}
+        # Subtitle index -1 means none: without one, Swiftfin turns a subtitle track on.
+        params = {"playCommand": "PlayNow", "itemIds": item_id, "subtitleStreamIndex": -1}
         if start_seconds is not None:
             params["startPositionTicks"] = start_seconds * TICKS_PER_SECOND
         self._request("POST", f"/Sessions/{session['Id']}/Playing", **params)

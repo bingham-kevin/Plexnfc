@@ -534,7 +534,8 @@ def test_jellyfin_play_sends_session_command(monkeypatch):
     monkeypatch.setattr("plexnfc.jellyfin.requests.request", req)
     Jellyfin("http://jf:8096", "k").play({"Id": "s1"}, "abc", start_seconds=0)
     assert req.call_args.args == ("POST", "http://jf:8096/Sessions/s1/Playing")
-    assert req.call_args.kwargs["params"] == {"playCommand": "PlayNow", "itemIds": "abc", "startPositionTicks": 0}
+    assert req.call_args.kwargs["params"] == {"playCommand": "PlayNow", "itemIds": "abc",
+                                              "subtitleStreamIndex": -1, "startPositionTicks": 0}
 
 
 def test_starting_screen_names_jellyfin_player(plex):
