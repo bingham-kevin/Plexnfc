@@ -25,7 +25,7 @@ Plex for Apple TV can't be started from another device, but Swiftfin, the Jellyf
 1. In Jellyfin, open **Dashboard → API Keys** and add a key for plexnfc.
 2. Fill in **Jellyfin server URL**, **Jellyfin API key** and **Jellyfin player**: the Jellyfin app's device name, for example `AppleTV`. Leave the app open on the TV; it only shows up as a player while it's open. A tap that can't find it lists the Jellyfin players it can see.
 3. For the get-ready script, wake the Apple TV, press **Home** (`remote.send_command` with `command: home`), wait a couple of seconds, then open Swiftfin (`media_player.select_source` with source `Swiftfin tvOS`). Swiftfin only reconnects to Jellyfin when it's brought back from the Home screen; opening it while it's already on screen leaves it disconnected, and the tap fails.
-4. Swiftfin leaves its player controls on screen after a remote start. Set **After-playback script** to a script that waits about 12 seconds and then presses **Menu** (`command: menu`), which clears them without leaving the movie. Play doesn't hide them, and Down opens the info panel.
+4. Movies start with subtitles off. (Left to choose for itself, Swiftfin turned a subtitle track on, and its player controls then stayed on screen.) You don't need an **After-playback script** for Swiftfin: a Menu press would stop the movie.
 
 The movie is matched in Jellyfin by title and year and checked against the tag's TMDB/IMDb ID. A single tag can pick a Jellyfin player with `?client=jellyfin:NAME`.
 

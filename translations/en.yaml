@@ -25,7 +25,7 @@ configuration:
     description: Optional script for the "TV off" tag, e.g. script.movie_night_off
   ha_started_script:
     name: After-playback script
-    description: Optional script to run once a movie has been started, e.g. to press Menu on the Apple TV remote, which hides Swiftfin's player controls
+    description: Optional script to run once a movie has been started, e.g. to press a button on the TV's remote
   ha_player:
     name: Home Assistant Plex player
     description: Optional. Let Home Assistant start the movie on this Plex media_player (recommended for Apple TV)

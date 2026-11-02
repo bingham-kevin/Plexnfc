@@ -184,11 +184,8 @@ class Plex:
         return result
 
     def _run_started_script(self) -> None:
-        """Start the HA_STARTED_SCRIPT without waiting, e.g. to hide the player's controls.
-
-        Swiftfin leaves its on-screen controls up after a remote start until a
-        remote button is pressed; a script can press one once the movie is going.
-        """
+        """Start the HA_STARTED_SCRIPT without waiting, e.g. to press a remote button
+        once the movie is going."""
         if not (self.ha and self.config.ha_started_script):
             return
         try:
