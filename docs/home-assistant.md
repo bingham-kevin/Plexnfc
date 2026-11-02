@@ -58,6 +58,56 @@ movie_night_off:
 
 If CEC doesn't switch the input on your TV, add a step that switches the TV's own `media_player` to the right HDMI input. That step is shown in the next example.
 
+## Let Home Assistant start the movie too (recommended for Apple TV)
+
+By default, plexnfc finds the Plex player itself and starts the movie. Alternatively, Home Assistant's **Plex Media Server** integration can start it. This is handy for an Apple TV, because Home Assistant already tracks the Plex app on it as a `media_player` entity. plexnfc then only looks up which movie was tapped, and Home Assistant does the rest.
+
+### Apple TV setup
+
+1. Add two integrations in Home Assistant:
+   - **Apple TV**, to wake the box and open apps.
+   - **Plex Media Server**, which creates a `media_player.plex_…` entity for the Plex app on the Apple TV.
+2. Check that the Plex app on the Apple TV accepts remote control: open Plex on your phone, tap the cast icon and pick the Apple TV. If a movie starts, plexnfc will work too. The Plex entity in Home Assistant shows as *unavailable* while the Plex app is closed. That's normal.
+3. Add the Plex entity to `.env`:
+
+   ```
+   HA_SCRIPT=script.movie_night
+   HA_PLAYER=media_player.plex_plex_for_apple_tv_living_room   # your entity ID
+   PLAYER_WAIT=45
+   ```
+
+4. Use this script. It wakes the Apple TV, opens Plex, and waits until the Plex app can accept playback:
+
+   ```yaml
+   movie_night:
+     alias: Movie night
+     mode: single
+     sequence:
+       - action: media_player.turn_on
+         target: { entity_id: media_player.living_room_apple_tv }
+       - delay: { seconds: 3 }
+       - action: media_player.select_source
+         target: { entity_id: media_player.living_room_apple_tv }
+         data: { source: Plex }
+       - wait_template: "{{ not is_state('media_player.plex_plex_for_apple_tv_living_room', 'unavailable') }}"
+         timeout: "00:00:30"
+         continue_on_timeout: true
+   ```
+
+After the script, plexnfc calls `media_player.play_media` on `HA_PLAYER`. If the Plex app isn't ready yet, it keeps retrying for up to `PLAYER_WAIT` seconds. The Pause, Resume and Stop tags are also sent through Home Assistant.
+
+The Apple TV only accepts remote control while the Plex app is open on screen. tvOS suspends apps in the background. That's why the script opens Plex first, even if the Apple TV is already on.
+
+To test without tapping a tag, run this from **Developer tools → Actions**:
+
+```yaml
+action: media_player.play_media
+target: { entity_id: media_player.plex_plex_for_apple_tv_living_room }
+data:
+  media_content_type: movie
+  media_content_id: 'plex://{"library_name": "Movies", "title": "The Matrix"}'
+```
+
 ### TV and streaming box controlled separately (e.g. LG webOS + Shield)
 
 ```yaml

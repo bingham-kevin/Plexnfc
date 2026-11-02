@@ -142,3 +142,39 @@ def test_ha_client_calls_script_service(monkeypatch):
     url = post.call_args.args[0]
     assert url == "http://ha:8123/api/services/script/movie_night"
     assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer tok"
+
+
+def test_playback_via_home_assistant(plex):
+    plex = ha_plex(plex, ha_player="media_player.plex_apple_tv")
+    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    assert r.status_code == 200 and b"media_player.plex_apple_tv" in r.data
+    plex.ha.run_script.assert_called_once_with("script.movie_night")
+    plex.ha.play_plex.assert_called_once_with("media_player.plex_apple_tv", 42, True)
+    plex._client.playMedia.assert_not_called()
+
+
+def test_ha_playback_retries_until_player_ready(plex, monkeypatch):
+    from plexnfc.homeassistant import HomeAssistantError
+    plex = ha_plex(plex, ha_player="media_player.plex_apple_tv", player_wait=30)
+    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
+    plex.ha.play_plex.side_effect = [HomeAssistantError("not accepting playback"), None]
+    assert create_app(plex.config, plex).test_client().get("/m/tmdb-603").status_code == 200
+    assert plex.ha.play_plex.call_count == 2
+
+
+def test_ha_controls(plex):
+    plex = ha_plex(plex, ha_player="media_player.plex_apple_tv")
+    create_app(plex.config, plex).test_client().get("/pause")
+    plex.ha.call_service.assert_called_once_with("media_player", "media_pause", {"entity_id": "media_player.plex_apple_tv"})
+
+
+def test_ha_play_plex_payload(monkeypatch):
+    import json
+    from plexnfc.homeassistant import HomeAssistant
+    post = mock.Mock(return_value=mock.Mock(ok=True, status_code=200))
+    monkeypatch.setattr("plexnfc.homeassistant.requests.post", post)
+    HomeAssistant("http://ha", "t").play_plex("media_player.x", "42", False)
+    assert post.call_args.args[0] == "http://ha/api/services/media_player/play_media"
+    body = post.call_args.kwargs["json"]
+    assert body["media_content_type"] == "movie"
+    assert json.loads(body["media_content_id"].removeprefix("plex://")) == {"plex_key": 42, "resume": False}

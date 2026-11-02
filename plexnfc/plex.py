@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from types import SimpleNamespace
 
 from plexapi.exceptions import NotFound
 from plexapi.server import PlexServer
@@ -129,15 +130,43 @@ class Plex:
             return str(e)
         return None
 
+    def _ha_entity(self, client_name: str | None) -> str | None:
+        """The Home Assistant media_player to play on, if HA should start playback."""
+        if not self.ha:
+            return None
+        if client_name:
+            return client_name if client_name.startswith("media_player.") else None
+        return self.config.ha_player or None
+
+    def _play_via_ha(self, entity: str, movie, resume: bool, ha_error: str | None):
+        """Ask Home Assistant's Plex integration to start the movie.
+
+        The Plex entity only accepts playback once the Plex app is running, so
+        keep retrying for up to PLAYER_WAIT seconds after the TV was switched on.
+        """
+        deadline = time.monotonic() + self.config.player_wait
+        while True:
+            try:
+                self.ha.play_plex(entity, movie.ratingKey, resume)
+                return movie, SimpleNamespace(title=entity)
+            except HomeAssistantError as e:
+                if time.monotonic() >= deadline:
+                    msg = f"Home Assistant couldn't start playback on {entity}: {e}"
+                    raise PlexNFCError(f"{msg} (script: {ha_error})" if ha_error else msg) from None
+            time.sleep(3)
+
     def play(self, key: str, client_name: str | None = None, resume: bool | None = None):
         movie = self.find_movie(key)
         ha_error = self.prepare_tv()
+        resume = self.config.resume if resume is None else resume
+        if entity := self._ha_entity(client_name):
+            log.info("Playing %s (%s) on %s via Home Assistant", movie.title, key, entity)
+            return self._play_via_ha(entity, movie, resume, ha_error)
         wait = self.config.player_wait if self.config.ha_script else 0
         try:
             client = self.get_client(client_name, wait=wait)
         except PlexNFCError as e:
             raise PlexNFCError(f"{e} (Home Assistant: {ha_error})" if ha_error else str(e)) from None
-        resume = self.config.resume if resume is None else resume
         offset = movie.viewOffset if resume and getattr(movie, "viewOffset", 0) else 0
         log.info("Playing %s (%s) on %s from %sms", movie.title, key, client.title, offset)
         client.playMedia(movie, offset=offset)
@@ -152,6 +181,13 @@ class Plex:
             raise PlexNFCError(str(e)) from None
 
     def control(self, action: str, client_name: str | None = None):
+        if entity := self._ha_entity(client_name):
+            service = {"pause": "media_pause", "play": "media_play", "stop": "media_stop"}[action]
+            try:
+                self.ha.call_service("media_player", service, {"entity_id": entity})
+            except HomeAssistantError as e:
+                raise PlexNFCError(str(e)) from None
+            return SimpleNamespace(title=entity)
         client = self.get_client(client_name)
         getattr(client, action)()
         return client

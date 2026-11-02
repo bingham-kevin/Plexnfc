@@ -1,6 +1,7 @@
 """Run Home Assistant scripts, e.g. to turn the TV on before a movie starts."""
 from __future__ import annotations
 
+import json
 import logging
 
 import requests
@@ -17,6 +18,22 @@ class HomeAssistant:
         self.url = url.rstrip("/")
         self.token = token
 
+    def call_service(self, domain: str, service: str, data: dict | None = None, timeout: float = 90) -> None:
+        """Call a Home Assistant action and wait for it to finish."""
+        try:
+            r = requests.post(
+                f"{self.url}/api/services/{domain}/{service}",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json=data or {},
+                timeout=timeout,
+            )
+        except requests.RequestException as e:
+            raise HomeAssistantError(f"Couldn't reach Home Assistant: {e}") from e
+        if r.status_code == 401:
+            raise HomeAssistantError("Home Assistant rejected HA_TOKEN")
+        if not r.ok:
+            raise HomeAssistantError(f"Home Assistant {domain}.{service} failed: {r.status_code} {r.text[:200]}")
+
     def run_script(self, entity_id: str, timeout: float = 90) -> None:
         """Run ``script.<name>`` and wait for it to finish.
 
@@ -26,16 +43,13 @@ class HomeAssistant:
         """
         name = entity_id.removeprefix("script.")
         log.info("Running Home Assistant script.%s", name)
-        try:
-            r = requests.post(
-                f"{self.url}/api/services/script/{name}",
-                headers={"Authorization": f"Bearer {self.token}"},
-                json={},
-                timeout=timeout,
-            )
-        except requests.RequestException as e:
-            raise HomeAssistantError(f"Couldn't reach Home Assistant: {e}") from e
-        if r.status_code == 401:
-            raise HomeAssistantError("Home Assistant rejected HA_TOKEN")
-        if not r.ok:
-            raise HomeAssistantError(f"Home Assistant script.{name} failed: {r.status_code} {r.text[:200]}")
+        self.call_service("script", name, timeout=timeout)
+
+    def play_plex(self, entity_id: str, rating_key: int, resume: bool) -> None:
+        """Start a Plex item on a Plex media_player entity via HA's Plex integration."""
+        payload = json.dumps({"plex_key": int(rating_key), "resume": resume})
+        self.call_service("media_player", "play_media", {
+            "entity_id": entity_id,
+            "media_content_type": "movie",
+            "media_content_id": f"plex://{payload}",
+        })
