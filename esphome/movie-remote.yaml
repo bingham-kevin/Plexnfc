@@ -1,0 +1,469 @@
+# Movie Remote: an NFC reader with a touchscreen for the plexnfc poster book.
+#
+# Hold a page's NFC sticker to the reader and the movie starts. The screen shows
+# the poster of what's playing, a progress bar, and touch controls.
+#
+# Hardware and wiring: see esphome/README.md
+# Flash with:  esphome run movie-remote.yaml
+
+substitutions:
+  name: movie-remote
+  friendly_name: Movie Remote
+  # Same address as PUBLIC_BASE_URL in plexnfc's .env (no trailing slash)
+  plexnfc_url: http://192.168.1.20:8080
+  # The Plex player this reader is for, sent as ?client= on every call, so taps
+  # here play on (and wake) this TV. Write spaces as %20, e.g. Den%20TV.
+  # Leave empty for plexnfc's default player.
+  plexnfc_client: ""
+  # Turn the screen off after this long with nothing playing
+  screen_timeout: 5min
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: refresh
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap: {}
+
+captive_portal:
+
+http_request:
+  timeout: 5s
+  verify_ssl: false
+
+# ---- state from plexnfc's /now -----------------------------------------------
+
+globals:
+  - id: tag_url
+    type: std::string
+  - id: now_state
+    type: std::string
+    initial_value: '"idle"'
+  - id: now_title
+    type: std::string
+  - id: now_key
+    type: std::string
+  - id: now_poster
+    type: std::string
+  - id: now_player
+    type: std::string
+  - id: now_message
+    type: std::string
+  - id: now_position
+    type: int
+    initial_value: '0'
+  - id: now_duration
+    type: int
+    initial_value: '0'
+  - id: shown_key
+    type: std::string
+
+interval:
+  - interval: 2s
+    then:
+      - script.execute: refresh
+
+script:
+  # Ask plexnfc what's playing.
+  - id: refresh
+    mode: single
+    then:
+      - http_request.get:
+          url: ${plexnfc_url}/now?client=${plexnfc_client}
+          capture_response: true
+          max_response_buffer_size: 2048
+          on_response:
+            then:
+              - lambda: |-
+                  if (response->status_code != 200) {
+                    id(now_state) = "offline";
+                    return;
+                  }
+                  json::parse_json(body, [](JsonObject root) -> bool {
+                    id(now_state) = root["state"] | "idle";
+                    id(now_title) = root["title"] | "";
+                    id(now_key) = root["key"] | "";
+                    id(now_poster) = root["poster"] | "";
+                    id(now_player) = root["player"] | "";
+                    id(now_message) = root["message"] | "";
+                    id(now_position) = root["position"] | 0;
+                    id(now_duration) = root["duration"] | 0;
+                    return true;
+                  });
+              - script.execute: render
+          on_error:
+            - lambda: 'id(now_state) = "offline";'
+            - script.execute: render
+
+  # Update the screen from the globals.
+  - id: render
+    mode: queued
+    then:
+      - if:
+          condition:
+            lambda: 'return id(now_state) == "idle" || id(now_state) == "offline";'
+          then:
+            - lvgl.widget.hide: [poster_img, title_lbl, info_lbl, progress, time_lbl, controls]
+            - lvgl.label.update:
+                id: idle_lbl
+                text: !lambda |-
+                  return id(now_state) == "offline"
+                    ? std::string("Can't reach plexnfc\n${plexnfc_url}")
+                    : std::string("Tap a poster\nto start a movie");
+            - lvgl.widget.show: idle_lbl
+            - lambda: 'id(shown_key) = "";'
+            - if:
+                condition:
+                  not:
+                    script.is_running: screen_timer
+                then:
+                  - script.execute: screen_timer
+          else:
+            - script.stop: screen_timer
+            - light.turn_on: backlight
+            - lvgl.widget.hide: idle_lbl
+            - lvgl.widget.show: [title_lbl, info_lbl, progress, time_lbl, controls]
+            - lvgl.label.update:
+                id: title_lbl
+                text: !lambda 'return id(now_title);'
+            - lvgl.label.update:
+                id: info_lbl
+                text: !lambda |-
+                  const std::string &s = id(now_state);
+                  if (s == "starting") return std::string("Starting on ") + id(now_player) + "...";
+                  if (s == "error") return id(now_message);
+                  if (s == "paused") return std::string("Paused on ") + id(now_player);
+                  if (s == "buffering") return std::string("Buffering...");
+                  return std::string("Playing on ") + id(now_player);
+            - lvgl.bar.update:
+                id: progress
+                value: !lambda |-
+                  return id(now_duration) > 0 ? id(now_position) * 1000 / id(now_duration) : 0;
+            - lvgl.label.update:
+                id: time_lbl
+                text: !lambda |-
+                  auto fmt = [](int t) {
+                    char buf[12];
+                    snprintf(buf, sizeof(buf), "%d:%02d:%02d", t / 3600, (t / 60) % 60, t % 60);
+                    return std::string(buf);
+                  };
+                  if (id(now_duration) <= 0) return std::string("");
+                  return fmt(id(now_position)) + " / " + fmt(id(now_duration));
+            - lvgl.label.update:
+                id: play_icon
+                # pause symbol while playing, play symbol otherwise
+                text: !lambda |-
+                  return id(now_state) == "playing" ? std::string("") : std::string("");
+            # New movie: fetch its poster, sized exactly for the screen.
+            - if:
+                condition:
+                  lambda: 'return !id(now_key).empty() && id(now_key) != id(shown_key);'
+                then:
+                  - lambda: 'id(shown_key) = id(now_key);'
+                  - lvgl.widget.hide: poster_img
+                  - online_image.set_url:
+                      id: poster
+                      url: !lambda 'return std::string("${plexnfc_url}") + id(now_poster) + "?w=200&h=300";'
+
+  - id: screen_timer
+    mode: single
+    then:
+      - delay: ${screen_timeout}
+      - light.turn_off: backlight
+
+  # Run a plexnfc control endpoint, then refresh the screen straight away.
+  - id: send
+    mode: queued
+    parameters:
+      path: string
+    then:
+      - http_request.get:
+          url: !lambda |-
+            return std::string("${plexnfc_url}") + path +
+                   (path.find('?') == std::string::npos ? "?" : "&") + "client=${plexnfc_client}";
+      - script.execute: refresh
+
+# ---- NFC reader ----------------------------------------------------------------
+
+i2c:
+  sda: GPIO4
+  scl: GPIO5
+  frequency: 400kHz
+
+pn532_i2c:
+  id: nfc_reader
+  update_interval: 500ms
+  on_tag:
+    then:
+      - lambda: |-
+          id(tag_url) = "";
+          if (!tag.has_ndef_message()) return;
+          for (auto &record : tag.get_ndef_message()->get_records()) {
+            std::string payload = record->get_payload();
+            if (payload.rfind("${plexnfc_url}/", 0) == 0) {
+              id(tag_url) = payload;
+              break;
+            }
+          }
+      - if:
+          condition:
+            lambda: 'return !id(tag_url).empty();'
+          then:
+            - light.turn_on: backlight
+            # async=1: plexnfc answers at once and starts the movie in the
+            # background, so the screen can show "Starting..." meanwhile.
+            # client= picks this reader's TV, unless the tag names one itself.
+            - http_request.get:
+                url: !lambda |-
+                  const std::string &u = id(tag_url);
+                  std::string url = u + (u.find('?') == std::string::npos ? "?" : "&") + "async=1";
+                  if (u.find("client=") == std::string::npos) url += "&client=${plexnfc_client}";
+                  return url;
+            - script.execute: refresh
+          else:
+            - logger.log: "Not a plexnfc tag (its URL doesn't start with ${plexnfc_url})"
+
+# ---- screen ----------------------------------------------------------------------
+
+spi:
+  - id: spi_bus
+    clk_pin: GPIO12
+    mosi_pin: GPIO11
+    miso_pin: GPIO13
+
+output:
+  - platform: ledc
+    pin: GPIO21
+    id: backlight_pwm
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: Backlight
+    output: backlight_pwm
+    restore_mode: ALWAYS_ON
+    default_transition_length: 300ms
+
+display:
+  - platform: ili9xxx
+    id: screen
+    model: ST7796
+    spi_id: spi_bus
+    cs_pin: GPIO10
+    dc_pin: GPIO9
+    reset_pin: GPIO14
+    data_rate: 40MHz
+    dimensions:
+      width: 320
+      height: 480
+    # If colours look wrong, flip these two
+    invert_colors: false
+    color_order: bgr
+    auto_clear_enabled: false
+    update_interval: never
+
+touchscreen:
+  - platform: xpt2046
+    id: touch
+    spi_id: spi_bus
+    cs_pin: GPIO15
+    interrupt_pin: GPIO16
+    # Calibrate for your panel: see esphome/README.md
+    calibration:
+      x_min: 230
+      x_max: 3860
+      y_min: 260
+      y_max: 3860
+    on_touch:
+      - light.turn_on: backlight
+
+online_image:
+  - id: poster
+    url: ${plexnfc_url}/poster/none
+    format: JPEG
+    type: RGB565
+    resize: 200x300
+    update_interval: never
+    on_download_finished:
+      - lvgl.image.update:
+          id: poster_img
+          src: poster
+      - lvgl.widget.show: poster_img
+
+lvgl:
+  displays: [screen]
+  touchscreens: [touch]
+  buffer_size: 25%
+  bg_color: 0x101010
+  default_font: montserrat_14
+  theme:
+    button:
+      bg_color: 0x2A2A2A
+      text_color: 0xFFFFFF
+      radius: 28
+      border_width: 0
+      pressed:
+        bg_color: 0xE5A00D
+  pages:
+    - id: main_page
+      bg_color: 0x101010
+      widgets:
+        - label:
+            id: idle_lbl
+            align: CENTER
+            text_align: CENTER
+            text_font: montserrat_20
+            text_color: 0x8A8A8A
+            text: "Tap a poster\nto start a movie"
+
+        - image:
+            id: poster_img
+            src: poster
+            align: TOP_MID
+            y: 12
+            hidden: true
+
+        - label:
+            id: title_lbl
+            align: TOP_MID
+            y: 322
+            width: 300
+            long_mode: DOT
+            text_align: CENTER
+            text_font: montserrat_20
+            text_color: 0xFFFFFF
+            text: ""
+            hidden: true
+
+        - label:
+            id: info_lbl
+            align: TOP_MID
+            y: 350
+            width: 300
+            long_mode: DOT
+            text_align: CENTER
+            text_color: 0x9E9E9E
+            text: ""
+            hidden: true
+
+        - bar:
+            id: progress
+            align: TOP_MID
+            y: 376
+            width: 280
+            height: 6
+            min_value: 0
+            max_value: 1000
+            value: 0
+            bg_color: 0x333333
+            indicator:
+              bg_color: 0xE5A00D
+            hidden: true
+
+        - label:
+            id: time_lbl
+            align: TOP_MID
+            y: 388
+            text_font: montserrat_12
+            text_color: 0x9E9E9E
+            text: ""
+            hidden: true
+
+        - obj:
+            id: controls
+            align: BOTTOM_MID
+            y: -8
+            width: 316
+            height: 66
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            hidden: true
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_EVENLY
+              flex_align_cross: CENTER
+              flex_align_track: CENTER
+            widgets:
+              - button:
+                  id: back_btn
+                  width: 54
+                  height: 54
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text_font: montserrat_20
+                        text: ""   # back 30s
+                  on_click:
+                    - script.execute: { id: send, path: "/seek?by=-30" }
+              - button:
+                  id: play_btn
+                  width: 62
+                  height: 62
+                  radius: 31
+                  bg_color: 0xE5A00D
+                  widgets:
+                    - label:
+                        id: play_icon
+                        align: CENTER
+                        text_font: montserrat_24
+                        text: ""
+                  on_click:
+                    - script.execute: { id: send, path: "/toggle" }
+              - button:
+                  id: fwd_btn
+                  width: 54
+                  height: 54
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text_font: montserrat_20
+                        text: ""   # forward 30s
+                  on_click:
+                    - script.execute: { id: send, path: "/seek?by=30" }
+              - button:
+                  id: stop_btn
+                  width: 54
+                  height: 54
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text_font: montserrat_20
+                        text: ""
+                  on_click:
+                    - script.execute: { id: send, path: "/stop" }
+              - button:
+                  id: off_btn
+                  width: 54
+                  height: 54
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text_font: montserrat_20
+                        text: ""   # TV off (needs HA_OFF_SCRIPT)
+                  on_click:
+                    - script.execute: { id: send, path: "/off" }

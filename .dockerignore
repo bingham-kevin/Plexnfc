@@ -1,0 +1,10 @@
+.git
+.venv
+venv
+out
+tests
+esphome
+docs
+**/__pycache__
+.env
+.plex_auth.json
