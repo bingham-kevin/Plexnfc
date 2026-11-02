@@ -56,6 +56,7 @@ class Config:
     ha_token: str = ""
     ha_script: str = ""
     ha_off_script: str = ""
+    ha_started_script: str = ""  # run once playback has been started
     ha_player: str = ""
     player_wait: int = 45
     auth_file: str = ""  # where "Sign in with Plex" keeps its token
@@ -85,6 +86,7 @@ class Config:
             ha_token=os.environ.get("HA_TOKEN", ""),
             ha_script=os.environ.get("HA_SCRIPT", ""),
             ha_off_script=os.environ.get("HA_OFF_SCRIPT", ""),
+            ha_started_script=os.environ.get("HA_STARTED_SCRIPT", ""),
             ha_player=os.environ.get("HA_PLAYER", ""),
             player_wait=int(os.environ.get("PLAYER_WAIT", "45")),
             auth_file=auth_file,

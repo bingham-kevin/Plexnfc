@@ -179,6 +179,24 @@ class Plex:
             time.sleep(3)
 
     def play(self, key: str, client_name: str | None = None, resume: bool | None = None):
+        result = self._play(key, client_name, resume)
+        self._run_started_script()
+        return result
+
+    def _run_started_script(self) -> None:
+        """Start the HA_STARTED_SCRIPT without waiting, e.g. to hide the player's controls.
+
+        Swiftfin leaves its on-screen controls up after a remote start until a
+        remote button is pressed; a script can press one once the movie is going.
+        """
+        if not (self.ha and self.config.ha_started_script):
+            return
+        try:
+            self.ha.call_service("script", "turn_on", {"entity_id": self.config.ha_started_script})
+        except HomeAssistantError as e:
+            log.warning("%s", e)
+
+    def _play(self, key: str, client_name: str | None, resume: bool | None):
         movie = self.find_movie(key)
         ha_error = self.prepare_tv()
         resume = self.config.resume if resume is None else resume

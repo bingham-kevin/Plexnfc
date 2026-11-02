@@ -547,3 +547,16 @@ def test_starting_screen_names_jellyfin_player(plex):
     plex.jellyfin.session.return_value = {"Id": "s1", "DeviceName": "AppleTV"}  # nothing playing yet
     assert app.get("/now").json["player"] == "AppleTV"
     gate.set()
+
+
+def test_started_script_runs_after_play_without_waiting(plex):
+    plex = ha_plex(plex, ha_started_script="script.hide_controls")
+    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    plex._client.playMedia.assert_called_once()
+    plex.ha.call_service.assert_called_once_with("script", "turn_on", {"entity_id": "script.hide_controls"})
+
+
+def test_started_script_not_run_when_play_fails(plex):
+    plex = ha_plex(plex, ha_started_script="script.hide_controls")
+    create_app(plex.config, plex).test_client().get("/m/tmdb-999")
+    plex.ha.call_service.assert_not_called()
