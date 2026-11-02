@@ -1,7 +1,7 @@
 # Home Assistant app manifest. (The plexnfc settings themselves live in .env
 # when you run it outside Home Assistant; see README.md.)
 name: plexnfc
-version: "0.2.1"
+version: "0.2.2"
 slug: plexnfc
 description: Tap an NFC-tagged movie poster to play the movie on Plex
 url: https://github.com/bingham-kevin/Plexnfc

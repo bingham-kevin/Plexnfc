@@ -180,6 +180,8 @@ def test_ha_play_plex_payload(monkeypatch):
     from plexnfc.homeassistant import HomeAssistant
     post = mock.Mock(return_value=mock.Mock(ok=True, status_code=200))
     monkeypatch.setattr("plexnfc.homeassistant.requests.post", post)
+    monkeypatch.setattr("plexnfc.homeassistant.requests.get",
+                        mock.Mock(return_value=mock.Mock(ok=True, status_code=200, json=lambda: {"state": "idle"})))
     HomeAssistant("http://ha", "t").play_plex("media_player.x", "42", False)
     assert post.call_args.args[0] == "http://ha/api/services/media_player/play_media"
     body = post.call_args.kwargs["json"]
@@ -352,3 +354,32 @@ def test_saved_token_used_when_none_configured(tmp_path, monkeypatch):
     assert cfg.Config.from_env().plex_token == "saved"
     monkeypatch.setenv("PLEX_TOKEN", "manual")
     assert cfg.Config.from_env().plex_token == "manual"
+
+
+@pytest.mark.parametrize("status,state,message", [
+    (200, "unavailable", "isn't ready"), (200, "unknown", "isn't ready"), (404, None, "no entity")])
+def test_ha_play_plex_refuses_unavailable_player(monkeypatch, status, state, message):
+    from plexnfc.homeassistant import HomeAssistant, HomeAssistantError
+    get = mock.Mock(return_value=mock.Mock(ok=status == 200, status_code=status, json=lambda: {"state": state}))
+    post = mock.Mock()
+    monkeypatch.setattr("plexnfc.homeassistant.requests.get", get)
+    monkeypatch.setattr("plexnfc.homeassistant.requests.post", post)
+    with pytest.raises(HomeAssistantError, match=message):
+        HomeAssistant("http://ha", "t").play_plex("media_player.x", 42, True)
+    assert get.call_args.args[0] == "http://ha/api/states/media_player.x"
+    post.assert_not_called()
+
+
+def test_ha_playback_reports_player_never_ready(plex):
+    import time
+    from plexnfc.homeassistant import HomeAssistantError
+    plex = ha_plex(plex, ha_player="media_player.plex_apple_tv", player_wait=0)
+    plex.ha.play_plex.side_effect = HomeAssistantError("media_player.plex_apple_tv is unavailable")
+    app = create_app(plex.config, plex).test_client()
+    r = app.get("/m/tmdb-603")
+    assert r.status_code == 404 and b"is unavailable" in r.data
+    r = app.get("/m/tmdb-603?async=1")
+    deadline = time.monotonic() + 5
+    while app.get("/now").json["state"] == "starting" and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert app.get("/now").json["state"] == "error"

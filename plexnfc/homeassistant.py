@@ -34,6 +34,21 @@ class HomeAssistant:
         if not r.ok:
             raise HomeAssistantError(f"Home Assistant {domain}.{service} failed: {r.status_code} {r.text[:200]}")
 
+    def state(self, entity_id: str) -> str | None:
+        """The entity's current state, or None if Home Assistant doesn't know it."""
+        try:
+            r = requests.get(f"{self.url}/api/states/{entity_id}",
+                             headers={"Authorization": f"Bearer {self.token}"}, timeout=15)
+        except requests.RequestException as e:
+            raise HomeAssistantError(f"Couldn't reach Home Assistant: {e}") from e
+        if r.status_code == 401:
+            raise HomeAssistantError("Home Assistant rejected HA_TOKEN")
+        if r.status_code == 404:
+            return None
+        if not r.ok:
+            raise HomeAssistantError(f"Home Assistant couldn't read {entity_id}: {r.status_code}")
+        return r.json().get("state")
+
     def run_script(self, entity_id: str, timeout: float = 90) -> None:
         """Run ``script.<name>`` and wait for it to finish.
 
@@ -47,6 +62,13 @@ class HomeAssistant:
 
     def play_plex(self, entity_id: str, rating_key: int, resume: bool) -> None:
         """Start a Plex item on a Plex media_player entity via HA's Plex integration."""
+        # Home Assistant skips actions on an unavailable entity with only a log
+        # warning, so check first rather than report a movie that never started.
+        state = self.state(entity_id)
+        if state is None:
+            raise HomeAssistantError(f"Home Assistant has no entity {entity_id}")
+        if state in ("unavailable", "unknown"):
+            raise HomeAssistantError(f"{entity_id} is {state}, so the Plex app isn't ready for playback")
         payload = json.dumps({"plex_key": int(rating_key), "resume": resume})
         self.call_service("media_player", "play_media", {
             "entity_id": entity_id,
