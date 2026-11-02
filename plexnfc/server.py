@@ -9,14 +9,24 @@ Routes
   /off                 run the Home Assistant HA_OFF_SCRIPT (e.g. TV off)
   /tags                list every movie with the URL to write onto its tag
   /poster/<key>        poster image (proxied so your Plex token stays private)
+                       ?w=200&h=300 returns a resized baseline JPEG (for the ESP32 screen)
+
+For the ESP32 remote (see esphome/):
+  /m/<key>?async=1     start playback in the background and return immediately
+  /now                 JSON: what's playing, poster path, position, duration
+  /toggle              play/pause
+  /seek?by=30          jump forwards (or backwards with a negative number) in seconds
 """
 from __future__ import annotations
 
+import io
 import logging
+import threading
+import time
 from html import escape
 
 import requests
-from flask import Flask, Response, abort, request
+from flask import Flask, Response, abort, jsonify, request
 
 from .config import Config
 from .plex import Plex, PlexNFCError, movie_key
@@ -37,6 +47,20 @@ def page(title: str, body: str, status: int = 200) -> Response:
     return Response(PAGE.format(title=escape(title), body=body), status=status, mimetype="text/html")
 
 
+def resize_jpeg(data: bytes, width: int, height: int) -> bytes:
+    """Crop/scale to exactly width x height and save as a baseline JPEG.
+
+    Small microcontroller JPEG decoders (like ESPHome's) can't read progressive
+    JPEGs, and an exact size means no scaling work on the device.
+    """
+    from PIL import Image, ImageOps
+
+    img = ImageOps.fit(Image.open(io.BytesIO(data)).convert("RGB"), (width, height), Image.LANCZOS)
+    out = io.BytesIO()
+    img.save(out, "JPEG", quality=85, progressive=False, optimize=False)
+    return out.getvalue()
+
+
 def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     config = config or Config.from_env()
     plex = plex or Plex(config)
@@ -46,8 +70,34 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         value = request.args.get("resume")
         return None if value is None else value.lower() in ("1", "true", "yes")
 
+    # Playback started with ?async=1. Shown by /now until Plex reports the movie playing.
+    pending: dict = {}
+    pending_lock = threading.Lock()
+
+    def play_in_background(key, client, resume):
+        try:
+            plex.play(key, client, resume)
+            update = {"done": time.monotonic()}
+        except Exception as e:  # report anything to the screen rather than dying silently
+            logging.getLogger(__name__).warning("Background play of %s failed: %s", key, e)
+            update = {"done": time.monotonic(), "error": str(e)}
+        with pending_lock:
+            if pending.get("key") == key:
+                pending.update(update)
+
     @app.get("/m/<key>")
     def play(key):
+        if request.args.get("async") in ("1", "true"):
+            try:
+                movie = plex.find_movie(key)
+            except PlexNFCError as e:
+                return jsonify(state="error", message=str(e)), 404
+            with pending_lock:
+                pending.clear()
+                pending.update(key=key, title=movie.title, year=movie.year, started=time.monotonic())
+            threading.Thread(target=play_in_background, daemon=True,
+                             args=(key, request.args.get("client"), resume_param())).start()
+            return jsonify(state="starting", key=key, title=movie.title), 202
         try:
             movie, client = plex.play(key, request.args.get("client"), resume_param())
         except PlexNFCError as e:
@@ -75,12 +125,55 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             return page("Error", f'<h1 class="err">{escape(str(e))}</h1>', 404)
         return page("Off", "<h1>Good night</h1>")
 
+    @app.get("/now")
+    def now():
+        client = request.args.get("client")
+        try:
+            status = plex.now_playing(client)
+        except Exception as e:
+            return jsonify(state="error", message=f"Can't reach Plex: {e}")
+        with pending_lock:
+            if pending:
+                done = pending.get("done")
+                if status.get("key") == pending["key"] or (done and time.monotonic() - done > 30):
+                    pending.clear()  # Plex has caught up (or gave up waiting)
+                elif "error" in pending:
+                    return jsonify(state="error", message=pending["error"], title=pending["title"])
+                else:
+                    return jsonify(state="starting", title=pending["title"], year=pending["year"],
+                                   key=pending["key"], poster=f"/poster/{pending['key']}",
+                                   position=0, duration=0, player=client or config.client)
+        return jsonify(status)
+
+    def json_action(fn):
+        try:
+            client = fn()
+        except PlexNFCError as e:
+            return jsonify(ok=False, message=str(e)), 404
+        return jsonify(ok=True, player=client.title)
+
+    @app.get("/toggle")
+    def toggle():
+        return json_action(lambda: plex.toggle(request.args.get("client")))
+
+    @app.get("/seek")
+    def seek():
+        by = request.args.get("by", type=int)
+        if by is None:
+            return jsonify(ok=False, message="add ?by=SECONDS"), 400
+        return json_action(lambda: plex.seek(by, request.args.get("client")))
+
     @app.get("/poster/<key>")
     def poster(key):
         try:
             movie = plex.find_movie(key)
         except PlexNFCError:
             abort(404)
+        w, h = request.args.get("w", type=int), request.args.get("h", type=int)
+        if w and h and 16 <= w <= 2000 and 16 <= h <= 3000:
+            r = requests.get(plex.poster_url(movie, w, h), timeout=15)
+            return Response(resize_jpeg(r.content, w, h), mimetype="image/jpeg",
+                            headers={"Cache-Control": "max-age=86400"})
         r = requests.get(plex.poster_url(movie), timeout=15)
         return Response(r.content, mimetype=r.headers.get("Content-Type", "image/jpeg"),
                         headers={"Cache-Control": "max-age=86400"})

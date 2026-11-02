@@ -192,5 +192,57 @@ class Plex:
         getattr(client, action)()
         return client
 
+    # ---- now playing (for the ESP32 remote) -----------------------------------
+
+    def current_session(self, client_name: str | None = None):
+        """The movie currently playing on our player, from the Plex server's sessions."""
+        name = client_name if client_name and not client_name.startswith("media_player.") else self.config.client
+        for session in self.server.sessions():
+            if getattr(session, "type", None) not in ("movie", "episode"):
+                continue
+            player = getattr(session, "player", None)
+            if not name or (player is not None and player.title == name):
+                return session
+        return None
+
+    def now_playing(self, client_name: str | None = None) -> dict:
+        session = self.current_session(client_name)
+        if session is None:
+            return {"state": "idle"}
+        player = session.player
+        key = movie_key(session) if session.type == "movie" else f"rk-{session.ratingKey}"
+        return {
+            "state": player.state,  # playing / paused / buffering
+            "title": session.title,
+            "year": session.year,
+            "key": key,
+            "poster": f"/poster/{key}",
+            "player": player.title,
+            "position": int((session.viewOffset or 0) / 1000),
+            "duration": int((session.duration or 0) / 1000),
+        }
+
+    def toggle(self, client_name: str | None = None):
+        session = self.current_session(client_name)
+        playing = session is not None and session.player.state == "playing"
+        return self.control("pause" if playing else "play", client_name)
+
+    def seek(self, by_seconds: int, client_name: str | None = None):
+        session = self.current_session(client_name)
+        if session is None:
+            raise PlexNFCError("Nothing is playing")
+        target = max(0, int((session.viewOffset or 0) / 1000) + by_seconds)
+        if session.duration:
+            target = min(target, int(session.duration / 1000) - 5)
+        if entity := self._ha_entity(client_name):
+            try:
+                self.ha.call_service("media_player", "media_seek", {"entity_id": entity, "seek_position": target})
+            except HomeAssistantError as e:
+                raise PlexNFCError(str(e)) from None
+            return SimpleNamespace(title=entity)
+        client = self.get_client(client_name)
+        client.seekTo(target * 1000)
+        return client
+
     def poster_url(self, movie, width: int = 600, height: int = 900) -> str:
         return self.server.transcodeImage(movie.thumb, height=height, width=width)

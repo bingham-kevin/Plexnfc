@@ -71,6 +71,10 @@ Put the stickers on the **back** of the page, or between pages in a page protect
 
 plexnfc can run a Home Assistant script before every movie. The script can turn the TV on, switch to the right HDMI input and open Plex, so one tap goes from a dark TV to the movie playing. Home Assistant can also start the movie itself through its Plex integration, which is the recommended setup for Apple TV. See [docs/home-assistant.md](docs/home-assistant.md) for setup and example scripts for Apple TV, Shield, LG, Samsung and Google TV.
 
+## Optional: a "Movie Remote" with a screen
+
+[esphome/](esphome/) has firmware for an ESP32-S3 box with an NFC reader and a 3.5" touchscreen. Hold a page to the box and the movie starts. The screen then shows the poster, the progress, and play/pause, ±30 s, stop and TV-off buttons. It costs about $40 in parts. The parts list and wiring are in [esphome/README.md](esphome/README.md).
+
 ## Tag URLs
 
 | URL | What it does |
@@ -79,6 +83,7 @@ plexnfc can run a Home Assistant script before every movie. The script can turn 
 | `/m/tmdb-603?resume=0` | Start from the beginning |
 | `/m/tmdb-603?client=Bedroom TV` | Play on a different player (or `?client=media_player.xyz` to play through Home Assistant) |
 | `/pause`, `/play`, `/stop` | Control whatever is playing |
+| `/now`, `/toggle`, `/seek?by=30` | Used by the Movie Remote: what's playing (JSON), play/pause, skip |
 | `/off` | Run your Home Assistant "off" script (needs `HA_OFF_SCRIPT`) |
 
 Tags store the movie's TMDB/IMDb ID rather than Plex's internal ID, so they keep working if you rebuild your library or move servers.

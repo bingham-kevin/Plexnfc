@@ -178,3 +178,84 @@ def test_ha_play_plex_payload(monkeypatch):
     body = post.call_args.kwargs["json"]
     assert body["media_content_type"] == "movie"
     assert json.loads(body["media_content_id"].removeprefix("plex://")) == {"plex_key": 42, "resume": False}
+
+
+def add_session(plex, state="playing", offset=60_000, player="Living Room"):
+    session = make_movie(offset=offset)
+    session.type = "movie"
+    session.duration = 7_200_000
+    session.player = NS(title=player, state=state)
+    plex.server.sessions.return_value = [session]
+    return session
+
+
+def test_now_idle(plex):
+    plex.server.sessions.return_value = []
+    assert create_app(CONFIG, plex).test_client().get("/now").json == {"state": "idle"}
+
+
+def test_now_playing(plex):
+    add_session(plex)
+    data = create_app(CONFIG, plex).test_client().get("/now").json
+    assert data["state"] == "playing" and data["title"] == "The Matrix"
+    assert data["poster"] == "/poster/tmdb-603" and data["position"] == 60 and data["duration"] == 7200
+
+
+def test_now_ignores_other_players(plex):
+    add_session(plex, player="Bedroom")
+    assert create_app(CONFIG, plex).test_client().get("/now").json["state"] == "idle"
+
+
+def test_toggle_pauses_when_playing(plex):
+    add_session(plex, state="playing")
+    create_app(CONFIG, plex).test_client().get("/toggle")
+    plex._client.pause.assert_called_once()
+    add_session(plex, state="paused")
+    create_app(CONFIG, plex).test_client().get("/toggle")
+    plex._client.play.assert_called_once()
+
+
+def test_seek(plex):
+    add_session(plex, offset=60_000)
+    app = create_app(CONFIG, plex).test_client()
+    assert app.get("/seek?by=30").json["ok"]
+    plex._client.seekTo.assert_called_with(90_000)
+    app.get("/seek?by=-600")
+    plex._client.seekTo.assert_called_with(0)
+
+
+def test_async_play_reports_starting_then_playing(plex):
+    import threading
+    gate = threading.Event()
+    plex._client.playMedia.side_effect = lambda *a, **k: gate.wait(5)
+    plex.server.sessions.return_value = []
+    app = create_app(CONFIG, plex).test_client()
+    r = app.get("/m/tmdb-603?async=1")
+    assert r.status_code == 202
+    now = app.get("/now").json
+    assert now["state"] == "starting" and now["poster"] == "/poster/tmdb-603"
+    gate.set()
+    add_session(plex)
+    assert app.get("/now").json["state"] == "playing"
+
+
+def test_async_play_error_is_reported(plex):
+    import time as _t
+    plex.server.sessions.return_value = []
+    app = create_app(CONFIG, plex).test_client()
+    app.get("/m/tmdb-603?async=1&client=Nope")
+    for _ in range(50):
+        if app.get("/now").json["state"] == "error":
+            break
+        _t.sleep(0.02)
+    assert "Nope" in app.get("/now").json["message"]
+
+
+def test_resize_jpeg_is_exact_and_baseline():
+    import io
+    from PIL import Image
+    from plexnfc.server import resize_jpeg
+    src = io.BytesIO()
+    Image.new("RGB", (600, 900), "red").save(src, "JPEG", progressive=True)
+    out = Image.open(io.BytesIO(resize_jpeg(src.getvalue(), 200, 300)))
+    assert out.size == (200, 300) and not out.info.get("progressive")
