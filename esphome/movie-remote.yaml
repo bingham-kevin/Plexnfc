@@ -11,6 +11,10 @@ substitutions:
   friendly_name: Movie Remote
   # Same address as PUBLIC_BASE_URL in plexnfc's .env (no trailing slash)
   plexnfc_url: http://192.168.1.20:8080
+  # The Plex player this reader is for, sent as ?client= on every call, so taps
+  # here play on (and wake) this TV. Write spaces as %20, e.g. Den%20TV.
+  # Leave empty for plexnfc's default player.
+  plexnfc_client: ""
   # Turn the screen off after this long with nothing playing
   screen_timeout: 5min
 
@@ -88,7 +92,7 @@ script:
     mode: single
     then:
       - http_request.get:
-          url: ${plexnfc_url}/now
+          url: ${plexnfc_url}/now?client=${plexnfc_client}
           capture_response: true
           max_response_buffer_size: 2048
           on_response:
@@ -197,7 +201,9 @@ script:
       path: string
     then:
       - http_request.get:
-          url: !lambda 'return std::string("${plexnfc_url}") + path;'
+          url: !lambda |-
+            return std::string("${plexnfc_url}") + path +
+                   (path.find('?') == std::string::npos ? "?" : "&") + "client=${plexnfc_client}";
       - script.execute: refresh
 
 # ---- NFC reader ----------------------------------------------------------------
@@ -229,10 +235,13 @@ pn532_i2c:
             - light.turn_on: backlight
             # async=1: plexnfc answers at once and starts the movie in the
             # background, so the screen can show "Starting..." meanwhile.
+            # client= picks this reader's TV, unless the tag names one itself.
             - http_request.get:
                 url: !lambda |-
                   const std::string &u = id(tag_url);
-                  return u + (u.find('?') == std::string::npos ? "?" : "&") + "async=1";
+                  std::string url = u + (u.find('?') == std::string::npos ? "?" : "&") + "async=1";
+                  if (u.find("client=") == std::string::npos) url += "&client=${plexnfc_client}";
+                  return url;
             - script.execute: refresh
           else:
             - logger.log: "Not a plexnfc tag (its URL doesn't start with ${plexnfc_url})"

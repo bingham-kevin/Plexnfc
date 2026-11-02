@@ -160,6 +160,16 @@ You can add more steps to the same script: dim the lights, close the blinds, tur
       data: { brightness_pct: 10, transition: 5 }
 ```
 
+## Several TVs
+
+Each TV can have its own get-ready and off script. List them in `PLAYERS` (the **TVs** option in the Home Assistant app), for example a Roku TV with its scripts and an iMac with none:
+
+```
+PLAYERS=[{"name": "Den TV", "ha_script": "script.movie_night_den_roku", "ha_off_script": "script.movie_night_den_roku_off"}, {"name": "Kevins-iMac.local"}]
+```
+
+A tap with `?client=Den TV` runs only the Den scripts, and `/off?client=Den TV` turns only the Den TV off. Taps that name no player keep using `HA_SCRIPT` and `HA_OFF_SCRIPT`. See the README for all the fields, and [esphome/README.md](../esphome/README.md#one-reader-per-tv) to give each TV its own Movie Remote.
+
 ## Troubleshooting
 
 - **The TV turns on, but the movie doesn't start**: the Plex app took longer than `PLAYER_WAIT` to start. Increase `PLAYER_WAIT`, or add a longer `delay` at the end of the script. Also check that **Advertise as player** / remote control is turned on in the Plex app.

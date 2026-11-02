@@ -18,6 +18,24 @@ Tap an NFC-tagged movie poster with your phone (or hold it to the Movie Remote) 
 
 You don't need a token for any of this. The app talks to Home Assistant directly. The repository's `docs/home-assistant.md` has example scripts for Apple TV, Shield, LG and other TVs.
 
+## Optional: several TVs
+
+If you have more than one TV, each with its own NFC reader, list them under **TVs**, one entry per TV:
+
+```yaml
+- name: Den TV
+  ha_script: script.movie_night_den_roku
+  ha_off_script: script.movie_night_den_roku_off
+- name: Kevins-iMac.local
+```
+
+- **name**: the player's name as Plex shows it. Readers send it as `?client=`.
+- **ha_script** / **ha_off_script**: that TV's own get-ready and off scripts. Leave them out for a TV that needs none: it then runs no script.
+- **ha_player** (optional): play on that TV through Home Assistant's Plex integration.
+- **player_wait** (optional): defaults to **Player wait**.
+
+A tap that names no player, or a player that isn't listed, uses the settings above, just as before. The **Tag URLs** page lists control tags for each TV, such as `/off?client=Den%20TV`.
+
 ## Making the book and the tags
 
 In the **Movie Book** sidebar panel:
@@ -27,7 +45,7 @@ In the **Movie Book** sidebar panel:
 
 ## Movie Remote
 
-The ESP32 Movie Remote firmware is in the repository's `esphome/` folder. Paste it into the **ESPHome Builder** app. Set `plexnfc_url` to the same address as **Tag base URL**.
+The ESP32 Movie Remote firmware is in the repository's `esphome/` folder. Paste it into the **ESPHome Builder** app. Set `plexnfc_url` to the same address as **Tag base URL**. With a reader for each TV, set `plexnfc_client` on each one to its TV's Plex name (spaces as `%20`, for example `Den%20TV`).
 
 ## Network
 

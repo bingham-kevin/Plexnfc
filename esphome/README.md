@@ -18,7 +18,7 @@ A small box that sits next to the TV. Hold a page of the poster book to it and t
 └──────────────────────┘
 ```
 
-The buttons are: back 30 s, play/pause, forward 30 s, stop, and TV off. TV off needs `HA_OFF_SCRIPT`.
+The buttons are: back 30 s, play/pause, forward 30 s, stop, and TV off. TV off needs `HA_OFF_SCRIPT`, or an off script for this reader's TV (see [One reader per TV](#one-reader-per-tv)).
 
 The box only talks to plexnfc, so it works however you've set up playback: plexnfc playing directly, or through Home Assistant on an Apple TV. Phones keep working alongside it.
 
@@ -62,10 +62,27 @@ pip install esphome
 cd esphome
 cp secrets.yaml.example secrets.yaml      # fill in your Wi-Fi
 # edit plexnfc_url at the top of movie-remote.yaml to match PUBLIC_BASE_URL
+# (and plexnfc_client if you have a reader per TV, see below)
 esphome run movie-remote.yaml             # first time over USB; later updates go over Wi-Fi
 ```
 
 You can also paste the YAML into the ESPHome add-on in Home Assistant. The box then shows up in Home Assistant too, with a backlight control and its logs.
+
+## One reader per TV
+
+With a Movie Remote next to each TV, tell each one which TV it's for. Set `plexnfc_client` at the top of its YAML to that TV's Plex player name, and give each box its own `name`:
+
+```yaml
+substitutions:
+  name: movie-remote-den
+  friendly_name: Den Movie Remote
+  plexnfc_url: http://192.168.1.20:8080
+  plexnfc_client: Den%20TV      # spaces as %20
+```
+
+The box adds `?client=Den%20TV` to every call it makes: the movie on a tag, `/now`, `/toggle`, `/seek`, `/stop` and `/off`. So the same book plays on whichever TV you hold it to, and the screen shows that TV's movie. A tag whose URL already names a player with `client=` keeps its own.
+
+To have each TV woken by its own script, and turned off by its own off script, list the TVs in plexnfc's **TVs** setting (`PLAYERS` in `.env`); see plexnfc's README. A TV that isn't listed uses the single get-ready and off scripts. Leave `plexnfc_client` empty for plexnfc's default player.
 
 ## First-run tuning
 
@@ -83,6 +100,6 @@ Keep the book from lying flat on the reader. With many tags stacked in range, it
 ## How it works
 
 - When it reads a tag, the box calls the tag's own URL with `?async=1`. plexnfc replies at once and starts the movie in the background. The screen shows "Starting…" with the poster, even while Home Assistant is still waking the TV.
-- Every 2 seconds the box asks plexnfc's `/now` what's playing. The answer comes from the Plex server's list of active streams for `PLEX_CLIENT`. In Home Assistant mode, keep `PLEX_CLIENT` set to the Plex name of the Apple TV so the box can find its stream.
+- Every 2 seconds the box asks plexnfc's `/now` what's playing. The answer comes from the Plex server's list of active streams for `plexnfc_client`, or `PLEX_CLIENT` when that's empty. In Home Assistant mode, keep `PLEX_CLIENT` set to the Plex name of the Apple TV so the box can find its stream.
 - Posters come from `/poster/<key>?w=200&h=300`. plexnfc resizes them and re-encodes them as baseline JPEGs, the format the ESP32's decoder can read.
 - The buttons call `/seek?by=±30`, `/toggle`, `/stop` and `/off`.

@@ -6,7 +6,7 @@ which tells Plex to start that movie on the configured player.
 Routes
   /m/<key>             play a movie   (?client=NAME to pick a player, ?resume=0 to start over)
   /pause /play /stop   control tags for the back cover of the book
-  /off                 run the Home Assistant HA_OFF_SCRIPT (e.g. TV off)
+  /off                 run the Home Assistant HA_OFF_SCRIPT (e.g. TV off; ?client=NAME for that TV's)
   /tags                list every movie with the URL to write onto its tag (/tags.csv to download)
   /book                the printable book (?layout=grid&collection=NAME&title=...)
   /plex/login          Sign in with Plex (saves the token, so nobody has to find it by hand)
@@ -26,6 +26,7 @@ import logging
 import threading
 import time
 from html import escape
+from urllib.parse import quote
 
 import requests
 from flask import Flask, Response, abort, jsonify, request
@@ -75,8 +76,14 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         return None if value is None else value.lower() in ("1", "true", "yes")
 
     # Playback started with ?async=1. Shown by /now until Plex reports the movie playing.
-    pending: dict = {}
+    # Each TV in PLAYERS has its own (its reader has its own screen); all others share one.
+    pending_by_player: dict[str, dict] = {}
     pending_lock = threading.Lock()
+
+    def pending_for(client) -> dict:
+        name = config.profile(client).client.casefold()
+        listed = {p.client.casefold() for p in config.players}
+        return pending_by_player.setdefault(name if name in listed else "", {})
 
     def play_in_background(key, client, resume):
         try:
@@ -86,6 +93,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             logging.getLogger(__name__).warning("Background play of %s failed: %s", key, e)
             update = {"done": time.monotonic(), "error": str(e)}
         with pending_lock:
+            pending = pending_for(client)
             if pending.get("key") == key:
                 pending.update(update)
 
@@ -97,6 +105,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             except PlexNFCError as e:
                 return jsonify(state="error", message=str(e)), 404
             with pending_lock:
+                pending = pending_for(request.args.get("client"))
                 pending.clear()
                 pending.update(key=key, title=movie.title, year=movie.year, started=time.monotonic())
             threading.Thread(target=play_in_background, daemon=True,
@@ -124,7 +133,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     @app.get("/off")
     def off():
         try:
-            plex.tv_off()
+            plex.tv_off(request.args.get("client"))
         except PlexNFCError as e:
             return page("Error", f'<h1 class="err">{escape(str(e))}</h1>', 404)
         return page("Off", "<h1>Good night</h1>")
@@ -137,6 +146,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         except Exception as e:
             return jsonify(state="error", message=f"Can't reach Plex: {e}")
         with pending_lock:
+            pending = pending_for(client)
             if pending:
                 done = pending.get("done")
                 if status.get("key") == pending["key"] or (done and time.monotonic() - done > 30):
@@ -146,7 +156,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                 else:
                     return jsonify(state="starting", title=pending["title"], year=pending["year"],
                                    key=pending["key"], poster=f"/poster/{pending['key']}",
-                                   position=0, duration=0, player=client or config.client)
+                                   position=0, duration=0, player=config.profile(client).client or client)
         return jsonify(status)
 
     def json_action(fn):
@@ -197,6 +207,19 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             f'<td><button onclick="writeTag(\'{config.public_base_url}/{a}\')" class="nfc">Write tag</button></td></tr>'
             for a in ("pause", "play", "stop") + (("off",) if config.ha_off_script else ())
         )
+        from .book import player_control_tags
+
+        controls += "".join(
+            f"<tr><td><i>{escape(label[1:-1])} (control tag)</i></td><td><code>{escape(url)}</code></td>"
+            f'<td><button onclick="writeTag(\'{escape(url)}\')" class="nfc">Write tag</button></td></tr>'
+            for label, url in player_control_tags(plex, config.public_base_url)
+        )
+        readers = ""
+        if config.players:
+            readers = ("<p>Movie tags play on the default player. A Movie Remote reader adds "
+                       "<code>?client=NAME</code> itself, e.g. "
+                       + ", ".join(f"<code>/m/KEY?client={escape(quote(p.client))}</code>" for p in config.players)
+                       + "</p>")
         # Web NFC only works in Chrome on Android, and only over HTTPS.
         script = """<script>
           if (!('NDEFReader' in window)) document.querySelectorAll('.nfc').forEach(b => b.remove());
@@ -204,7 +227,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             try { await new NDEFReader().write({records: [{recordType: 'url', data: url}]}); alert('Written: ' + url); }
             catch (e) { alert('Write failed: ' + e); }
           }</script>"""
-        return page("NFC tags", f"<h1>NFC tag URLs</h1><table>{''.join(rows)}{controls}</table>{script}")
+        return page("NFC tags", f"<h1>NFC tag URLs</h1>{readers}<table>{''.join(rows)}{controls}</table>{script}")
 
     @app.get("/book")
     def book_page():
@@ -309,11 +332,14 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                       '<button>Sign out</button></p></form>')
         else:
             signin = ""  # token set by hand in the settings
+        players = ""
+        if config.players:
+            players = " (TVs with their own settings: " + ", ".join(f"<b>{escape(p.client)}</b>" for p in config.players) + ")"
         return page("plexnfc", f"""
           <h1>plexnfc</h1>
           {signin}
           <p>Tags point at <code>{escape(config.public_base_url)}</code>, playing on
-             <b>{escape(config.ha_player or config.client or "(no player set)")}</b></p>{warn}
+             <b>{escape(config.ha_player or config.client or "(no player set)")}</b>{players}</p>{warn}
           <h1>Make the book</h1>
           <form action="{escape(config.public_base_url)}/book" target="_blank"
                 style="display:inline-grid;gap:8px;text-align:left">

@@ -29,5 +29,11 @@ configuration:
   player_wait:
     name: Player wait (seconds)
     description: How long to wait for the Plex app to start after the get-ready script
+  players:
+    name: TVs
+    description: >-
+      Optional, one entry per TV with its own NFC reader. name is the Plex player's name (what
+      ?client= names); ha_script, ha_off_script, ha_player and player_wait are that TV's own
+      settings. Requests that name no player, or a player not listed here, use the settings above.
 network:
   8080/tcp: Tag URLs (phones and the Movie Remote connect here)

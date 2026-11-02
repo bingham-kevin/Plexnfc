@@ -134,16 +134,17 @@ class Plex:
         hint = f" Players found: {', '.join(available)}." if available else ""
         raise PlexNFCError(f"Couldn't find a Plex player named '{name}'. Is it switched on?{hint}")
 
-    def prepare_tv(self) -> str | None:
-        """Run the Home Assistant "get the TV ready" script, if configured.
+    def prepare_tv(self, client_name: str | None = None) -> str | None:
+        """Run the Home Assistant "get the TV ready" script for this player, if any.
 
         Returns an error message instead of raising: the TV may already be on,
         so a Home Assistant problem shouldn't stop the movie from trying.
         """
-        if not (self.ha and self.config.ha_script):
+        script = self.config.profile(client_name).ha_script
+        if not (self.ha and script):
             return None
         try:
-            self.ha.run_script(self.config.ha_script)
+            self.ha.run_script(script)
         except HomeAssistantError as e:
             log.warning("%s", e)
             return str(e)
@@ -153,17 +154,15 @@ class Plex:
         """The Home Assistant media_player to play on, if HA should start playback."""
         if not self.ha:
             return None
-        if client_name:
-            return client_name if client_name.startswith("media_player.") else None
-        return self.config.ha_player or None
+        return self.config.profile(client_name).ha_player or None
 
-    def _play_via_ha(self, entity: str, movie, resume: bool, ha_error: str | None):
+    def _play_via_ha(self, entity: str, movie, resume: bool, ha_error: str | None, wait: float):
         """Ask Home Assistant's Plex integration to start the movie.
 
         The Plex entity only accepts playback once the Plex app is running, so
-        keep retrying for up to PLAYER_WAIT seconds after the TV was switched on.
+        keep retrying for up to ``wait`` (PLAYER_WAIT) seconds after the TV was switched on.
         """
-        deadline = time.monotonic() + self.config.player_wait
+        deadline = time.monotonic() + wait
         while True:
             try:
                 self.ha.play_plex(entity, movie.ratingKey, resume)
@@ -176,14 +175,15 @@ class Plex:
 
     def play(self, key: str, client_name: str | None = None, resume: bool | None = None):
         movie = self.find_movie(key)
-        ha_error = self.prepare_tv()
+        profile = self.config.profile(client_name)
+        ha_error = self.prepare_tv(client_name)
         resume = self.config.resume if resume is None else resume
         if entity := self._ha_entity(client_name):
             log.info("Playing %s (%s) on %s via Home Assistant", movie.title, key, entity)
-            return self._play_via_ha(entity, movie, resume, ha_error)
-        wait = self.config.player_wait if self.config.ha_script else 0
+            return self._play_via_ha(entity, movie, resume, ha_error, profile.player_wait)
+        wait = profile.player_wait if profile.ha_script else 0
         try:
-            client = self.get_client(client_name, wait=wait)
+            client = self.get_client(profile.client, wait=wait)
         except PlexNFCError as e:
             raise PlexNFCError(f"{e} (Home Assistant: {ha_error})" if ha_error else str(e)) from None
         offset = movie.viewOffset if resume and getattr(movie, "viewOffset", 0) else 0
@@ -215,11 +215,13 @@ class Plex:
             time.sleep(1)
         log.debug("%s didn't report %s playing; not rewinding", client.title, movie.title)
 
-    def tv_off(self) -> None:
-        if not (self.ha and self.config.ha_off_script):
-            raise PlexNFCError("No HA_OFF_SCRIPT configured")
+    def tv_off(self, client_name: str | None = None) -> None:
+        script = self.config.profile(client_name).ha_off_script
+        if not (self.ha and script):
+            raise PlexNFCError(f"No off script configured for {client_name}" if client_name
+                               else "No HA_OFF_SCRIPT configured")
         try:
-            self.ha.run_script(self.config.ha_off_script)
+            self.ha.run_script(script)
         except HomeAssistantError as e:
             raise PlexNFCError(str(e)) from None
 
@@ -231,7 +233,7 @@ class Plex:
             except HomeAssistantError as e:
                 raise PlexNFCError(str(e)) from None
             return SimpleNamespace(title=entity)
-        client = self.get_client(client_name)
+        client = self.get_client(self.config.profile(client_name).client)
         getattr(client, action)()
         return client
 
@@ -239,7 +241,7 @@ class Plex:
 
     def current_session(self, client_name: str | None = None):
         """The movie currently playing on our player, from the Plex server's sessions."""
-        name = client_name if client_name and not client_name.startswith("media_player.") else self.config.client
+        name = self.config.profile(client_name).client
         for session in self.server.sessions():
             if getattr(session, "type", None) not in ("movie", "episode"):
                 continue
@@ -304,7 +306,7 @@ class Plex:
             except HomeAssistantError as e:
                 raise PlexNFCError(str(e)) from None
             return SimpleNamespace(title=entity)
-        client = self.get_client(client_name)
+        client = self.get_client(self.config.profile(client_name).client)
         client.seekTo(target * 1000)
         return client
 

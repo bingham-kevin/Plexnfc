@@ -1,5 +1,6 @@
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -29,8 +30,6 @@ def _load_ha_app_options(path: str | None = None) -> None:
     path = path or HA_APP_OPTIONS
     if not os.path.exists(path):
         return
-    import json
-
     with open(path) as f:
         options = json.load(f)
     for key, value in options.items():
@@ -38,10 +37,52 @@ def _load_ha_app_options(path: str | None = None) -> None:
             continue
         if isinstance(value, bool):
             value = "true" if value else "false"
+        elif isinstance(value, (list, dict)):
+            if not value:
+                continue
+            value = json.dumps(value)  # e.g. players, read back by _parse_players
         os.environ.setdefault(key.upper(), str(value))
     if os.environ.get("SUPERVISOR_TOKEN"):
         os.environ.setdefault("HA_URL", "http://supervisor/core")
         os.environ.setdefault("HA_TOKEN", os.environ["SUPERVISOR_TOKEN"])
+
+
+@dataclass
+class PlayerProfile:
+    """Settings for one TV: which scripts wake it and turn it off.
+
+    ``client`` is the Plex player's name (what ``?client=`` names).
+    """
+    client: str
+    ha_script: str = ""
+    ha_off_script: str = ""
+    ha_player: str = ""
+    player_wait: int = 45
+
+
+def _parse_players(raw: str, default_wait: int) -> list[PlayerProfile]:
+    """PLAYERS: a JSON list like [{"name": "Den TV", "ha_script": "script.den_on"}]."""
+    if not raw.strip():
+        return []
+    try:
+        items = json.loads(raw)
+    except ValueError as e:
+        raise SystemExit(f"PLAYERS isn't valid JSON: {e}") from None
+    if not isinstance(items, list):
+        raise SystemExit("PLAYERS must be a list of players")
+    players = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("name"):
+            raise SystemExit(f"Each entry in PLAYERS needs a name: {item!r}")
+        wait = item.get("player_wait")
+        players.append(PlayerProfile(
+            client=str(item["name"]),
+            ha_script=item.get("ha_script") or "",
+            ha_off_script=item.get("ha_off_script") or "",
+            ha_player=item.get("ha_player") or "",
+            player_wait=default_wait if wait in (None, "") else int(wait),
+        ))
+    return players
 
 
 @dataclass
@@ -59,6 +100,29 @@ class Config:
     ha_player: str = ""
     player_wait: int = 45
     auth_file: str = ""  # where "Sign in with Plex" keeps its token
+    players: list[PlayerProfile] = field(default_factory=list)  # one per TV, see profile()
+
+    def profile(self, client_name: str | None = None) -> PlayerProfile:
+        """The settings for the player a request names with ``?client=``.
+
+        A player listed in PLAYERS (by its Plex name or its ``ha_player``) uses
+        only its own scripts. Anything else uses the single HA_SCRIPT /
+        HA_OFF_SCRIPT / HA_PLAYER settings, as before there were profiles.
+        """
+        if client_name:
+            wanted = client_name.casefold()
+            for p in self.players:
+                if wanted in (p.client.casefold(), p.ha_player.casefold()):
+                    if p.client.startswith("media_player."):
+                        return PlayerProfile(self.client, p.ha_script, p.ha_off_script,
+                                             p.ha_player or p.client, p.player_wait)
+                    return p
+            # A player named in the request: the default scripts, but HA_PLAYER
+            # only when no player is named (as before).
+            ha_player = client_name if client_name.startswith("media_player.") else ""
+            client = self.client if ha_player else client_name
+            return PlayerProfile(client, self.ha_script, self.ha_off_script, ha_player, self.player_wait)
+        return PlayerProfile(self.client, self.ha_script, self.ha_off_script, self.ha_player, self.player_wait)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -71,6 +135,7 @@ class Config:
         # A token set by hand wins; otherwise use the one from "Sign in with Plex", if any.
         from .plexauth import saved_token
 
+        player_wait = int(os.environ.get("PLAYER_WAIT", "45"))
         return cls(
             plex_url=os.environ["PLEX_URL"].rstrip("/"),
             plex_token=os.environ.get("PLEX_TOKEN") or saved_token(auth_file),
@@ -83,6 +148,7 @@ class Config:
             ha_script=os.environ.get("HA_SCRIPT", ""),
             ha_off_script=os.environ.get("HA_OFF_SCRIPT", ""),
             ha_player=os.environ.get("HA_PLAYER", ""),
-            player_wait=int(os.environ.get("PLAYER_WAIT", "45")),
+            player_wait=player_wait,
             auth_file=auth_file,
+            players=_parse_players(os.environ.get("PLAYERS", ""), player_wait),
         )

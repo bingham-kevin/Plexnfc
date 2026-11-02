@@ -86,6 +86,21 @@ Put the stickers on the **back** of the page, or between pages in a page protect
 
 plexnfc can run a Home Assistant script before every movie. The script can turn the TV on, switch to the right HDMI input and open Plex, so one tap goes from a dark TV to the movie playing. Home Assistant can also start the movie itself through its Plex integration, which is the recommended setup for Apple TV. See [docs/home-assistant.md](docs/home-assistant.md) for setup and example scripts for Apple TV, Shield, LG, Samsung and Google TV.
 
+## Optional: several TVs, each with its own reader
+
+A request can name its player with `?client=NAME`. To give each TV its own get-ready and off scripts, list the TVs in `PLAYERS` (the **TVs** option in the Home Assistant app), as JSON on one line:
+
+```
+PLAYERS=[{"name": "Den TV", "ha_script": "script.movie_night_den_roku", "ha_off_script": "script.movie_night_den_roku_off"}, {"name": "Kevins-iMac.local"}]
+```
+
+- `name` is the Plex player's name, the one `?client=` names (matched without regard to case).
+- `ha_script` and `ha_off_script` are that TV's own scripts. A TV listed without them runs no script at all.
+- `ha_player` (optional) plays on that TV through Home Assistant's Plex integration, like `HA_PLAYER`. A TV can also be named by this entity: `?client=media_player.xyz`.
+- `player_wait` (optional) defaults to `PLAYER_WAIT`.
+
+Requests that name no player, or a player that isn't listed, use `PLEX_CLIENT`, `HA_SCRIPT`, `HA_OFF_SCRIPT` and `HA_PLAYER` exactly as before. `/tags` and `tags.csv` add control tags for each listed TV (for example `/off?client=Den%20TV`). Movie tags stay the same for every TV: a [Movie Remote](esphome/README.md#one-reader-per-tv) next to each TV adds its own `?client=`.
+
 ## Optional: a "Movie Remote" with a screen
 
 [esphome/](esphome/) has firmware for an ESP32-S3 box with an NFC reader and a 3.5" touchscreen. Hold a page to the box and the movie starts. The screen then shows the poster, the progress, and play/pause, ±30 s, stop and TV-off buttons. It costs about $40 in parts. The parts list and wiring are in [esphome/README.md](esphome/README.md).
@@ -100,6 +115,7 @@ plexnfc can run a Home Assistant script before every movie. The script can turn 
 | `/pause`, `/play`, `/stop` | Control whatever is playing |
 | `/now`, `/toggle`, `/seek?by=30` | Used by the Movie Remote: what's playing (JSON), play/pause, skip |
 | `/off` | Run your Home Assistant "off" script (needs `HA_OFF_SCRIPT`) |
+| `/off?client=Den TV` | Run that TV's own off script (see `PLAYERS`). `?client=` works on every URL above. |
 
 Tags store the movie's TMDB/IMDb ID rather than Plex's internal ID, so they keep working if you rebuild your library or move servers.
 

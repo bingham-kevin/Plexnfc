@@ -20,6 +20,7 @@ import csv
 import io
 import os
 from html import escape
+from urllib.parse import quote
 
 import requests
 
@@ -83,10 +84,20 @@ def control_actions(plex: Plex) -> list[tuple[str, str]]:
     return actions
 
 
+def player_control_tags(plex: Plex, base_url: str) -> list[tuple[str, str]]:
+    """(label, url) of the control tags for each TV in PLAYERS, e.g. "[Den TV off]"."""
+    tags = []
+    for p in plex.config.players:
+        actions = ["pause", "play", "stop"] + (["off"] if p.ha_off_script else [])
+        tags += [(f"[{p.client} {a}]", f"{base_url}/{a}?client={quote(p.client)}") for a in actions]
+    return tags
+
+
 def tag_rows(plex: Plex, base_url: str, movies) -> list[tuple]:
     """(title, year, url) for every tag: one per movie, then the control tags."""
     rows = [(m.title, m.year or "", f"{base_url}/m/{movie_key(m)}") for m in movies]
     rows += [(f"[{action}]", "", f"{base_url}/{action}") for action, _ in control_actions(plex)]
+    rows += [(label, "", url) for label, url in player_control_tags(plex, base_url)]
     return rows
 
 

@@ -429,3 +429,138 @@ def test_resume_does_not_rewind(plex):
     plex._client.playMedia.side_effect = lambda *a, **k: add_session(plex, offset=658_000)
     create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=1")
     plex._client.seekTo.assert_not_called()
+
+
+# ---- one profile per TV (PLAYERS) ---------------------------------------------
+
+def tv_plex(plex, **overrides):
+    """Default scripts plus two TVs: the Den Roku with its own scripts, the iMac with none."""
+    from plexnfc.config import PlayerProfile
+    plex = ha_plex(plex, players=[
+        PlayerProfile("Den TV", "script.movie_night_den_roku", "script.movie_night_den_roku_off", player_wait=0),
+        PlayerProfile("Kevins-iMac.local", player_wait=0),
+    ], **overrides)
+    clients = {n: mock.Mock(title=n) for n in ("Living Room", "Den TV", "Kevins-iMac.local")}
+    clients["Living Room"] = plex._client
+    plex.server.client.side_effect = lambda n: clients[n] if n in clients else (_ for _ in ()).throw(NotFound())
+    plex._clients = clients
+    return plex
+
+
+def test_each_tv_runs_only_its_own_get_ready_script(plex):
+    plex = tv_plex(plex)
+    app = create_app(plex.config, plex).test_client()
+    assert app.get("/m/tmdb-603?client=Den%20TV").status_code == 200
+    plex.ha.run_script.assert_called_once_with("script.movie_night_den_roku")
+    plex._clients["Den TV"].playMedia.assert_called_once()
+    plex.ha.run_script.reset_mock()
+    assert app.get("/m/tmdb-603?client=Kevins-iMac.local").status_code == 200
+    plex.ha.run_script.assert_not_called()
+    plex._clients["Kevins-iMac.local"].playMedia.assert_called_once()
+    plex._client.playMedia.assert_not_called()
+
+
+def test_default_player_keeps_global_scripts(plex):
+    plex = tv_plex(plex)
+    app = create_app(plex.config, plex).test_client()
+    app.get("/m/tmdb-603")
+    plex.ha.run_script.assert_called_once_with("script.movie_night")
+    plex._client.playMedia.assert_called_once()
+    app.get("/off")
+    plex.ha.run_script.assert_called_with("script.tv_off")
+    # A player that isn't in PLAYERS still gets the default scripts, as before.
+    plex.ha.run_script.reset_mock()
+    app.get("/m/tmdb-603?client=Bedroom")
+    plex.ha.run_script.assert_called_once_with("script.movie_night")
+
+
+def test_off_runs_that_tvs_off_script(plex):
+    plex = tv_plex(plex)
+    app = create_app(plex.config, plex).test_client()
+    assert app.get("/off?client=den%20tv").status_code == 200  # names match without case
+    plex.ha.run_script.assert_called_once_with("script.movie_night_den_roku_off")
+    plex.ha.run_script.reset_mock()
+    assert app.get("/off?client=Kevins-iMac.local").status_code == 404
+    plex.ha.run_script.assert_not_called()
+
+
+def test_controls_toggle_and_seek_use_that_tv(plex):
+    plex = tv_plex(plex)
+    app = create_app(plex.config, plex).test_client()
+    den = plex._clients["Den TV"]
+    app.get("/pause?client=Den%20TV")
+    den.pause.assert_called_once()
+    add_session(plex, player="Den TV")
+    assert app.get("/now?client=Den%20TV").json["player"] == "Den TV"
+    assert app.get("/now").json["state"] == "idle"
+    app.get("/toggle?client=Den%20TV")
+    assert den.pause.call_count == 2
+    assert app.get("/seek?by=30&client=Den%20TV").json["player"] == "Den TV"
+    den.seekTo.assert_called_once_with(90_000)
+    plex._client.pause.assert_not_called()
+
+
+def test_profile_with_ha_player(plex):
+    from plexnfc.config import PlayerProfile
+    plex = ha_plex(plex, players=[PlayerProfile("Kevins-iMac.local", ha_player="media_player.imac", player_wait=0)])
+    app = create_app(plex.config, plex).test_client()
+    assert app.get("/m/tmdb-603?client=Kevins-iMac.local").status_code == 200
+    plex.ha.run_script.assert_not_called()
+    assert plex.ha.play_plex.call_args.args[0] == "media_player.imac"
+    # Named by its entity, it's still the same TV, so /now looks for its Plex name.
+    add_session(plex, player="Kevins-iMac.local")
+    assert app.get("/now?client=media_player.imac").json["player"] == "Kevins-iMac.local"
+    app.get("/pause?client=media_player.imac")
+    plex.ha.call_service.assert_called_with("media_player", "media_pause", {"entity_id": "media_player.imac"})
+
+
+def test_tags_show_per_tv_control_tags(plex):
+    plex = tv_plex(plex)
+    app = create_app(plex.config, plex).test_client()
+    r = app.get("/tags")
+    assert b"http://nfc.local:8080/off?client=Den%20TV" in r.data
+    assert b"/off?client=Kevins-iMac.local" not in r.data
+    csv = app.get("/tags.csv").data
+    assert b"[Den TV off],,http://nfc.local:8080/off?client=Den%20TV" in csv
+    assert b"[Kevins-iMac.local pause],,http://nfc.local:8080/pause?client=Kevins-iMac.local" in csv
+
+
+def test_players_from_ha_app_options_and_env(tmp_path, monkeypatch):
+    import json
+    from plexnfc import config as cfg
+    opts = tmp_path / "options.json"
+    opts.write_text(json.dumps({"plex_url": "http://plex:32400", "player_wait": 30, "players": [
+        {"name": "Den TV", "ha_script": "script.movie_night_den_roku",
+         "ha_off_script": "script.movie_night_den_roku_off"},
+        {"name": "Kevins-iMac.local", "player_wait": 10}]}))
+    for k in ("PLEX_URL", "PLAYER_WAIT", "PLAYERS"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(cfg, "HA_APP_OPTIONS", str(opts))
+    monkeypatch.chdir(tmp_path)
+    c = cfg.Config.from_env()
+    assert [(p.client, p.ha_script, p.ha_off_script, p.ha_player, p.player_wait) for p in c.players] == [
+        ("Den TV", "script.movie_night_den_roku", "script.movie_night_den_roku_off", "", 30),
+        ("Kevins-iMac.local", "", "", "", 10)]
+
+    monkeypatch.setattr(cfg, "HA_APP_OPTIONS", str(tmp_path / "none.json"))
+    monkeypatch.setenv("PLAYERS", '[{"name": "Den TV", "ha_script": "script.den"}]')
+    assert cfg.Config.from_env().players[0].ha_script == "script.den"
+    monkeypatch.setenv("PLAYERS", "")
+    assert cfg.Config.from_env().players == []
+    monkeypatch.setenv("PLAYERS", "Den TV")
+    with pytest.raises(SystemExit):
+        cfg.Config.from_env()
+
+
+def test_async_starting_shows_only_on_that_tvs_reader(plex):
+    import threading
+    plex = tv_plex(plex)
+    gate = threading.Event()
+    plex._clients["Den TV"].playMedia.side_effect = lambda *a, **k: gate.wait(5)
+    plex.server.sessions.return_value = []
+    app = create_app(plex.config, plex).test_client()
+    assert app.get("/m/tmdb-603?async=1&client=Den%20TV").status_code == 202
+    assert app.get("/now?client=Den%20TV").json["state"] == "starting"
+    assert app.get("/now?client=Kevins-iMac.local").json["state"] == "idle"
+    assert app.get("/now").json["state"] == "idle"
+    gate.set()
