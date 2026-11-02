@@ -23,6 +23,11 @@ class Config:
     client: str
     public_base_url: str
     resume: bool
+    ha_url: str = ""
+    ha_token: str = ""
+    ha_script: str = ""
+    ha_off_script: str = ""
+    player_wait: int = 45
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -37,4 +42,9 @@ class Config:
             client=os.environ.get("PLEX_CLIENT", ""),
             public_base_url=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8080").rstrip("/"),
             resume=os.environ.get("RESUME", "true").lower() in ("1", "true", "yes", "on"),
+            ha_url=os.environ.get("HA_URL", "").rstrip("/"),
+            ha_token=os.environ.get("HA_TOKEN", ""),
+            ha_script=os.environ.get("HA_SCRIPT", ""),
+            ha_off_script=os.environ.get("HA_OFF_SCRIPT", ""),
+            player_wait=int(os.environ.get("PLAYER_WAIT", "45")),
         )

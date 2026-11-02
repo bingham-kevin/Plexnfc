@@ -6,6 +6,7 @@ which tells Plex to start that movie on the configured player.
 Routes
   /m/<key>             play a movie   (?client=NAME to pick a player, ?resume=0 to start over)
   /pause /play /stop   control tags for the back cover of the book
+  /off                 run the Home Assistant HA_OFF_SCRIPT (e.g. TV off)
   /tags                list every movie with the URL to write onto its tag
   /poster/<key>        poster image (proxied so your Plex token stays private)
 """
@@ -66,6 +67,14 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         label = {"pause": "Paused", "play": "Resumed", "stop": "Stopped"}[action]
         return page(label, f"<h1>{label}</h1><p>{escape(client.title)}</p>")
 
+    @app.get("/off")
+    def off():
+        try:
+            plex.tv_off()
+        except PlexNFCError as e:
+            return page("Error", f'<h1 class="err">{escape(str(e))}</h1>', 404)
+        return page("Off", "<h1>Good night</h1>")
+
     @app.get("/poster/<key>")
     def poster(key):
         try:
@@ -89,7 +98,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         controls = "".join(
             f"<tr><td><i>{a.title()} (control tag)</i></td><td><code>{config.public_base_url}/{a}</code></td>"
             f'<td><button onclick="writeTag(\'{config.public_base_url}/{a}\')" class="nfc">Write tag</button></td></tr>'
-            for a in ("pause", "play", "stop")
+            for a in ("pause", "play", "stop") + (("off",) if config.ha_off_script else ())
         )
         # Web NFC only works in Chrome on Android, and only over HTTPS.
         script = """<script>

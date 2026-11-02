@@ -80,3 +80,65 @@ def test_tags_page(plex):
 def test_bad_key_rejected():
     with pytest.raises(PlexNFCError):
         Plex(CONFIG, server=mock.Mock()).find_movie("../etc")
+
+
+def ha_plex(plex, **overrides):
+    from dataclasses import replace
+    settings = dict(ha_url="http://ha", ha_token="t", ha_script="script.movie_night",
+                    ha_off_script="script.tv_off", player_wait=0)
+    plex.config = replace(CONFIG, **{**settings, **overrides})
+    plex.ha = mock.Mock()
+    return plex
+
+
+def test_home_assistant_script_runs_before_play(plex):
+    plex = ha_plex(plex)
+    order = []
+    plex.ha.run_script.side_effect = lambda s: order.append(s)
+    plex._client.playMedia.side_effect = lambda *a, **k: order.append("play")
+    assert create_app(plex.config, plex).test_client().get("/m/tmdb-603").status_code == 200
+    assert order == ["script.movie_night", "play"]
+
+
+def test_waits_for_player_to_appear(plex, monkeypatch):
+    plex = ha_plex(plex, player_wait=30)
+    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
+    calls = iter([NotFound(), NotFound(), plex._client])
+
+    def client(name):
+        c = next(calls)
+        if isinstance(c, Exception):
+            raise c
+        return c
+    plex.server.client.side_effect = client
+    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    plex._client.playMedia.assert_called_once()
+
+
+def test_home_assistant_failure_still_tries_to_play(plex):
+    from plexnfc.homeassistant import HomeAssistantError
+    plex = ha_plex(plex)
+    plex.ha.run_script.side_effect = HomeAssistantError("HA down")
+    assert create_app(plex.config, plex).test_client().get("/m/tmdb-603").status_code == 200
+    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603?client=Nope")
+    assert b"HA down" in r.data
+
+
+def test_off_tag(plex):
+    plex = ha_plex(plex)
+    assert create_app(plex.config, plex).test_client().get("/off").status_code == 200
+    plex.ha.run_script.assert_called_once_with("script.tv_off")
+
+
+def test_off_without_config(plex):
+    assert create_app(CONFIG, plex).test_client().get("/off").status_code == 404
+
+
+def test_ha_client_calls_script_service(monkeypatch):
+    from plexnfc.homeassistant import HomeAssistant
+    post = mock.Mock(return_value=mock.Mock(ok=True, status_code=200))
+    monkeypatch.setattr("plexnfc.homeassistant.requests.post", post)
+    HomeAssistant("http://ha:8123/", "tok").run_script("script.movie_night")
+    url = post.call_args.args[0]
+    assert url == "http://ha:8123/api/services/script/movie_night"
+    assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer tok"

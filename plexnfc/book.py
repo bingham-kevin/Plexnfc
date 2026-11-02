@@ -78,6 +78,9 @@ def data_uri(url: str) -> str:
 
 def build(plex: Plex, base_url: str, layout: str, title: str, collection: str | None,
           qr: bool, page_size: str, out_dir: str) -> tuple[str, int]:
+    actions = [("pause", "Pause"), ("play", "Resume"), ("stop", "Stop")]
+    if plex.config.ha_off_script:
+        actions.append(("off", "TV off"))
     spec = LAYOUTS[layout]
     per_sheet = spec["cols"] * spec["rows"]
     movies = list(plex.movies(collection))
@@ -99,7 +102,7 @@ def build(plex: Plex, base_url: str, layout: str, title: str, collection: str | 
     sheets = ["".join(cards[i:i + per_sheet]) for i in range(0, len(cards), per_sheet)]
     controls = "".join(
         f'<div><div class="tap">NFC</div>{label}<small>{base_url}/{action}</small></div>'
-        for action, label in (("pause", "Pause"), ("play", "Resume"), ("stop", "Stop"))
+        for action, label in actions
     )
     html = (
         f"<!doctype html><html><head><meta charset='utf-8'><title>{escape(title)}</title>"
@@ -117,7 +120,7 @@ def build(plex: Plex, base_url: str, layout: str, title: str, collection: str | 
         w = csv.writer(f)
         w.writerow(["title", "year", "url"])
         w.writerows(rows)
-        for action in ("pause", "play", "stop"):
+        for action, _ in actions:
             w.writerow([f"[{action}]", "", f"{base_url}/{action}"])
     return book_path, len(movies)
 

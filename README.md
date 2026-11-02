@@ -67,6 +67,10 @@ If you serve plexnfc over HTTPS, Chrome on Android gets a **Write tag** button o
 
 Put the stickers on the **back** of the page, or between pages in a page protector, so they don't show. One sheet of paper between the phone and the tag is fine. Don't stack tags directly on top of each other on facing pages; offset them, or give every other page a blank backing.
 
+## Optional: Home Assistant
+
+plexnfc can run a Home Assistant script before every movie. The script can turn the TV on, switch to the right HDMI input and open Plex, so one tap goes from a dark TV to the movie playing. See [docs/home-assistant.md](docs/home-assistant.md) for setup and example scripts for Apple TV, Shield, LG, Samsung and Google TV.
+
 ## Tag URLs
 
 | URL | What it does |
@@ -75,6 +79,7 @@ Put the stickers on the **back** of the page, or between pages in a page protect
 | `/m/tmdb-603?resume=0` | Start from the beginning |
 | `/m/tmdb-603?client=Bedroom TV` | Play on a different player |
 | `/pause`, `/play`, `/stop` | Control whatever is playing |
+| `/off` | Run your Home Assistant "off" script (needs `HA_OFF_SCRIPT`) |
 
 Tags store the movie's TMDB/IMDb ID rather than Plex's internal ID, so they keep working if you rebuild your library or move servers.
 
