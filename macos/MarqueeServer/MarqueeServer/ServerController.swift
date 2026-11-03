@@ -19,6 +19,8 @@ final class ServerController: ObservableObject {
     @Published private(set) var log: [String] = []
     /// The Plex server in use, as the server reports it, e.g. "Plex (https://192-168-0-142…plex.direct:32400)"
     @Published private(set) var plexServer: String?
+    /// The Marquee players paired with the server, for choosing where taps play; nil until it's asked
+    @Published private(set) var marqueePlayers: [String]?
 
     @Published var plexURL: String { didSet { save(plexURL, "plexURL") } }  // blank: from the Plex sign-in
     @Published var library: String { didSet { save(library, "library") } }
@@ -85,6 +87,20 @@ final class ServerController: ObservableObject {
         } else {
             plexServer = answer.error
         }
+    }
+
+    /// Ask the running server which Marquee players are paired with it.
+    func refreshMarqueePlayers() async {
+        struct Device: Decodable { let name: String; let kind: String }
+        struct Overview: Decodable { let devices: [Device] }
+        guard state == .running,
+              let (data, _) = try? await URLSession.shared.data(from: panelURL.appendingPathComponent("panel/api/overview")),
+              let overview = try? JSONDecoder().decode(Overview.self, from: data) else {
+            marqueePlayers = nil
+            return
+        }
+        marqueePlayers = overview.devices.filter { $0.kind == "tv" }.map(\.name)
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
     // MARK: - Running the server

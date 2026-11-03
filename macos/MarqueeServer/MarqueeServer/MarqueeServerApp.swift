@@ -90,7 +90,21 @@ struct SettingsView: View {
                         .textSelection(.enabled)
                 }
                 TextField("Movie library", text: $server.library)
-                TextField("Marquee player", text: $server.appPlayer, prompt: Text("e.g. Living Room"))
+                Picker("Marquee player", selection: $server.appPlayer) {
+                    Text("None").tag("")
+                    ForEach(playerChoices, id: \.self) { name in
+                        Text(server.marqueePlayers?.contains(name) == false ? "\(name) (not paired)" : name).tag(name)
+                    }
+                }
+                if server.marqueePlayers?.isEmpty == true {
+                    Text("Pair Marquee on an Apple TV, iPhone or iPad in the control panel to choose it here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if server.marqueePlayers == nil {
+                    Text("Start the server to list the paired Marquee players.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } footer: {
                 Text("Sign in to Plex, pair Apple TVs and phones, and make the book in the control panel. "
                      + "Leave Plex server blank to use the server on your Plex account. "
@@ -115,7 +129,22 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 460)
-        .task(id: server.state) { await server.refreshPlexServer() }
+        .task(id: server.state) {
+            // The server takes a moment to answer after it starts
+            for _ in 0..<15 where server.state == .running {
+                await server.refreshMarqueePlayers()
+                if server.marqueePlayers != nil { break }
+                try? await Task.sleep(for: .seconds(1))
+            }
+            await server.refreshPlexServer()
+        }
+    }
+
+    /// The paired Marquee players, plus the one chosen already if it isn't paired (any more)
+    private var playerChoices: [String] {
+        let paired = server.marqueePlayers ?? []
+        let chosen = server.appPlayer
+        return chosen.isEmpty || paired.contains(chosen) ? paired : [chosen] + paired
     }
 }
 
