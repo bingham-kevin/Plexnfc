@@ -13,8 +13,9 @@ Routes
   /plex/server         JSON: the Plex server in use (found from the sign-in when PLEX_URL isn't set)
   /tv/...               the Marquee Apple TV app: pairing, inbox, status, library, search and play
                        (/tv/expected: Marquee pairs by itself on an Apple TV paired below)
-  /appletv/...         pair Apple TVs so plexnfc opens Marquee on them itself (needs pyatv)
+  /panel/api/...       the control panel (/): overview, movies, pairing, Apple TVs (needs pyatv)
   /phone/...           the Marquee Remote phone app: which player this phone's taps go to
+  /ha/...              the Marquee integration for Home Assistant: players, what they're playing, controls
   /poster/<key>        poster image (proxied so your Plex token stays private)
                        ?w=200&h=300 returns a resized baseline JPEG (for the ESP32 screen)
 
@@ -26,6 +27,7 @@ For the ESP32 remote (see esphome/):
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import os
@@ -35,7 +37,7 @@ from html import escape
 from urllib.parse import urlsplit
 
 import requests
-from flask import Flask, Response, abort, jsonify, request
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 from . import plexauth
 from .appletv import AppleTVError
@@ -202,127 +204,6 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         result = plex.app_pairings.poll(pair_id)
         return jsonify(result) if result else (jsonify(status="expired"), 404)
 
-    @app.post("/tv/pair/<pair_id>/approve")
-    def tv_pair_approve(pair_id):
-        if not from_panel():
-            abort(403)
-        plex.app_pairings.approve(pair_id, request.form.get("name"))
-        return page("Paired", '<h1>Apple TV paired</h1><p><a href="../../../">Back</a></p>')
-
-    @app.post("/tv/devices/<device_id>/rename")
-    def tv_device_rename(device_id):
-        if not from_panel():
-            abort(403)
-        name = plex.app_pairings.rename(device_id, request.form.get("name", ""))
-        if name is None:
-            abort(400)
-        return page("Renamed", f'<h1>Renamed to {escape(name)}</h1><p>If <b>Marquee player</b> or a '
-                               f'get-ready script names it, change those to <code>app:{escape(name)}</code> '
-                               f'too.</p><p><a href="../../../">Back</a></p>')
-
-    @app.post("/tv/devices/<device_id>/remove")
-    def tv_device_remove(device_id):
-        if not from_panel():
-            abort(403)
-        plex.app_pairings.remove(device_id)
-        return page("Removed", '<h1>Apple TV removed</h1><p><a href="../../../">Back</a></p>')
-
-    # ---- opening Marquee on Apple TVs without Home Assistant ---------------------------
-
-    def appletv_error(e: AppleTVError, back: str) -> Response:
-        return page("Error", f'<h1 class="err">{escape(str(e))}</h1><p><a href="{back}">Back</a></p>', 400)
-
-    @app.get("/appletv/scan")
-    def appletv_scan():
-        if not from_panel():
-            abort(403)
-        try:
-            found = plex.apple_tvs.scan()
-        except AppleTVError as e:
-            return appletv_error(e, "../")
-        players = "".join(f'<option value="{escape(d["name"])}">' for d in plex.app_pairings.devices()
-                          if d["kind"] == "tv")
-        rows = "".join(
-            f'<tr><td>{escape(tv["name"])}<br><small>{escape(tv["address"])}</small></td>'
-            f'<td><form action="pair" method="post"><input type="hidden" name="identifier" '
-            f'value="{escape(tv["identifier"])}"><input name="player" list="players" required maxlength="40" '
-            f'value="{escape(tv["linked"] or tv["name"])}" aria-label="Marquee player"> '
-            f'<button>{"Pair again" if tv["linked"] else "Pair"}</button></form></td></tr>'
-            for tv in found)
-        table = f"<table>{rows}</table>" if rows else "<p>No Apple TVs found. Are they on and on this network?</p>"
-        return page("Apple TVs", f"<h1>Apple TVs on this network</h1><p>Pair one with the Marquee player it "
-                                 f"runs (the name you gave Marquee on it). The TV will show a PIN.</p>"
-                                 f'<datalist id="players">{players}</datalist>{table}'
-                                 f'<p><a href="../">Back</a></p>')
-
-    @app.post("/appletv/pair")
-    def appletv_pair():
-        if not from_panel():
-            abort(403)
-        try:
-            pair_id = plex.apple_tvs.start_pairing(request.form.get("identifier", ""), request.form.get("player", ""))
-        except AppleTVError as e:
-            return appletv_error(e, "scan")
-        return page("Enter the PIN", f'<h1>Enter the PIN on the TV</h1>'
-                                     f'<form action="pair/{escape(pair_id)}" method="post">'
-                                     f'<input name="pin" inputmode="numeric" autocomplete="one-time-code" '
-                                     f'maxlength="4" required autofocus aria-label="PIN"> <button>Pair</button></form>')
-
-    def connect_marquee(player: str) -> str:
-        """Open Marquee on ``player``'s Apple TV, expecting it to pair with this server as
-        ``player``. Returns a note for the page saying how that went."""
-        server = config.public_base_url.split("://", 1)[-1]
-        if link := plex.apple_tvs.link_for(player):
-            plex.app_pairings.expect(link["address"], player)
-        try:
-            plex.apple_tvs.open_marquee(player)
-            if link := plex.apple_tvs.link_for(player):
-                plex.app_pairings.expect(link["address"], player)  # its address, if it moved
-        except AppleTVError as e:
-            return (f'<p class="err">Couldn\'t open Marquee on it ({escape(str(e))}). In Marquee, connect to '
-                    f"<code>{escape(server)}</code> and approve its code here instead.</p>")
-        return f"<p>Marquee on that Apple TV is connecting to this server as <b>{escape(player)}</b>.</p>"
-
-    @app.post("/appletv/pair/<pair_id>")
-    def appletv_pair_finish(pair_id):
-        if not from_panel():
-            abort(403)
-        try:
-            player = plex.apple_tvs.finish_pairing(pair_id, request.form.get("pin", ""))
-        except AppleTVError as e:
-            return appletv_error(e, "../scan")
-        return page("Paired", f"<h1>Paired</h1><p>Taps for <code>app:{escape(player)}</code> now switch that "
-                              f"Apple TV on and open Marquee.</p>{connect_marquee(player)}"
-                              f"<p><a href=\"../../\">Back</a></p>")
-
-    @app.post("/appletv/connect")
-    def appletv_connect():
-        if not from_panel():
-            abort(403)
-        player = request.form.get("player", "")
-        if not plex.apple_tvs.link_for(player):
-            abort(404)
-        return page("Connecting", f"<h1>Connecting Marquee</h1>{connect_marquee(player)}"
-                                  f'<p><a href="../">Back</a></p>')
-
-    @app.post("/appletv/open")
-    def appletv_open():
-        if not from_panel():
-            abort(403)
-        player = request.form.get("player", "")
-        try:
-            plex.apple_tvs.open_marquee(player)
-        except AppleTVError as e:
-            return appletv_error(e, "../")
-        return page("Opened", f"<h1>Opened Marquee on {escape(player)}</h1><p><a href=\"../\">Back</a></p>")
-
-    @app.post("/appletv/remove")
-    def appletv_remove():
-        if not from_panel():
-            abort(403)
-        plex.apple_tvs.remove(request.form.get("player", ""))
-        return page("Removed", '<h1>Apple TV unpaired</h1><p><a href="../">Back</a></p>')
-
     # ---- the Marquee Remote phone app ------------------------------------------------
 
     def phone_route(rule, **options):
@@ -353,6 +234,70 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             return jsonify(ok=False, message="player must be a player ID, or null for the default"), 400
         plex.app_pairings.set_player(phone["id"], player)
         return jsonify(ok=True, selected=player)
+
+    # ---- the Marquee integration for Home Assistant (custom_components/marquee) ------
+
+    def ha_route(rule, **options):
+        """A /ha route for a paired Home Assistant."""
+        def decorator(fn):
+            def wrapped(**kwargs):
+                if plex.app_pairings.integration(bearer()) is None:
+                    return jsonify(ok=False, message="This Home Assistant isn't paired"), 401
+                try:
+                    return fn(**kwargs)
+                except PlexNFCError as e:
+                    return jsonify(ok=False, message=str(e)), 404
+            wrapped.__name__ = fn.__name__
+            return app.route(rule, **options)(wrapped)
+        return decorator
+
+    def marquee_players() -> tuple[list[dict], str]:
+        """Every paired Marquee and what it's playing, with a tag that changes when one
+        starts, pauses or stops something (not as the position moves on)."""
+        players = []
+        for d in plex.app_pairings.devices():
+            if d["kind"] != "tv":
+                continue
+            status = plex.app_inbox.status(d["name"]) or {}
+            player = {"id": f"app:{d['name']}", "device_id": d["id"], "name": d["name"],
+                      "state": status.get("state") or "idle"}
+            if player["state"] != "idle" and status.get("key"):
+                player.update(key=status["key"], title=status.get("title") or "", poster=f"/poster/{status['key']}",
+                              position=status.get("position") or 0, duration=status.get("duration") or 0)
+            players.append(player)
+        tag = repr([(p["device_id"], p["name"], p["state"], p.get("key")) for p in players])
+        return players, hashlib.sha256(tag.encode()).hexdigest()[:16]
+
+    @ha_route("/ha/players")
+    def ha_players():
+        """Marquee players and what they're playing. With ``?tag=`` from the last answer, waits
+        (up to ``wait`` seconds, 25 at most) for something to change, so Home Assistant hears at once."""
+        deadline = time.monotonic() + min(request.args.get("wait", 25, type=float), 25)
+        while True:
+            players, tag = marquee_players()
+            remaining = deadline - time.monotonic()
+            if tag != request.args.get("tag") or remaining <= 0:
+                return jsonify(players=players, tag=tag)
+            plex.app_inbox.wait_for_change(min(remaining, 2))  # also notices a Marquee that went quiet
+
+    @ha_route("/ha/control", methods=["POST"])
+    def ha_control():
+        body = request.get_json(silent=True) or {}
+        if body.get("action") not in ("pause", "play", "stop") or not isinstance(body.get("player"), str):
+            return jsonify(ok=False, message="Send a player and an action: pause, play or stop"), 400
+        plex.control(body["action"], body["player"])
+        return jsonify(ok=True)
+
+    @ha_route("/ha/play", methods=["POST"])
+    def ha_play():
+        """Start a movie (``key``, e.g. tmdb-603) on a player, from the beginning unless ``resume``."""
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body.get("player"), str):
+            return jsonify(ok=False, message="Choose a player"), 400
+        movie = plex.find_movie(body.get("key", ""))
+        threading.Thread(target=play_in_background, daemon=True,
+                         args=(body["key"], body["player"], bool(body.get("resume")))).start()
+        return jsonify(ok=True, title=movie.title, player=body["player"]), 202
 
     @app_route("/tv/inbox")
     def tv_inbox(device):
@@ -588,102 +533,169 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         except PlexNFCError as e:
             return jsonify(error=str(e)), 503
 
-    @app.post("/plex/logout")
-    def plex_logout():
-        plexauth.forget_token(config.auth_file)
-        plex.set_token("")
-        return page("Signed out", '<h1>Signed out of Plex</h1><p><a href="../">Back</a></p>')
+    # ---- the control panel (panel/, built into plexnfc/static/panel) -----------------
+    # Anyone on the network can look; only the panel itself (Home Assistant's ingress, or
+    # this machine) can change anything. Its addresses are relative, for ingress.
 
-    def device_status(device: dict) -> str:
-        if device["kind"] != "phone":
-            return "Marquee player, paired"
-        return f"phone, taps go to {device['player'] or 'the default player'}"
-
-    def marquee_section() -> str:
-        """Pairing requests, and the paired Marquee players and phones, for the Marquee apps."""
-        server = config.public_base_url.split("://", 1)[-1]
-        rows = "".join(
-            f'<tr><td>{escape(p["name"])} ({"Marquee Remote" if p["kind"] == "phone" else "Marquee"}) wants to pair</td>'
-            f'<td><b style="font-size:1.4em">{p["code"]}</b></td>'
-            f'<td><form action="tv/pair/{escape(p["pair_id"])}/approve" method="post">'
-            f'<input name="name" value="{escape(p["name"])}" maxlength="40" aria-label="Name, e.g. the room"> '
-            f'<button>Approve</button></form></td></tr>'
-            for p in plex.app_pairings.pending())
-        rows += "".join(
-            f'<tr><td><form action="tv/devices/{escape(d["id"])}/rename" method="post">'
-            f'<input name="name" value="{escape(d["name"])}" maxlength="40" required aria-label="Name"> '
-            f'<button>Rename</button></form></td><td>{escape(device_status(d))}</td>'
-            f'<td><form action="tv/devices/{escape(d["id"])}/remove" method="post">'
-            f'<button>Remove</button></form></td></tr>'
-            for d in plex.app_pairings.devices())
-        table = f"<table>{rows}</table>" if rows else "<p>Nothing paired yet.</p>"
-        return (f"<h1>Marquee players and phones</h1><p>In Marquee (Apple TV, iPhone, iPad) or Marquee Remote (iPhone, iPad), "
-                f"connect to <code>{escape(server)}</code>, "
-                f"then approve the code it shows here. Name each Marquee player after its room or owner: tags pick one with "
-                f"<code>?client=app:NAME</code>. Reload this page to see new requests.</p>{table}")
-
-    def apple_tv_section() -> str:
-        """Apple TVs plexnfc opens Marquee on itself, instead of a get-ready script."""
-        if not plex.apple_tvs.available:
-            return ""
-        rows = "".join(
-            f'<tr><td>{escape(player)}</td><td>{escape(link["name"])}</td>'
-            f'<td><form action="appletv/open" method="post" style="display:inline">'
-            f'<input type="hidden" name="player" value="{escape(player)}"><button>Open Marquee</button></form> '
-            f'<form action="appletv/connect" method="post" style="display:inline">'
-            f'<input type="hidden" name="player" value="{escape(player)}"><button>Connect Marquee</button></form> '
-            f'<form action="appletv/remove" method="post" style="display:inline">'
-            f'<input type="hidden" name="player" value="{escape(player)}"><button>Unpair</button></form></td></tr>'
-            for player, link in plex.apple_tvs.linked().items())
-        table = f"<table>{rows}</table>" if rows else ""
-        return (f"<h1>Open Marquee automatically</h1><p>Pair an Apple TV here and a tap switches it on and opens "
-                f"Marquee, with no Home Assistant script.</p>{table}"
-                f'<p><a class="btn" href="appletv/scan">Find Apple TVs</a></p>')
+    panel_dir = os.path.join(os.path.dirname(__file__), "static", "panel")
 
     @app.get("/")
     def index():
-        # Links are relative so this page works inside the Home Assistant sidebar (ingress).
-        # The book is the exception: it opens in a new tab, and ingress turns away any
-        # request that isn't from inside the panel, so it goes to the tag address instead.
-        warn = ""
-        if "localhost" in config.public_base_url or "127.0.0.1" in config.public_base_url:
-            warn = ('<p class="err">public_base_url is set to localhost. Phones can\'t reach that: '
-                    "set it to this machine's IP address, e.g. http://192.168.1.20:8080</p>")
-        # The same order play() picks a player in
-        player_label = (f"the Marquee app ({config.app_player})" if config.app_player
-                        else f"Jellyfin player {config.jellyfin_player}" if config.jellyfin_player
-                        else config.ha_player or config.client or "(no player set)")
-        apple_tvs = marquee_section()
-        if not config.plex_token:
-            signin = ('<p class="err">plexnfc isn\'t signed in to Plex yet.</p>'
-                      '<p><a class="btn" href="plex/login">Sign in with Plex</a></p>')
-        elif plexauth.saved_token(config.auth_file) == config.plex_token:
-            signin = ('<form action="plex/logout" method="post"><p>Signed in to Plex '
-                      '<button>Sign out</button></p></form>')
-        else:
-            signin = ""  # token set by hand in the settings
-        return page("plexnfc", f"""
-          <h1>plexnfc</h1>
-          {signin}
-          <p>Tags point at <code>{escape(config.public_base_url)}</code>, playing on
-             <b>{escape(player_label)}</b></p>{warn}
-          <h1>Make the book</h1>
-          <form action="{escape(config.public_base_url)}/book" target="_blank"
-                style="display:inline-grid;gap:8px;text-align:left">
-            <label>Title <input name="title" value="Movie Night"></label>
-            <label>Plex collection (blank = whole library) <input name="collection"></label>
-            <label>Layout <select name="layout"><option value="full">1 per page</option>
-              <option value="grid">4 per page</option></select></label>
-            <label>Paper <select name="page_size"><option>letter</option><option>A4</option></select></label>
-            <label><input type="checkbox" name="qr" value="1" checked> QR code fallback</label>
-            <button>Open printable book</button>
-          </form>
-          <p>Wait for all the posters to load, then print with margins <i>None</i> and background graphics on.</p>
-          <h1>Write the tags</h1>
-          <p><a style="color:#8ab4f8" href="tags">Tag URLs</a> &middot;
-             <a style="color:#8ab4f8" href="tags.csv">Download tags.csv</a></p>
-          {apple_tvs}
-          {apple_tv_section()}""")
+        if not os.path.exists(os.path.join(panel_dir, "index.html")):
+            return page("plexnfc", '<h1 class="err">The control panel isn\'t built</h1>'
+                                   "<p>Run <code>npm run build</code> in <code>panel/</code>.</p>", 500)
+        return send_from_directory(panel_dir, "index.html", max_age=0)
+
+    @app.get("/assets/<path:name>")
+    def panel_assets(name):
+        return send_from_directory(os.path.join(panel_dir, "assets"), name, max_age=31536000)
+
+    def panel_route(rule, **options):
+        """A /panel/api route. Changes are refused (403) unless they come from the panel itself."""
+        def decorator(fn):
+            def wrapped(**kwargs):
+                if request.method != "GET" and not from_panel():
+                    return jsonify(ok=False, message="Open the control panel on the server to change this"), 403
+                try:
+                    return fn(**kwargs)
+                except (PlexNFCError, AppleTVError) as e:
+                    return jsonify(ok=False, message=str(e)), 400
+            wrapped.__name__ = fn.__name__
+            return app.route(f"/panel/api{rule}", **options)(wrapped)
+        return decorator
+
+    def panel_body() -> dict:
+        return request.get_json(silent=True) or {}
+
+    @panel_route("/overview")
+    def panel_overview():
+        """Everything the panel shows that changes on its own: sign-in, pairing requests,
+        paired devices and what each Marquee is playing, and linked Apple TVs."""
+        devices = []
+        for d in plex.app_pairings.devices():
+            status = plex.app_inbox.status(d["name"]) if d["kind"] == "tv" else None
+            devices.append({**d, "status": status if status and status.get("state", "idle") != "idle" else None})
+        return jsonify(
+            can_manage=from_panel(),
+            tag_address=config.public_base_url,
+            tag_address_is_local="localhost" in config.public_base_url or "127.0.0.1" in config.public_base_url,
+            default_player=plex.default_player(),
+            # The same order play() picks a player in
+            default_player_label=(f"Marquee on {config.app_player}" if config.app_player
+                                  else f"Jellyfin player {config.jellyfin_player}" if config.jellyfin_player
+                                  else config.ha_player or config.client or ""),
+            off_tag=bool(config.ha_off_script),
+            plex={"signed_in": bool(config.plex_token),
+                  "signed_in_here": bool(config.plex_token) and plexauth.saved_token(config.auth_file) == config.plex_token},
+            pairing_requests=plex.app_pairings.pending(),
+            devices=devices,
+            apple_tvs={"available": plex.apple_tvs.available,
+                       "linked": [{"player": p, **link} for p, link in plex.apple_tvs.linked().items()]},
+        )
+
+    @panel_route("/players")
+    def panel_players():
+        """Every player a movie can go to (asks Plex and Jellyfin, so it's slower)."""
+        return jsonify(players=plex.players(), default=plex.default_player())
+
+    @panel_route("/movies")
+    def panel_movies():
+        movies = [{"key": movie_key(m), "title": m.title, "year": m.year,
+                   "url": f"{config.public_base_url}/m/{movie_key(m)}"}
+                  for m in plex.movies(request.args.get("collection") or None)]
+        controls = [{"action": a, "url": f"{config.public_base_url}/{a}"}
+                    for a in ("pause", "play", "stop") + (("off",) if config.ha_off_script else ())]
+        return jsonify(movies=movies, controls=controls)
+
+    @panel_route("/play", methods=["POST"])
+    def panel_play():
+        """Try a tag: start a movie on a player, as tapping it would."""
+        body = panel_body()
+        movie = plex.find_movie(body.get("key", ""))
+        player = body.get("player") or None
+        threading.Thread(target=play_in_background, daemon=True,
+                         args=(body["key"], player, bool(body.get("resume")))).start()
+        return jsonify(ok=True, title=movie.title), 202
+
+    @panel_route("/control", methods=["POST"])
+    def panel_control():
+        body = panel_body()
+        if body.get("action") not in ("pause", "play", "stop"):
+            return jsonify(ok=False, message="Pause, play or stop"), 400
+        plex.control(body["action"], body.get("player") or None)
+        return jsonify(ok=True)
+
+    @panel_route("/pairings/<pair_id>/approve", methods=["POST"])
+    def panel_approve(pair_id):
+        if not plex.app_pairings.approve(pair_id, panel_body().get("name")):
+            return jsonify(ok=False, message="That request has expired. Ask again from the device."), 404
+        return jsonify(ok=True)
+
+    @panel_route("/devices/<device_id>/rename", methods=["POST"])
+    def panel_rename(device_id):
+        name = plex.app_pairings.rename(device_id, panel_body().get("name", ""))
+        if name is None:
+            return jsonify(ok=False, message="Give it a name"), 400
+        return jsonify(ok=True, name=name)
+
+    @panel_route("/devices/<device_id>/remove", methods=["POST"])
+    def panel_remove(device_id):
+        plex.app_pairings.remove(device_id)
+        return jsonify(ok=True)
+
+    @panel_route("/plex/logout", methods=["POST"])
+    def panel_plex_logout():
+        plexauth.forget_token(config.auth_file)
+        plex.set_token("")
+        return jsonify(ok=True)
+
+    # Opening Marquee on Apple TVs without Home Assistant
+
+    @panel_route("/appletvs/scan", methods=["POST"])  # POST: it looks around the network for a few seconds
+    def panel_appletv_scan():
+        return jsonify(found=plex.apple_tvs.scan())
+
+    @panel_route("/appletvs/pair", methods=["POST"])
+    def panel_appletv_pair():
+        body = panel_body()
+        return jsonify(ok=True, pair_id=plex.apple_tvs.start_pairing(body.get("identifier", ""), body.get("player", "")))
+
+    def connect_marquee(player: str) -> str:
+        """Open Marquee on ``player``'s Apple TV, expecting it to pair with this server as
+        ``player``. Returns how that went."""
+        server = config.public_base_url.split("://", 1)[-1]
+        if link := plex.apple_tvs.link_for(player):
+            plex.app_pairings.expect(link["address"], player)
+        try:
+            plex.apple_tvs.open_marquee(player)
+            if link := plex.apple_tvs.link_for(player):
+                plex.app_pairings.expect(link["address"], player)  # its address, if it moved
+        except AppleTVError as e:
+            return (f"Couldn't open Marquee on it ({e}). In Marquee, connect to {server} "
+                    f"and approve its code here instead.")
+        return f"Marquee on that Apple TV is connecting to this server as {player}."
+
+    @panel_route("/appletvs/pair/<pair_id>", methods=["POST"])
+    def panel_appletv_pair_finish(pair_id):
+        player = plex.apple_tvs.finish_pairing(pair_id, str(panel_body().get("pin", "")))
+        return jsonify(ok=True, player=player, message=connect_marquee(player))
+
+    @panel_route("/appletvs/connect", methods=["POST"])
+    def panel_appletv_connect():
+        player = panel_body().get("player", "")
+        if not plex.apple_tvs.link_for(player):
+            return jsonify(ok=False, message=f"No Apple TV is paired for {player}"), 404
+        return jsonify(ok=True, message=connect_marquee(player))
+
+    @panel_route("/appletvs/open", methods=["POST"])
+    def panel_appletv_open():
+        plex.apple_tvs.open_marquee(panel_body().get("player", ""))
+        return jsonify(ok=True)
+
+    @panel_route("/appletvs/remove", methods=["POST"])
+    def panel_appletv_remove():
+        plex.apple_tvs.remove(panel_body().get("player", ""))
+        return jsonify(ok=True)
 
     return app
 

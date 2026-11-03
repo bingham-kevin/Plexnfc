@@ -86,6 +86,8 @@ Put the stickers on the **back** of the page, or between pages in a page protect
 
 plexnfc can run a Home Assistant script before every movie. The script can turn the TV on, switch to the right HDMI input and open Plex, so one tap goes from a dark TV to the movie playing. Home Assistant can also start the movie itself through its Plex integration, which is the recommended setup for Apple TV. See [docs/home-assistant.md](docs/home-assistant.md) for setup and example scripts for Apple TV, Shield, LG, Samsung and Google TV.
 
+The **Marquee** integration (`custom_components/marquee`, installable with HACS) works the other way round. Each Marquee player becomes a media player in Home Assistant, with *Movie started*, *paused*, *resumed* and *stopped* triggers for automations, such as dimming the lights. See [the integration's section](docs/home-assistant.md#the-marquee-integration-automations-that-follow-the-movie).
+
 ## Optional: play on Jellyfin
 
 Plex for Apple TV can't be remote-started, but Swiftfin (Jellyfin's Apple TV app) can. With `JELLYFIN_URL`, `JELLYFIN_API_KEY` and `JELLYFIN_PLAYER` set, taps, controls and `/now` go to that Jellyfin app instead of the Plex player. Plex still makes the book and the tag list, so the movies need to be in both libraries. `?client=jellyfin:NAME` picks a Jellyfin player for one tag.
@@ -120,3 +122,13 @@ Tags store the movie's TMDB/IMDb ID rather than Plex's internal ID, so they keep
 pip install -r requirements.txt pytest
 pytest
 ```
+
+The control panel is a React app (TanStack Query and Table) in `panel/`. It's built into `plexnfc/static/panel`, and the build is committed, so the Home Assistant app and Marquee Server don't need Node. After changing it:
+
+```bash
+cd panel
+npm install
+npm run build
+```
+
+`npm run dev` serves it with live reload, passing API requests to a server on port 8080.

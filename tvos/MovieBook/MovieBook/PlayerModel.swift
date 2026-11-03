@@ -98,6 +98,7 @@ final class PlayerModel: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "lastCommandID") }
     }
     private var readyObservation: AnyCancellable?
+    private var playbackObservations: Set<AnyCancellable> = []
     private var pollTask: Task<Void, Never>?
     private var statusCount = 0
 
@@ -328,6 +329,19 @@ final class PlayerModel: ObservableObject {
                 }
             }
         let player = AVPlayer(playerItem: item)
+        // Tell the server straight away when the movie plays or pauses (Home Assistant's
+        // triggers follow it), and finish when it ends
+        playbackObservations = [
+            player.publisher(for: \.timeControlStatus)
+                .map { $0 == .paused }
+                .removeDuplicates()
+                .dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in Task { await self?.reportStatus() } },
+            NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification, object: item)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.stop() },
+        ]
         // Start with subtitles off rather than following the system's choice
         player.appliesMediaSelectionCriteriaAutomatically = false
         Task {
@@ -341,6 +355,7 @@ final class PlayerModel: ObservableObject {
         self.key = key
         self.player = player
         player.play()
+        Task { await reportStatus() }
     }
 
     func stop() {
@@ -350,6 +365,7 @@ final class PlayerModel: ObservableObject {
         poster = nil
         isReady = false
         readyObservation = nil
+        playbackObservations = []
         key = nil
         Task { await reportStatus() }
     }

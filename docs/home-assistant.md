@@ -160,6 +160,36 @@ You can add more steps to the same script: dim the lights, close the blinds, tur
       data: { brightness_pct: 10, transition: 5 }
 ```
 
+## The Marquee integration: automations that follow the movie
+
+The **Marquee** integration (in `custom_components/marquee`) works the other way round. Home Assistant hears what Marquee plays, so automations can dim the lights when a movie starts, raise them a little on pause, and bring them back up when it stops or ends. It works with Marquee Server on a Mac, or with the plexnfc Home Assistant app once that's updated.
+
+### Install
+
+1. In HACS, add this repository (`https://github.com/bingham-kevin/Plexnfc`) as a custom repository of type **Integration**, and download **Marquee**. Or copy `custom_components/marquee` into your Home Assistant's `config/custom_components` folder.
+2. Restart Home Assistant.
+3. Home Assistant usually finds Marquee Server on its own: look for it under **Settings → Devices & services → Discovered**. If it doesn't appear, choose **Add Integration → Marquee** and enter the server's address, e.g. `http://marquee.local:8080`.
+4. Home Assistant shows a 6-digit code. On the Mac, choose **Open Control Panel** in Marquee Server's menu and approve that code under **Marquee players and phones**, then choose **Submit** in Home Assistant.
+
+### What you get
+
+- **A media player for each Marquee player** (each Apple TV, iPhone or iPad running Marquee). It shows the title and poster, and is *playing*, *paused* or *idle*; Marquee in the background counts as idle. It can pause, play and stop. **Play media** starts a movie by its key, the end of its tag address, e.g. `tmdb-603`.
+- **Triggers on each Marquee player's device:** *Movie started*, *Movie paused*, *Movie resumed* and *Movie stopped or finished*. Find them in the automation editor under **Device**. They fire within a second or so: the server holds Home Assistant's request open until something changes.
+- **A `marquee_event` event** for each of those, for an Event trigger that should cover every player. The event data has `type` (`started`, `paused`, `resumed`, `stopped`), `player`, `title`, `key` and `device_id`.
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: marquee_event
+    event_data: { type: started }
+actions:
+  - action: light.turn_on
+    target: { area_id: den }
+    data: { brightness_pct: 5, transition: 4 }
+```
+
+If the server is reinstalled, or Home Assistant is removed in its control panel, Home Assistant asks you to pair again with a new code.
+
 ## Troubleshooting
 
 - **The TV turns on, but the movie doesn't start**: the Plex app took longer than `PLAYER_WAIT` to start. Increase `PLAYER_WAIT`, or add a longer `delay` at the end of the script. Also check that **Advertise as player** / remote control is turned on in the Plex app.

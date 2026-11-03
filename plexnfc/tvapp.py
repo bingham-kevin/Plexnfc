@@ -34,6 +34,7 @@ class AppInbox:
         self._ids = itertools.count(int(time.time()))  # stays ahead of the app's last ID after a restart
         self._commands: dict[str, dict] = {}
         self._status: dict[str, tuple[float, dict]] = {}
+        self._changed = threading.Condition(self._lock)  # a player started, paused or stopped
 
     def send(self, player: str, action: str, **fields) -> dict:
         command = {"id": next(self._ids), "action": action, **fields}
@@ -53,7 +54,16 @@ class AppInbox:
 
     def set_status(self, player: str, status: dict) -> None:
         with self._lock:
+            seen, before = self._status.get(player.casefold(), (0, None))
             self._status[player.casefold()] = (time.monotonic(), status)
+            if (not before or time.monotonic() - seen >= STATUS_TTL
+                    or (before.get("state"), before.get("key")) != (status.get("state"), status.get("key"))):
+                self._changed.notify_all()
+
+    def wait_for_change(self, timeout: float) -> None:
+        """Wait up to ``timeout`` seconds for a player to start, pause or stop something."""
+        with self._changed:
+            self._changed.wait(timeout)
 
     def status(self, player: str) -> dict | None:
         with self._lock:
@@ -62,6 +72,7 @@ class AppInbox:
 
 
 PAIRING_TTL = 600  # a pairing code is good for 10 minutes
+DEFAULT_NAMES = {"tv": "Apple TV", "phone": "iPhone", "homeassistant": "Home Assistant"}
 
 
 def _hash(secret: str) -> str:
@@ -69,7 +80,7 @@ def _hash(secret: str) -> str:
 
 
 class AppPairings:
-    """Apple TVs and phones allowed to use the app API.
+    """Apple TVs, phones and Home Assistant, allowed to use the app API.
 
     An Apple TV (or the Marquee Remote app on an iPhone or iPad) asks to pair and
     shows a 6-digit code; you approve the code in plexnfc's panel, and it then
@@ -117,8 +128,8 @@ class AppPairings:
         return name if name and time.monotonic() - since < PAIRING_TTL else None
 
     def start(self, name: str, kind: str = "tv", address: str | None = None) -> dict:
-        kind = "phone" if kind == "phone" else "tv"
-        name = " ".join(name.split())[:40] or ("iPhone" if kind == "phone" else "Apple TV")
+        kind = kind if kind in ("phone", "homeassistant") else "tv"
+        name = " ".join(name.split())[:40] or DEFAULT_NAMES[kind]
         pair_id = secrets.token_urlsafe(16)
         code = f"{secrets.randbelow(1_000_000):06d}"
         with self._lock:
@@ -218,6 +229,12 @@ class AppPairings:
         """The paired Apple TV's name for this secret, or None."""
         with self._lock:
             device_id = self._find(secret, "tv")
+            return self._devices[device_id]["name"] if device_id else None
+
+    def integration(self, secret: str | None) -> str | None:
+        """The paired Home Assistant's name for this secret, or None."""
+        with self._lock:
+            device_id = self._find(secret, "homeassistant")
             return self._devices[device_id]["name"] if device_id else None
 
     def phone(self, secret: str | None, address: str | None = None) -> dict | None:

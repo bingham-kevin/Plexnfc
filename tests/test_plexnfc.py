@@ -1,3 +1,5 @@
+import threading
+import time
 from types import SimpleNamespace as NS
 from unittest import mock
 
@@ -294,11 +296,26 @@ def test_tags_csv(plex):
     assert b"The Matrix,1999,http://nfc.local:8080/m/tmdb-603" in r.data
 
 
-def test_index_links_are_relative(plex):
-    r = create_app(CONFIG, plex).test_client().get("/")
-    assert b'href="tags"' in r.data and b'href="/' not in r.data
-    # The book opens in a new tab, which ingress won't serve, so it uses the tag address
-    assert b'action="http://nfc.local:8080/book" target="_blank"' in r.data
+def test_control_panel_is_served_with_relative_addresses(plex):
+    app = create_app(CONFIG, plex).test_client()
+    page = app.get("/").data
+    # relative, so it works inside the Home Assistant sidebar (ingress)
+    assert b'src="./assets/' in page and b'"/assets' not in page
+    script = page.split(b'src="./', 1)[1].split(b'"', 1)[0].decode()
+    assert app.get(f"/{script}").status_code == 200
+    overview = app.get("/panel/api/overview").json
+    assert overview["tag_address"] == "http://nfc.local:8080" and overview["default_player_label"] == "Living Room"
+    # the tag list, and trying a tag from the panel
+    movies = app.get("/panel/api/movies").json
+    assert movies["movies"] == [{"key": "tmdb-603", "title": "The Matrix", "year": 1999,
+                                 "url": "http://nfc.local:8080/m/tmdb-603"}]
+    assert [c["action"] for c in movies["controls"]] == ["pause", "play", "stop"]
+    assert app.post("/panel/api/play", json={"key": "tmdb-603"}, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+    with mock.patch("plexnfc.server.threading.Thread") as thread:
+        assert app.post("/panel/api/play", json={"key": "tmdb-603", "player": "Bedroom"}).json["title"] == "The Matrix"
+    assert thread.call_args.kwargs["args"] == ("tmdb-603", "Bedroom", False)
+    assert app.post("/panel/api/control", json={"action": "pause"}).json["ok"]
+    plex._client.pause.assert_called_once()
 
 
 def test_ha_app_options(tmp_path, monkeypatch):
@@ -334,7 +351,7 @@ def test_sign_in_with_plex(plex, tmp_path, monkeypatch):
     monkeypatch.setattr(plexauth.requests, "get", lambda *a, **k: mock.Mock(json=lambda: approved))
     app = create_app(config, plex).test_client()
 
-    assert b'href="plex/login"' in app.get("/").data
+    assert app.get("/panel/api/overview").json["plex"] == {"signed_in": False, "signed_in_here": False}
     r = app.get("/plex/login")
     assert b"app.plex.tv/auth#?clientID=" in r.data and b"code=abcd" in r.data
     assert app.get("/plex/check?id=99").status_code == 404  # not a PIN we asked for
@@ -343,9 +360,11 @@ def test_sign_in_with_plex(plex, tmp_path, monkeypatch):
     assert app.get("/plex/check?id=7").json == {"signed_in": True}
     assert config.plex_token == "newtok" and plexauth.saved_token(auth) == "newtok"
     assert plexauth.client_id(auth) == calls[0]  # same device ID every time
-    assert b"newtok" not in app.get("/").data and b"Sign out" in app.get("/").data
+    overview = app.get("/panel/api/overview")
+    assert b"newtok" not in overview.data and overview.json["plex"]["signed_in_here"]
 
-    app.post("/plex/logout")
+    assert app.post("/panel/api/plex/logout", environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+    app.post("/panel/api/plex/logout")
     assert config.plex_token == "" and plexauth.saved_token(auth) == ""
 
 
@@ -757,17 +776,18 @@ def test_pairing_flow_and_panel(plex):
     assert len(started["code"]) == 6
     assert app.get(f"/tv/pair/{started['pair_id']}").json == {"status": "pending"}
     # the panel lists the request with its code
-    page = app.get("/").data
-    assert started["code"].encode() in page and b"Den (Marquee) wants to pair" in page
+    assert app.get("/panel/api/overview").json["pairing_requests"] == [
+        {"pair_id": started["pair_id"], "name": "Den", "kind": "tv", "code": started["code"]}]
     # approving from the network port is refused; through the panel (ingress) it works
-    approve = f"/tv/pair/{started['pair_id']}/approve"
-    assert app.post(approve, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
-    assert app.post(approve, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 200
+    approve = f"/panel/api/pairings/{started['pair_id']}/approve"
+    assert app.post(approve, json={}, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+    assert app.post(approve, json={}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 200
+    assert app.post("/panel/api/pairings/nope/approve", json={}).status_code == 404
     # on the host network, ingress comes from the host's own address (the tag address's host)
     from dataclasses import replace
     host_app = create_app(replace(CONFIG, public_base_url="http://127.0.0.2:8080"), plex).test_client()
     again = host_app.post("/tv/pair", json={"name": "Den 2"}).json
-    assert host_app.post(f"/tv/pair/{again['pair_id']}/approve",
+    assert host_app.post(f"/panel/api/pairings/{again['pair_id']}/approve", json={},
                          environ_base={"REMOTE_ADDR": "127.0.0.2"}).status_code == 200
     result = app.get(f"/tv/pair/{started['pair_id']}").json
     assert result["status"] == "approved" and result["name"] == "Den"
@@ -776,7 +796,7 @@ def test_pairing_flow_and_panel(plex):
     assert app.get("/tv/inbox", headers=headers).status_code == 204
     # removing the Apple TV cuts it off
     device = plex.app_pairings.devices()[0]
-    app.post(f"/tv/devices/{device['id']}/remove", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+    app.post(f"/panel/api/devices/{device['id']}/remove", environ_base={"REMOTE_ADDR": "127.0.0.1"})
     assert app.get("/tv/inbox", headers=headers).status_code == 401
 
 
@@ -786,7 +806,7 @@ def test_approving_names_the_apple_tv_and_keeps_names_unique(plex):
     names = []
     for given in ("Living Room", "", "living room"):
         started = app.post("/tv/pair", json={"name": "Apple TV"}).json
-        app.post(f"/tv/pair/{started['pair_id']}/approve", data={"name": given},
+        app.post(f"/panel/api/pairings/{started['pair_id']}/approve", json={"name": given},
                  environ_base={"REMOTE_ADDR": "172.30.32.2"})
         names.append(app.get(f"/tv/pair/{started['pair_id']}").json["name"])
     # blank keeps the Apple TV's own name; a name already taken gets a number
@@ -798,20 +818,20 @@ def test_panel_renames_a_paired_apple_tv(plex):
     secret = pair(plex, "Apple TV")["Authorization"].removeprefix("Bearer ")
     pair(plex, "Den")
     started = app.post("/tv/pair", json={"name": "iPhone", "kind": "phone"}).json
-    app.post(f"/tv/pair/{started['pair_id']}/approve", environ_base={"REMOTE_ADDR": "172.30.32.2"})
+    app.post(f"/panel/api/pairings/{started['pair_id']}/approve", json={}, environ_base={"REMOTE_ADDR": "172.30.32.2"})
     tv, _, phone = plex.app_pairings.devices()
     plex.app_pairings.set_player(phone["id"], "app:Apple TV")
-    rename = f"/tv/devices/{tv['id']}/rename"
-    assert app.post(rename, data={"name": "Living Room"}, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
-    assert app.post(rename, data={"name": " "}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 400
-    assert app.post(rename, data={"name": "Living  Room"}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 200
+    rename = f"/panel/api/devices/{tv['id']}/rename"
+    assert app.post(rename, json={"name": "Living Room"}, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+    assert app.post(rename, json={"name": " "}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 400
+    assert app.post(rename, json={"name": "Living  Room"}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 200
     # the Apple TV keeps its pairing under the new name, and the phone follows it
     assert plex.app_pairings.device(secret) == "Living Room"
     assert plex.app_pairings.devices()[2]["player"] == "app:Living Room"
     # another device's name gets a number; its own name (even in another case) doesn't
-    app.post(rename, data={"name": "den"}, environ_base={"REMOTE_ADDR": "172.30.32.2"})
+    app.post(rename, json={"name": "den"}, environ_base={"REMOTE_ADDR": "172.30.32.2"})
     assert plex.app_pairings.device(secret) == "den 2"
-    app.post(rename, data={"name": "DEN 2"}, environ_base={"REMOTE_ADDR": "172.30.32.2"})
+    app.post(rename, json={"name": "DEN 2"}, environ_base={"REMOTE_ADDR": "172.30.32.2"})
     assert plex.app_pairings.device(secret) == "DEN 2"
 
 
@@ -828,8 +848,8 @@ def test_phone_picks_where_its_taps_go(plex):
     app = create_app(CONFIG, plex).test_client()
     pair(plex, "Den")  # a Marquee Apple TV
     started = app.post("/tv/pair", json={"name": "iPhone", "kind": "phone"}).json
-    assert b"iPhone (Marquee Remote) wants to pair" in app.get("/").data
-    app.post(f"/tv/pair/{started['pair_id']}/approve", data={"name": "Kevin's iPhone"},
+    assert app.get("/panel/api/overview").json["pairing_requests"][0]["kind"] == "phone"
+    app.post(f"/panel/api/pairings/{started['pair_id']}/approve", json={"name": "Kevin's iPhone"},
              environ_base={"REMOTE_ADDR": "172.30.32.2"})
     secret = app.get(f"/tv/pair/{started['pair_id']}").json["secret"]
     phone = {"headers": {"Authorization": f"Bearer {secret}"}, "environ_base": {"REMOTE_ADDR": "192.168.0.60"}}
@@ -839,7 +859,7 @@ def test_phone_picks_where_its_taps_go(plex):
     assert {"id": "app:Den", "name": "Den", "kind": "Marquee"} in players["players"]
     assert {"id": "Living Room", "name": "Living Room", "kind": "Plex"} in players["players"]
     assert app.post("/phone/player", json={"player": "app:Den"}, **phone).json["selected"] == "app:Den"
-    assert b"taps go to app:Den" in app.get("/").data
+    assert app.get("/panel/api/overview").json["devices"][1]["player"] == "app:Den"
 
     # a tap from the phone's address goes to its player; other phones get the default
     plex._play_in_app = mock.Mock()
@@ -903,6 +923,54 @@ def test_phone_api_needs_a_paired_phone(plex):
     phone = {"Authorization": f"Bearer {plex.app_pairings.poll(started['pair_id'])['secret']}"}
     assert app.get("/tv/inbox", headers=phone).status_code == 401  # and a phone isn't an Apple TV
     assert app.post("/phone/player", json={"player": 5}, headers=phone).status_code == 400
+
+
+def pair_home_assistant(plex, app) -> dict:
+    started = app.post("/tv/pair", json={"name": "Home Assistant", "kind": "homeassistant"}).json
+    plex.app_pairings.approve(started["pair_id"])
+    return {"Authorization": f"Bearer {plex.app_pairings.poll(started['pair_id'])['secret']}"}
+
+
+def test_home_assistant_hears_what_marquee_players_play(plex):
+    app = create_app(CONFIG, plex).test_client()
+    den = pair(plex, "Den")
+    pair(plex, "Kevin's iPhone")
+    assert app.get("/ha/players").status_code == 401
+    assert app.get("/ha/players", headers=den).status_code == 401  # a Marquee isn't Home Assistant
+    ha = pair_home_assistant(plex, app)
+    assert app.get("/tv/inbox", headers=ha).status_code == 401  # and Home Assistant isn't a Marquee
+    assert app.get("/panel/api/overview").json["devices"][2]["kind"] == "homeassistant"
+
+    first = app.get("/ha/players", headers=ha).json
+    assert [(p["id"], p["state"]) for p in first["players"]] == [("app:Den", "idle"), ("app:Kevin's iPhone", "idle")]
+
+    # nothing new: waits, then answers with the same tag
+    t = time.monotonic()
+    assert app.get(f"/ha/players?tag={first['tag']}&wait=0.3", headers=ha).json["tag"] == first["tag"]
+    assert time.monotonic() - t >= 0.3
+
+    # a movie starting answers a waiting request straight away
+    report = {"state": "playing", "key": "tmdb-603", "title": "The Matrix", "position": 5, "duration": 8160}
+    threading.Timer(0.2, lambda: app.post("/tv/status", json=report, headers=den)).start()
+    t = time.monotonic()
+    changed = app.get(f"/ha/players?tag={first['tag']}&wait=10", headers=ha).json
+    assert time.monotonic() - t < 5
+    assert changed["tag"] != first["tag"]
+    assert changed["players"][0] == {"id": "app:Den", "device_id": mock.ANY, "name": "Den", "state": "playing",
+                                     "key": "tmdb-603", "title": "The Matrix", "poster": "/poster/tmdb-603",
+                                     "position": 5, "duration": 8160}
+    # the position moving on isn't a change
+    app.post("/tv/status", json={**report, "position": 11}, headers=den)
+    assert app.get(f"/ha/players?tag={changed['tag']}&wait=0", headers=ha).json["tag"] == changed["tag"]
+
+    # controls and starting a movie
+    assert app.post("/ha/control", json={"player": "app:Den", "action": "pause"}, headers=ha).json["ok"]
+    assert app.get("/tv/inbox", headers=den).json["action"] == "pause"
+    assert app.post("/ha/control", json={"player": "app:Den", "action": "eject"}, headers=ha).status_code == 400
+    with mock.patch("plexnfc.server.threading.Thread") as thread:
+        started = app.post("/ha/play", json={"key": "tmdb-603", "player": "app:Den"}, headers=ha)
+    assert started.status_code == 202 and started.json["title"] == "The Matrix"
+    assert thread.call_args.kwargs["args"] == ("tmdb-603", "app:Den", False)
 
 
 def test_player_scripts_setting():
@@ -1054,15 +1122,20 @@ def test_apple_tv_routes_are_panel_only(plex):
     plex.apple_tvs.link_for.return_value = {"identifier": "ATV1", "name": "Living Room", "address": "192.168.0.30"}
     app = create_app(CONFIG, plex).test_client()
     outside = {"REMOTE_ADDR": "192.168.0.50"}
-    assert app.get("/appletv/scan", environ_base=outside).status_code == 403
-    assert app.post("/appletv/pair", data={"identifier": "ATV1", "player": "Den"}, environ_base=outside).status_code == 403
-    assert app.post("/appletv/open", data={"player": "Den"}, environ_base=outside).status_code == 403
-    assert b"Living Room" in app.get("/appletv/scan").data
+    assert app.post("/panel/api/appletvs/scan", environ_base=outside).status_code == 403
+    assert app.post("/panel/api/appletvs/pair", json={"identifier": "ATV1", "player": "Den"},
+                    environ_base=outside).status_code == 403
+    assert app.post("/panel/api/appletvs/open", json={"player": "Den"}, environ_base=outside).status_code == 403
+    assert app.post("/panel/api/appletvs/scan").json["found"][0]["name"] == "Living Room"
     plex.apple_tvs.start_pairing.return_value = "abc"
-    assert b'action="pair/abc"' in app.post("/appletv/pair", data={"identifier": "ATV1", "player": "Den"}).data
+    assert app.post("/panel/api/appletvs/pair", json={"identifier": "ATV1", "player": "Den"}).json["pair_id"] == "abc"
     plex.apple_tvs.finish_pairing.return_value = "Den"
-    assert b"app:Den" in app.post("/appletv/pair/abc", data={"pin": "1234"}).data
-    assert b"Find Apple TVs" in app.get("/").data
+    assert app.post("/panel/api/appletvs/pair/abc", json={"pin": "1234"}).json["player"] == "Den"
+    assert app.get("/panel/api/overview").json["apple_tvs"] == {"available": True, "linked": []}
+    from plexnfc.appletv import AppleTVError
+    plex.apple_tvs.open_marquee.side_effect = AppleTVError("The Apple TV didn't answer")
+    failed = app.post("/panel/api/appletvs/open", json={"player": "Den"})
+    assert failed.status_code == 400 and failed.json["message"] == "The Apple TV didn't answer"
 
 
 # ---- finding the Plex server from the signed-in account ------------------------------
@@ -1183,12 +1256,12 @@ def test_pairing_an_apple_tv_expects_its_marquee(plex):
     plex.apple_tvs.finish_pairing.return_value = "Den"
     plex.apple_tvs.link_for.return_value = {"identifier": "ATV1", "name": "Den Apple TV", "address": "192.168.0.34"}
     app = create_app(CONFIG, plex).test_client()
-    assert b"is connecting to this server as <b>Den</b>" in app.post("/appletv/pair/abc", data={"pin": "1234"}).data
+    assert "is connecting to this server as Den" in app.post("/panel/api/appletvs/pair/abc", json={"pin": "1234"}).json["message"]
     plex.apple_tvs.open_marquee.assert_called_once_with("Den")
     assert plex.app_pairings.expected("192.168.0.34") == "Den"
     # Connect Marquee does the same for an Apple TV paired already; panel only
-    assert app.post("/appletv/connect", data={"player": "Den"},
+    assert app.post("/panel/api/appletvs/connect", json={"player": "Den"},
                     environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
-    assert app.post("/appletv/connect", data={"player": "Den"}).status_code == 200
+    assert app.post("/panel/api/appletvs/connect", json={"player": "Den"}).status_code == 200
     plex.apple_tvs.link_for.return_value = None
-    assert app.post("/appletv/connect", data={"player": "Nope"}).status_code == 404
+    assert app.post("/panel/api/appletvs/connect", json={"player": "Nope"}).status_code == 404

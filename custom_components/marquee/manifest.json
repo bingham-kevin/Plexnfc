@@ -1,0 +1,13 @@
+{
+  "domain": "marquee",
+  "name": "Marquee",
+  "codeowners": ["@bingham-kevin"],
+  "config_flow": true,
+  "documentation": "https://github.com/bingham-kevin/Plexnfc/blob/main/docs/home-assistant.md",
+  "integration_type": "hub",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/bingham-kevin/Plexnfc/issues",
+  "requirements": [],
+  "version": "0.1.0",
+  "zeroconf": ["_moviebook._tcp.local."]
+}
