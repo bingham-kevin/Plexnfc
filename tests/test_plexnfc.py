@@ -861,6 +861,38 @@ def test_phone_picks_where_its_taps_go(plex):
     assert plex.app_pairings.player_for("192.168.0.77") is None
 
 
+def test_marquee_on_a_phone_plays_itself_or_where_its_chosen(plex):
+    app = create_app(CONFIG, plex).test_client()
+    pair(plex, "Den")  # a Marquee Apple TV
+    phone = {"headers": pair(plex, "Kevin's iPhone"), "environ_base": {"REMOTE_ADDR": "192.168.0.60"}}
+
+    players = app.get("/tv/players", **phone).json
+    assert players["selected"] is None and players["name"] == "Kevin's iPhone"
+    ids = [p["id"] for p in players["players"]]
+    assert "app:Den" in ids and "app:Kevin's iPhone" not in ids  # itself is "this iPhone"
+
+    # its taps play on itself, with a way back to Marquee from Safari
+    plex._play_in_app = mock.Mock()
+    page = app.get("/m/tmdb-603", environ_base={"REMOTE_ADDR": "192.168.0.60"}).data
+    assert plex._play_in_app.call_args.args[0] == "Kevin's iPhone"
+    assert b"moviebook://open" in page
+    # until it chooses another player
+    assert app.post("/tv/player", json={"player": "app:Den"}, **phone).json["selected"] == "app:Den"
+    page = app.get("/m/tmdb-603", environ_base={"REMOTE_ADDR": "192.168.0.60"}).data
+    assert plex._play_in_app.call_args.args[0] == "Den" and b"moviebook://" not in page
+    # Apple TVs never noted an address, so no one else's taps change
+    app.get("/m/tmdb-603", environ_base={"REMOTE_ADDR": "192.168.0.61"})
+    plex._client.playMedia.assert_called_once()
+
+    # a scanned code starts on the chosen player in the background
+    with mock.patch("plexnfc.server.threading.Thread") as thread:
+        started = app.post("/tv/start", json={"key": "tmdb-603", "player": "app:Den"}, **phone)
+    assert started.status_code == 202 and started.json["player"] == "app:Den"
+    assert thread.call_args.kwargs["args"][:2] == ("tmdb-603", "app:Den")
+    assert app.post("/tv/start", json={"key": "tmdb-603"}, **phone).status_code == 400
+    assert app.post("/tv/player", json={"player": 5}, **phone).status_code == 400
+
+
 def test_phone_api_needs_a_paired_phone(plex):
     app = create_app(CONFIG, plex).test_client()
     tv = pair(plex, "Den")

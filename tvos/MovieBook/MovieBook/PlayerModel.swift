@@ -21,7 +21,25 @@ struct InboxCommand: Decodable {
 private struct PlayDetails: Decodable {
     let url: String
     let start: Double?
+    let title: String?
+    let year: Int?
+    let summary: String?
+    let poster: String?  // a path on the server
 }
+
+/// Another player that Marquee on an iPhone or iPad can send its movies to, as the server lists it.
+struct RemotePlayer: Decodable, Identifiable, Hashable {
+    let id: String    // e.g. "app:Den Apple TV"
+    let name: String
+    let kind: String  // Marquee, Jellyfin, Plex or Home Assistant
+}
+
+private struct RemotePlayers: Decodable {
+    let players: [RemotePlayer]
+    let selected: String?
+}
+
+private struct RemoteStart: Decodable { let title: String }
 
 /// What the player shows about the movie: on the starting card and in the info panel.
 struct MovieInfo {
@@ -40,8 +58,19 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var poster: UIImage?
     @Published private(set) var isReady = false  // first frame is up; the starting card goes
     @Published var playError: String?
+    /// iPhone and iPad: where movies play, nil for right here; the server keeps the choice,
+    /// so tags tapped with this device (which open in Safari) follow it too.
+    @Published private(set) var playsOn: String?
+    @Published private(set) var remotePlayers: [RemotePlayer] = []
+    @Published private(set) var notice: String?  // e.g. "Starting Alien on Den"
 
-    var api: ServerAPI?
+    var api: ServerAPI? {
+        didSet {
+            #if os(iOS)
+            Task { await refreshPlayers() }
+            #endif
+        }
+    }
     private var key: String?
     private var lastCommandID: Int {
         get { UserDefaults.standard.integer(forKey: "lastCommandID") }
@@ -54,6 +83,9 @@ final class PlayerModel: ObservableObject {
     // MARK: - App lifecycle
 
     func becameActive() {
+        #if os(iOS)
+        Task { await refreshPlayers() }  // also how the server learns this device's address, for its taps
+        #endif
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -71,20 +103,101 @@ final class PlayerModel: ObservableObject {
     // MARK: - Choosing a movie in the app
 
     func play(_ movie: Movie) async {
-        var info = MovieInfo(title: movie.title, year: movie.year, summary: movie.summary)
         if let stream = movie.demoStream {
+            var info = MovieInfo(title: movie.title, year: movie.year, summary: movie.summary)
             info.posterImage = movie.poster.flatMap { UIImage(named: $0) }
             start(stream: stream, key: movie.key, at: 0, info: info)
             return
         }
+        await play(key: movie.key, title: movie.title)
+    }
+
+    /// Play a movie from the server: here, or on the player chosen to play on.
+    private func play(key: String, title: String?) async {
         guard let api else { return }
-        info.posterURL = movie.poster.flatMap { api.url($0) }
+        if let playsOn {
+            await start(key: key, on: playsOn, api: api)
+            return
+        }
         do {
-            let (data, _) = try await api.request("tv/play", method: "POST", body: ["key": movie.key])
+            let (data, _) = try await api.request("tv/play", method: "POST", body: ["key": key])
             let details = try JSONDecoder().decode(PlayDetails.self, from: data)
-            start(stream: details.url, key: movie.key, at: details.start ?? 0, info: info)
+            start(stream: details.url, key: key, at: details.start ?? 0,
+                  info: MovieInfo(title: details.title ?? title, year: details.year, summary: details.summary,
+                                  posterURL: details.poster.flatMap { api.url($0) }))
         } catch {
-            playError = "Couldn't start \(movie.title): \(error.localizedDescription)"
+            playError = "Couldn't start \(title ?? "that movie"): \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Book codes (QR codes on the pages, with the same address as the tags)
+
+    /// Play the movie a scanned code is for, e.g. http://marquee.local:8080/m/tmdb-603
+    func play(scanned code: String) async {
+        guard let key = Self.movieKey(in: code) else {
+            playError = "That code isn't a movie from the movie book."
+            return
+        }
+        guard api != nil else {
+            playError = "Connect a Movie Book server in Settings to play movies from the book."
+            return
+        }
+        await play(key: key, title: nil)
+    }
+
+    static func movieKey(in code: String) -> String? {
+        guard let url = URL(string: code.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+        let parts = url.pathComponents
+        guard let m = parts.firstIndex(of: "m"), m + 1 < parts.count, !parts[m + 1].isEmpty else { return nil }
+        return parts[m + 1]
+    }
+
+    // MARK: - Playing on another player (iPhone and iPad)
+
+    var playsOnName: String? {
+        playsOn.map { id in remotePlayers.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }?.name ?? id }
+    }
+
+    func refreshPlayers() async {
+        guard let api else {
+            remotePlayers = []
+            playsOn = nil
+            return
+        }
+        guard let list = try? await api.get("tv/players", as: RemotePlayers.self) else { return }
+        remotePlayers = list.players
+        playsOn = list.selected
+    }
+
+    /// Play on `player` (a player ID), or here with nil.
+    func playOn(_ player: String?) async {
+        guard let api else { return }
+        let previous = playsOn
+        playsOn = player  // show it straight away
+        do {
+            _ = try await api.request("tv/player", method: "POST", body: ["player": player ?? NSNull()])
+        } catch {
+            playsOn = previous
+            playError = "Couldn't change where movies play: \(error.localizedDescription)"
+        }
+    }
+
+    private func start(key: String, on player: String, api: ServerAPI) async {
+        let name = playsOnName ?? player
+        do {
+            let (data, _) = try await api.request("tv/start", method: "POST", body: ["key": key, "player": player])
+            let started = try JSONDecoder().decode(RemoteStart.self, from: data)
+            show("Starting \(started.title) on \(name)")
+        } catch {
+            playError = "Couldn't start it on \(name): \(error.localizedDescription)"
+        }
+    }
+
+    private func show(_ text: String) {
+        notice = text
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            if notice == text { notice = nil }
         }
     }
 

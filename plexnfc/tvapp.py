@@ -222,8 +222,16 @@ class AppPairings:
 
     def phone(self, secret: str | None, address: str | None = None) -> dict | None:
         """The paired phone for this secret, or None. Notes ``address`` as where its taps come from."""
+        return self._note(secret, "phone", address)
+
+    def handheld(self, secret: str | None, address: str | None = None) -> dict | None:
+        """The paired Marquee for this secret, or None, noting ``address`` like ``phone`` does:
+        Marquee on an iPhone or iPad, whose taps (opened in Safari) play where it's chosen."""
+        return self._note(secret, "tv", address)
+
+    def _note(self, secret: str | None, kind: str, address: str | None) -> dict | None:
         with self._lock:
-            device_id = self._find(secret, "phone")
+            device_id = self._find(secret, kind)
             if not device_id:
                 return None
             device = self._devices[device_id]
@@ -237,19 +245,29 @@ class AppPairings:
             return {"id": device_id, "name": device["name"], "player": device.get("player")}
 
     def set_player(self, device_id: str, player: str | None) -> None:
-        """Send this phone's taps to ``player`` (a player ID such as ``app:Den``), or None for the default."""
+        """Send this phone's taps to ``player`` (a player ID such as ``app:Den``), or None for the
+        default (for Marquee on an iPhone or iPad: itself)."""
         with self._lock:
             if device_id in self._devices:
                 self._devices[device_id]["player"] = player or None
                 self._save()
 
+    def handheld_at(self, address: str | None) -> str | None:
+        """The name of Marquee on the iPhone or iPad at this address, if it's one."""
+        with self._lock:
+            return next((d["name"] for d in self._devices.values()
+                         if address and d.get("address") == address and d.get("kind", "tv") == "tv"), None)
+
     def player_for(self, address: str | None) -> str | None:
-        """The player chosen on the paired phone at this address, if any."""
+        """The player chosen on the paired phone at this address, if any. Marquee on an
+        iPhone or iPad plays its own taps unless it has chosen another player."""
         if not address:
             return None
         with self._lock:
             for device in self._devices.values():
-                if device.get("kind") == "phone" and device.get("address") == address:
+                if device.get("address") == address:
+                    if device.get("kind", "tv") == "tv":
+                        return device.get("player") or f"app:{device['name']}"
                     return device.get("player")
         return None
 

@@ -25,7 +25,15 @@ You need a Mac with Xcode and an Apple ID.
 5. Choose the Apple TV as the run destination and press Run.
 6. On the Apple TV, connect to the server and approve the pairing code in its panel.
 
-For an iPhone or iPad, plug it in (or pair it in **Window → Devices and Simulators**), choose it as the run destination, and press Run. Tags with `?client=app:NAME` then play on that iPhone or iPad while Marquee is open on it. Marquee Server only opens Marquee by itself on Apple TVs; on an iPhone or iPad, open it first.
+For an iPhone or iPad, plug it in (or pair it in **Window → Devices and Simulators**), choose it as the run destination, and press Run. Marquee Server only opens Marquee by itself on Apple TVs.
+
+### On iPhone and iPad
+
+- **Play on** (top left) chooses where movies play: this iPhone or iPad, or another player such as an Apple TV. Posters chosen in Marquee, scanned codes and tapped tags all go there. The server keeps the choice (`/tv/players`, `/tv/player`; another player is started with `/tv/start`).
+- **Scan** (top right) reads the QR code printed next to each movie in the book with the camera.
+- **Tapping a tag** opens it in Safari, as on any iPhone. The server recognizes the iPhone or iPad by its Wi-Fi address (noted whenever Marquee opens), so the movie plays where it chose. When that's the iPhone or iPad itself, the page offers to open Marquee (Safari asks first), which then plays the movie. A tag with `?client=` still plays where the tag says.
+
+Reading tags inside the app (Core NFC) needs a paid Apple Developer account, so Marquee doesn't do it; the QR codes and Safari cover the same movies.
 
 With a free Apple ID, Apple lets the app run for 7 days before it has to be installed again from Xcode. A paid Apple Developer account makes installs last a year.
 

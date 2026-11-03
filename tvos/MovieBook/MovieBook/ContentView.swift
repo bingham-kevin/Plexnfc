@@ -20,6 +20,17 @@ struct RootView: View {
                     .transition(.opacity)
             }
         }
+        .overlay(alignment: .top) {
+            if let notice = player.notice {  // a movie started on another player
+                Label(notice, systemImage: "play.tv")
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.default, value: player.notice)
         .alert("Can't play", isPresented: Binding(get: { player.playError != nil },
                                                   set: { if !$0 { player.playError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -179,10 +190,68 @@ private extension View {
         #if os(tvOS)
         self
         #else
-        NavigationStack { self.navigationTitle(title) }
+        NavigationStack {
+            self.navigationTitle(title)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) { PlayOnMenu() }
+                    ToolbarItem(placement: .topBarTrailing) { ScanButton() }
+                }
+        }
         #endif
     }
 }
+
+#if os(iOS)
+/// Where movies play: on this iPhone or iPad, or on another player such as an Apple TV.
+/// Posters chosen here, scanned codes and tags tapped with this device all go there.
+private struct PlayOnMenu: View {
+    @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var player: PlayerModel
+
+    var body: some View {
+        if app.connection != nil {
+            Menu {
+                Section("Play on") {
+                    choice("This \(app.deviceKind)", app.deviceKind == "iPad" ? "ipad" : "iphone", nil)
+                    ForEach(player.remotePlayers) { remote in
+                        choice(remote.name, remote.kind == "Home Assistant" ? "house" : "tv", remote.id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: player.playsOn == nil ? "iphone" : "tv")
+                    Text(player.playsOnName ?? "This \(app.deviceKind)").lineLimit(1)
+                }
+                .padding(.horizontal, 4)
+            }
+            .accessibilityLabel("Play on \(player.playsOnName ?? "this \(app.deviceKind)")")
+        }
+    }
+
+    private func choice(_ name: String, _ symbol: String, _ id: String?) -> some View {
+        let chosen = player.playsOn?.caseInsensitiveCompare(id ?? "") == .orderedSame || (player.playsOn == nil && id == nil)
+        return Button { Task { await player.playOn(id) } } label: {
+            Label(name, systemImage: chosen ? "checkmark" : symbol)
+        }
+    }
+}
+
+/// The camera, for the QR codes in the movie book.
+private struct ScanButton: View {
+    @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var player: PlayerModel
+    @State private var scanning = false
+
+    var body: some View {
+        if app.connection != nil {
+            Button { scanning = true } label: { Label("Scan a Movie", systemImage: "qrcode.viewfinder") }
+                .fullScreenCover(isPresented: $scanning) {
+                    BookScanner { code in Task { await player.play(scanned: code) } }
+                }
+        }
+    }
+}
+#endif
 
 private struct HomeView: View {
     @EnvironmentObject private var library: LibraryModel
@@ -256,6 +325,7 @@ private struct SearchView: View {
 private struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var library: LibraryModel
+    @EnvironmentObject private var player: PlayerModel
 
     var body: some View {
         Form {
@@ -263,8 +333,13 @@ private struct SettingsView: View {
                 Section("Movie Book server") {
                     LabeledContent("Address", value: connection.address)
                     LabeledContent("This \(app.deviceKind)", value: connection.name)
+                    #if os(tvOS)
                     Text("Taps in the movie book for “\(connection.name)” start here while Marquee is open.")
                         .foregroundStyle(.secondary)
+                    #else
+                    Text("Movies you choose, scan or tap with this \(app.deviceKind) play on \(player.playsOnName ?? "this \(app.deviceKind)"). Change it with the button at the top left. A tapped tag opens in Safari first; the movie waits for Marquee to open.")
+                        .foregroundStyle(.secondary)
+                    #endif
                     Button("Disconnect and Forget Server", role: .destructive) { app.disconnect() }
                 }
             } else {

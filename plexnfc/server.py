@@ -115,14 +115,21 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             threading.Thread(target=play_in_background, daemon=True,
                              args=(key, tap_client(), resume_param())).start()
             return jsonify(state="starting", key=key, title=movie.title), 202
+        client_name = tap_client()
         try:
-            movie, client = plex.play(key, tap_client(), resume_param())
+            movie, client = plex.play(key, client_name, resume_param())
         except PlexNFCError as e:
             return page("Can't play", f'<h1 class="err">Can\'t play that</h1><p>{escape(str(e))}</p>', 404)
+        # Tapped with an iPhone or iPad that plays it itself: the tap opened Safari, so go
+        # back to Marquee, which collects the movie when it's open (Safari asks first)
+        own = plex.app_pairings.handheld_at(request.remote_addr)
+        back = ('<p><a class="btn" href="moviebook://open">Open Marquee</a></p>'
+                '<script>location.href = "moviebook://open"</script>'
+                if own and (client_name or "").casefold() == f"app:{own}".casefold() else "")
         return page(
             f"Playing {movie.title}",
             f'<img src="/poster/{escape(key)}" alt=""><h1>{escape(movie.title)}</h1>'
-            f"<p>Now playing on {escape(client.title)}</p>",
+            f"<p>Now playing on {escape(client.title)}</p>{back}",
         )
 
     @app.get("/<any(pause, play, stop):action>")
@@ -144,10 +151,13 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
 
     # ---- the Marquee Apple TV app ----------------------------------------------------
 
+    def bearer() -> str | None:
+        auth = request.headers.get("Authorization", "")
+        return auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else None
+
     def paired_device() -> str | None:
         """The paired Apple TV making this request, from its ``Authorization: Bearer`` secret."""
-        auth = request.headers.get("Authorization", "")
-        return plex.app_pairings.device(auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else None)
+        return plex.app_pairings.device(bearer())
 
     # Home Assistant's ingress, and this machine itself. On the host network (needed for
     # Bonjour) ingress requests come from the host's own address, the tag address's host.
@@ -367,6 +377,38 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     @app_route("/tv/search")
     def tv_search(device):
         return jsonify(items=plex.app_search(request.args.get("q", "")))
+
+    # Marquee on an iPhone or iPad: where it plays (itself, or another player), like Marquee
+    # Remote's choice. Asking notes its address, so its taps opened in Safari play there too.
+
+    @app_route("/tv/players")
+    def tv_players(device):
+        me = plex.app_pairings.handheld(bearer(), request.remote_addr)
+        own = f"app:{device}".casefold()
+        return jsonify(players=[p for p in plex.players() if p["id"].casefold() != own],
+                       selected=me and me["player"], name=device)
+
+    @app_route("/tv/player", methods=["POST"])
+    def tv_player(device):
+        player = (request.get_json(silent=True) or {}).get("player")
+        if player is not None and not (isinstance(player, str) and 0 < len(player) <= 200):
+            return jsonify(ok=False, message="player must be a player ID, or null for this device"), 400
+        me = plex.app_pairings.handheld(bearer(), request.remote_addr)
+        plex.app_pairings.set_player(me["id"], player)
+        return jsonify(ok=True, selected=player)
+
+    @app_route("/tv/start", methods=["POST"])
+    def tv_start(device):
+        """Start a movie on another player, e.g. a scanned book code while that player is chosen.
+        Returns at once: switching on an Apple TV and opening Marquee there takes a while."""
+        body = request.get_json(silent=True) or {}
+        player = body.get("player")
+        if not (isinstance(player, str) and 0 < len(player) <= 200):
+            return jsonify(ok=False, message="Choose a player"), 400
+        movie = plex.find_movie(body.get("key", ""))
+        threading.Thread(target=play_in_background, daemon=True,
+                         args=(body["key"], player, body.get("resume"))).start()
+        return jsonify(ok=True, title=movie.title, player=player), 202
 
     @app_route("/tv/play", methods=["POST"])
     def tv_play(device):

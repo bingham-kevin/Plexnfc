@@ -13,22 +13,21 @@
 			</array>
 		</dict>
 	</array>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<!-- plexnfc and Jellyfin are usually plain http on the home network -->
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-		<key>NSAllowsArbitraryLoadsForMedia</key>
-		<true/>
-	</dict>
-	<!-- Only Apple's built-in HTTPS; no other encryption (App Store export compliance) -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<!-- plexnfc announces itself with Bonjour, so the server can be picked from a list -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsForMedia</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_moviebook._tcp</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Marquee uses the camera to read the codes in your movie book, to play those movies.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Marquee connects to your Movie Book server on your home network to show and play your movies.</string>
 </dict>
