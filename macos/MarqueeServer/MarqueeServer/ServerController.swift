@@ -17,6 +17,8 @@ final class ServerController: ObservableObject {
 
     @Published private(set) var state: State = .stopped
     @Published private(set) var log: [String] = []
+    /// The Plex server in use, as the server reports it, e.g. "Plex (https://192-168-0-142…plex.direct:32400)"
+    @Published private(set) var plexServer: String?
 
     @Published var plexURL: String { didSet { save(plexURL, "plexURL") } }  // blank: from the Plex sign-in
     @Published var library: String { didSet { save(library, "library") } }
@@ -26,6 +28,7 @@ final class ServerController: ObservableObject {
     @Published var pythonPath: String { didSet { save(pythonPath, "pythonPath") } }  // blank: find one
 
     let supportDirectory: URL
+    private var logFile: FileHandle?  // server.log in the data folder, for when something goes wrong
     private var process: Process?
     private var stopping = false
 
@@ -65,6 +68,22 @@ final class ServerController: ObservableObject {
         case .settingUp(let step): step
         case .running: "Running at \(publicBaseURL)"
         case .failed(let message): message
+        }
+    }
+
+    /// Ask the running server which Plex server it's using (found from the sign-in when none is set).
+    func refreshPlexServer() async {
+        struct Answer: Decodable { let name: String?; let url: String?; let error: String? }
+        guard state == .running,
+              let (data, _) = try? await URLSession.shared.data(from: panelURL.appendingPathComponent("plex/server")),
+              let answer = try? JSONDecoder().decode(Answer.self, from: data) else {
+            plexServer = nil
+            return
+        }
+        if let name = answer.name, let url = answer.url {
+            plexServer = "Using \(name) at \(url)"
+        } else {
+            plexServer = answer.error
         }
     }
 
@@ -118,6 +137,7 @@ final class ServerController: ObservableObject {
         if !plexURL.isEmpty { environment["PLEX_URL"] = plexURL }
         environment["PLEX_LIBRARY"] = library
         environment["PUBLIC_BASE_URL"] = publicBaseURL
+        environment["SERVER_NAME"] = "Movie Book on \(Host.current().localizedName ?? "this Mac")"
         if !appPlayer.isEmpty { environment["APP_PLAYER"] = appPlayer }
         process.environment = environment
         let output = Pipe()
@@ -132,6 +152,9 @@ final class ServerController: ObservableObject {
             let code = finished.terminationStatus
             Task { @MainActor in self?.serverExited(finished, code: code) }
         }
+        let logURL = supportDirectory.appendingPathComponent("server.log")
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)  // one run per file
+        logFile = try? FileHandle(forWritingTo: logURL)
         try process.run()
         self.process = process
     }
@@ -159,6 +182,7 @@ final class ServerController: ObservableObject {
     }
 
     private func append(_ text: String) {
+        logFile?.write(Data(text.utf8))
         log.append(contentsOf: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init))
         if log.count > 1000 { log.removeFirst(log.count - 1000) }
     }

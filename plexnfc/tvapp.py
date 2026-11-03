@@ -229,15 +229,18 @@ class AppPairings:
 def plex_hls_url(plex_url: str, token: str, rating_key, start: int, player: str) -> str:
     """Plex's HLS stream for a movie, which AVPlayer on Apple TV plays as is.
 
-    Plex copies the video when the Apple TV can play it and converts only what
-    it can't (MKV containers, some audio), so most movies start without a full
-    transcode.
+    Plex converts the video rather than copying it: copying H.264 out of MKV
+    files into HLS crashes Plex's converter (Plex 1.43), and HEVC gets
+    converted anyway. Servers with hardware encoding do this cheaply. It's
+    capped at 1080p: converting 4K HEVC to 4K H.264 stalls, and every Apple TV
+    plays 1080p H.264.
     """
     session = str(uuid.uuid4())
     params = {
         "path": f"/library/metadata/{rating_key}",
-        "protocol": "hls", "fastSeek": 1, "directPlay": 0, "directStream": 1, "directStreamAudio": 1,
+        "protocol": "hls", "fastSeek": 1, "directPlay": 0, "directStream": 0, "directStreamAudio": 1,
         "mediaIndex": 0, "partIndex": 0, "subtitles": "none", "offset": int(start),
+        "videoResolution": "1920x1080", "maxVideoBitrate": 20000,
         "session": session, "X-Plex-Session-Identifier": session,
         "X-Plex-Client-Identifier": f"moviebook-{player}", "X-Plex-Product": "Marquee",
         "X-Plex-Platform": "iOS", "X-Plex-Device": "Apple TV", "X-Plex-Token": token,

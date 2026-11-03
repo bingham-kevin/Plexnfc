@@ -83,6 +83,12 @@ struct SettingsView: View {
         Form {
             Section {
                 TextField("Plex server", text: $server.plexURL, prompt: Text("Found when you sign in to Plex"))
+                if server.plexURL.isEmpty, let plexServer = server.plexServer {
+                    Text(plexServer)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
                 TextField("Movie library", text: $server.library)
                 TextField("Marquee player", text: $server.appPlayer, prompt: Text("e.g. Living Room"))
             } footer: {
@@ -109,6 +115,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 460)
+        .task(id: server.state) { await server.refreshPlexServer() }
     }
 }
 

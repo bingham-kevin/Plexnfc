@@ -14,6 +14,7 @@ import re
 import time
 from types import SimpleNamespace
 
+import requests
 from plexapi.exceptions import NotFound
 from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
@@ -99,9 +100,15 @@ class Plex:
                                else "Your Plex account has no Plex server")
         resource = sorted(servers, key=lambda r: not r.owned)[0]
         try:
-            server = resource.connect()
-        except Exception as e:
-            raise PlexNFCError(f"Couldn't connect to the Plex server {resource.name}: {e}") from None
+            # Its plain home-network address first: the Apple TV streams from the same address,
+            # and some routers won't look up plex.direct names, which point at home addresses.
+            # (Docker and remote addresses can take 30s to give up, hence the timeout.)
+            server = resource.connect(ssl=False, timeout=5, locations=["local"])
+        except Exception:
+            try:
+                server = resource.connect(timeout=5)
+            except Exception as e:
+                raise PlexNFCError(f"Couldn't connect to the Plex server {resource.name}: {e}") from None
         log.info("Using Plex server %s at %s", resource.name, server._baseurl)
         self._account = account
         return server
@@ -330,10 +337,29 @@ class Plex:
     def _app_player(self, client_name: str | None) -> str | None:
         """The Marquee player to use: ``?client=app:NAME``, else APP_PLAYER."""
         if client_name:
-            return client_name.removeprefix("app:") if client_name.startswith("app:") else None
-        return self.config.app_player or None
+            name = client_name.removeprefix("app:") if client_name.startswith("app:") else None
+        else:
+            name = self.config.app_player or None
+        return self._marquee_name(name) if name else None
+
+    def _marquee_name(self, name: str) -> str:
+        """The paired Marquee's name for ``name``, which may instead be the name of the
+        Apple TV paired for it (e.g. "Den Apple TV" for the Marquee named "Den")."""
+        for device in self.app_pairings.devices():
+            if device["kind"] == "tv" and device["name"].casefold() == name.casefold():
+                return device["name"]
+        for player, link in self.apple_tvs.linked().items():
+            if link["name"].casefold() == name.casefold():
+                return player
+        return name
 
     def _play_in_app(self, name: str, key: str, movie, resume: bool) -> None:
+        # Marquee only collects movies from a server it's paired with, so don't report one as playing
+        if not any(d["kind"] == "tv" and d["name"].casefold() == name.casefold()
+                   for d in self.app_pairings.devices()):
+            raise PlexNFCError(f"Marquee on {name} isn't connected to this server. In Marquee on that Apple TV, "
+                               f"connect to {self.config.public_base_url.split('://', 1)[-1]} and approve its "
+                               f"code in the control panel, naming it {name}.")
         log.info("Sending %s (%s) to the Marquee app on %s", movie.title, key, name)
         self.app_inbox.send(name, "play", **self.app_play_details(name, key, movie, resume))
 
@@ -350,8 +376,25 @@ class Plex:
             url = jellyfin_hls_url(self.config.jellyfin_url, self.config.jellyfin_api_key, item["Id"], start, name)
         else:
             url = plex_hls_url(self.plex_url, self.config.plex_token, movie.ratingKey, start, name)
+            self._start_plex_session(url)
         # The app shows these in its player; the poster comes from plexnfc's own /poster
         return {"url": url, "start": 0, **app_movie(movie, key), "poster": f"/poster/{key}?w=600&h=900"}
+
+    def _start_plex_session(self, url: str) -> None:
+        """Ask Plex to decide how to stream before the app asks for the stream.
+
+        Newer Plex servers (1.43) turn the stream away with 400 Bad Request unless
+        its session has had a decision first. Older ones don't need it, so a
+        failure here only gets logged.
+        """
+        # A plain request: plexapi's own client headers would clash with the stream's
+        decision = url.replace("/start.m3u8?", "/decision?", 1)
+        try:
+            status = requests.get(decision, timeout=15).status_code
+        except requests.RequestException as e:
+            status = type(e).__name__
+        if status != 200:  # the address carries the Plex token, so it stays out of the log
+            log.warning("Plex didn't decide how to stream this (%s); trying anyway", status)
 
     # ---- library for the Marquee app ------------------------------------------------
 

@@ -640,19 +640,33 @@ def _pairings_in_tmp(plex, tmp_path):
 
 
 def pair(plex, name="Den") -> dict:
-    """Pair an Apple TV the way the app and panel do; returns its request headers."""
-    p = plex.app_pairings.start(name)
-    plex.app_pairings.approve(p["pair_id"])
-    return {"Authorization": f"Bearer {plex.app_pairings.poll(p['pair_id'])['secret']}"}
+    """Pair an Apple TV the way the app and panel do (once per name); returns its request headers."""
+    paired = plex.__dict__.setdefault("_test_pairs", {})
+    if name not in paired:
+        p = plex.app_pairings.start(name)
+        plex.app_pairings.approve(p["pair_id"])
+        paired[name] = {"Authorization": f"Bearer {plex.app_pairings.poll(p['pair_id'])['secret']}"}
+    return paired[name]
 
 
 def app_plex(plex, **cfg):
+    """Play in Marquee on the APP_PLAYER Apple TV, which is paired."""
     from dataclasses import replace
     plex.config = replace(plex.config, **{"app_player": "Den", **cfg})
+    if plex.config.app_player:
+        pair(plex, plex.config.app_player)
     return plex
 
 
-def test_app_play_leaves_stream_in_inbox_before_script(plex):
+@pytest.fixture(autouse=True)
+def requests_get(monkeypatch):
+    """Plex's stream decision, which plexnfc asks for before handing out a stream."""
+    get = mock.Mock(return_value=mock.Mock(status_code=200))
+    monkeypatch.setattr("plexnfc.plex.requests.get", get)
+    return get
+
+
+def test_app_play_leaves_stream_in_inbox_before_script(plex, requests_get):
     plex = app_plex(ha_plex(plex), app_player="Den")
     order = []
     plex.ha.run_script.side_effect = lambda *a, **k: order.append(("script", plex.app_inbox.next("Den", 0)))
@@ -663,6 +677,11 @@ def test_app_play_leaves_stream_in_inbox_before_script(plex):
     assert command["action"] == "play" and command["key"] == "tmdb-603" and command["title"] == "The Matrix"
     assert "/video/:/transcode/universal/start.m3u8?" in command["url"] and "X-Plex-Token=tok" in command["url"]
     assert "subtitles=none" in command["url"] and "offset=0" in command["url"]
+    assert "directStream=0" in command["url"]  # copying MKV video into HLS crashes Plex's converter
+    assert "videoResolution=1920x1080" in command["url"]  # 4K conversions stall
+    # Plex 1.43 only streams a session it has made a decision for, so that comes first
+    decision = requests_get.call_args.args[0]
+    assert decision == command["url"].replace("/start.m3u8?", "/decision?")
     plex._client.playMedia.assert_not_called()
     # the app picks it up once, by ID
     headers = pair(plex, "Den")
@@ -708,6 +727,7 @@ def test_app_inbox_expires_old_commands(monkeypatch):
 
 def test_client_param_picks_app(plex):
     plex = app_plex(plex, app_player="")
+    pair(plex, "Bedroom")
     create_app(plex.config, plex).test_client().get("/m/tmdb-603?client=app:Bedroom")
     assert plex.app_inbox.next("Bedroom", 0)["action"] == "play"
 
@@ -1066,3 +1086,31 @@ def test_advertise_answers_for_a_local_name(monkeypatch):
     info = zc.register_service.call_args.args[0]
     assert info.server == "marquee.local." and info.port == 8080
     assert info.properties[b"url"] == b"http://marquee.local:8080"
+
+
+def test_app_play_to_unpaired_marquee_says_so(plex):
+    from dataclasses import replace
+    plex.config = replace(plex.config, app_player="Den")  # Marquee on Den never paired with this server
+    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    assert r.status_code != 200 and b"isn&#x27;t connected to this server" in r.data
+    assert plex.app_inbox.next("Den", 0) is None
+
+
+def test_plex_server_reports_the_server_in_use(plex):
+    plex.server.friendlyName = "Plex"
+    app = create_app(CONFIG, plex).test_client()
+    assert app.get("/plex/server").json == {"name": "Plex", "url": "http://plex:32400"}
+    plex.set_token("")
+    assert "Not signed in" in app.get("/plex/server").json["error"]
+
+
+def test_app_player_can_be_named_after_its_apple_tv(plex):
+    from dataclasses import replace
+    plex.config = replace(plex.config, app_player="den apple tv")  # what the Apple TV calls itself
+    plex.apple_tvs = mock.Mock()
+    plex.apple_tvs.linked.return_value = {"Den": {"identifier": "ATV1", "name": "Den Apple TV"}}
+    pair(plex, "Den")
+    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    assert r.status_code == 200
+    assert plex.app_inbox.next("Den", 0)["action"] == "play"
+    plex.apple_tvs.open_marquee.assert_called_once_with("Den")

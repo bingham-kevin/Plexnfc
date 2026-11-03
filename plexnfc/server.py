@@ -10,6 +10,7 @@ Routes
   /tags                list every movie with the URL to write onto its tag (/tags.csv to download)
   /book                the printable book (?layout=grid&collection=NAME&title=...)
   /plex/login          Sign in with Plex (saves the token, so nobody has to find it by hand)
+  /plex/server         JSON: the Plex server in use (found from the sign-in when PLEX_URL isn't set)
   /tv/...               the Marquee Apple TV app: pairing, inbox, status, library, search and play
   /appletv/...         pair Apple TVs so plexnfc opens Marquee on them itself (needs pyatv)
   /phone/...           the Marquee Remote phone app: which player this phone's taps go to
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import threading
 import time
 from html import escape
@@ -495,6 +497,14 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             plex.set_token(token)
         return jsonify(signed_in=bool(token))
 
+    @app.get("/plex/server")
+    def plex_server():
+        """The Plex server in use: PLEX_URL's, or the one found from the Plex sign-in."""
+        try:
+            return jsonify(name=plex.server.friendlyName, url=plex.plex_url)
+        except PlexNFCError as e:
+            return jsonify(error=str(e)), 503
+
     @app.post("/plex/logout")
     def plex_logout():
         plexauth.forget_token(config.auth_file)
@@ -604,7 +614,8 @@ def main():
     config = Config.from_env()
     from .discovery import advertise
 
-    announcement = advertise(config.public_base_url)  # noqa: F841 (kept alive while serving)
+    # SERVER_NAME tells servers apart in the apps' lists, e.g. Home Assistant's and a Mac's
+    announcement = advertise(config.public_base_url, os.environ.get("SERVER_NAME") or "Movie Book")  # noqa: F841
     create_app(config).run(host=args.host, port=args.port)
 
 
