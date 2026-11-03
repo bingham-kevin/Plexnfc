@@ -234,8 +234,7 @@ class Plex:
 
     def _play_in_app(self, name: str, key: str, movie, resume: bool) -> None:
         start = int((movie.viewOffset or 0) / 1000) if resume and getattr(movie, "viewOffset", 0) else 0
-        if self.jellyfin and self.config.app_stream != "plex":
-            # Jellyfin copies HEVC into the stream; Plex may convert more
+        if self.jellyfin and self.config.app_stream == "jellyfin":
             try:
                 item = self.jellyfin.find_movie(movie.title, movie.year, key)
             except JellyfinError as e:

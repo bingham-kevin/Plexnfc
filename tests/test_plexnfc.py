@@ -643,9 +643,9 @@ def test_app_play_leaves_stream_in_inbox_before_script(plex):
     assert app.get(f"/tv/inbox?player=Den&after={command['id']}").status_code == 204
 
 
-def test_app_play_uses_jellyfin_stream_when_set_up(plex):
+def test_app_play_uses_jellyfin_stream_when_chosen(plex):
     plex = jf_plex(plex, jellyfin_player="")
-    plex = app_plex(plex, jellyfin_url="http://jf:8096", jellyfin_api_key="k")
+    plex = app_plex(plex, jellyfin_url="http://jf:8096", jellyfin_api_key="k", app_stream="jellyfin")
     create_app(plex.config, plex).test_client().get("/m/tmdb-603")
     url = plex.app_inbox.next("Den", 0)["url"]
     assert url.startswith("http://jf:8096/Videos/abc/master.m3u8?") and "ApiKey=k" in url
@@ -693,9 +693,9 @@ def test_app_play_sends_poster_and_details(plex):
     assert command["year"] == 1999 and command["summary"] == "A hacker learns the truth."
 
 
-def test_app_stream_can_force_plex(plex):
+def test_app_stream_is_plex_even_with_jellyfin_set_up(plex):
     plex = jf_plex(plex, jellyfin_player="")
-    plex = app_plex(plex, app_stream="plex")
+    plex = app_plex(plex, app_stream="")
     create_app(plex.config, plex).test_client().get("/m/tmdb-603")
     assert "/video/:/transcode/universal/start.m3u8?" in plex.app_inbox.next("Den", 0)["url"]
     plex.jellyfin.find_movie.assert_not_called()

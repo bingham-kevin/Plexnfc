@@ -64,7 +64,7 @@ class Config:
     jellyfin_api_key: str = ""
     jellyfin_player: str = ""  # play on this Jellyfin player instead of PLEX_CLIENT
     app_player: str = ""  # play in the Marquee Apple TV app with this player name
-    app_stream: str = ""  # "plex" or "jellyfin"; blank uses Jellyfin when it's set up
+    app_stream: str = ""  # "jellyfin" streams from Jellyfin; anything else uses Plex
 
     @classmethod
     def from_env(cls) -> "Config":

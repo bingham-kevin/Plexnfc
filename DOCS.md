@@ -37,7 +37,7 @@ The movie is matched in Jellyfin by title and year and checked against the tag's
 2. Set **Marquee player** to that name.
 3. Use a get-ready script that wakes the Apple TV and opens Marquee (`media_player.select_source` with source `Marquee`).
 
-Streams come from Jellyfin when the Jellyfin settings are filled in, otherwise from Plex. A single tag can pick an app with `?client=app:NAME`.
+Streams come from Plex, which converts whatever the Apple TV can't play. To stream from Jellyfin instead, fill in the Jellyfin settings and set **Marquee stream** to `jellyfin`. A single tag can pick an app with `?client=app:NAME`.
 
 ## Making the book and the tags
 

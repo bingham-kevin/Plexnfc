@@ -4,7 +4,7 @@ A small Apple TV app that plexnfc can start movies in. Plex for Apple TV can't b
 
 ## How a tap works
 
-1. plexnfc leaves the movie's stream address in that Apple TV's inbox (`GET /tv/inbox`). The stream comes from Jellyfin when plexnfc's Jellyfin settings are filled in, otherwise from Plex. Both turn MKV files into HLS, which Apple TV plays as is.
+1. plexnfc leaves the movie's stream address in that Apple TV's inbox (`GET /tv/inbox`). The stream comes from Plex, or from Jellyfin when plexnfc's **Marquee stream** setting is `jellyfin`. Both turn MKV files into HLS, which Apple TV plays as is.
 2. The get-ready script opens Marquee.
 3. Marquee picks up the movie and plays it. It reports what's playing (`POST /tv/status`), so plexnfc's now-playing info, the Pause/Resume/Stop tags, ±30 s and the Movie Remote all work.
 
