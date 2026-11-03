@@ -743,6 +743,12 @@ def test_pairing_flow_and_panel(plex):
     approve = f"/tv/pair/{started['pair_id']}/approve"
     assert app.post(approve, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
     assert app.post(approve, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 200
+    # on the host network, ingress comes from the host's own address (the tag address's host)
+    from dataclasses import replace
+    host_app = create_app(replace(CONFIG, public_base_url="http://127.0.0.2:8080"), plex).test_client()
+    again = host_app.post("/tv/pair", json={"name": "Den 2"}).json
+    assert host_app.post(f"/tv/pair/{again['pair_id']}/approve",
+                         environ_base={"REMOTE_ADDR": "127.0.0.2"}).status_code == 200
     result = app.get(f"/tv/pair/{started['pair_id']}").json
     assert result["status"] == "approved" and result["name"] == "Den"
     assert app.get(f"/tv/pair/{started['pair_id']}").status_code == 404  # the secret is handed out once

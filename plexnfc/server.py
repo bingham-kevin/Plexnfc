@@ -28,6 +28,7 @@ import logging
 import threading
 import time
 from html import escape
+from urllib.parse import urlsplit
 
 import requests
 from flask import Flask, Response, abort, jsonify, request
@@ -143,10 +144,16 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         auth = request.headers.get("Authorization", "")
         return plex.app_pairings.device(auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else None)
 
+    # Home Assistant's ingress, and this machine itself. On the host network (needed for
+    # Bonjour) ingress requests come from the host's own address, the tag address's host.
+    # (A host name isn't looked up: the tag address is a fixed IP in practice.)
+    panel_addresses = {"172.30.32.2", "172.30.32.1", "127.0.0.1", "::1"}
+    panel_addresses.add(urlsplit(config.public_base_url).hostname or "")
+
     def from_panel() -> bool:
         """Pairings are approved only from the panel: through Home Assistant's ingress,
-        or on the machine plexnfc runs on, never from the open port on the network."""
-        return request.remote_addr in ("172.30.32.2", "127.0.0.1", "::1")
+        or on the machine plexnfc runs on, never from another device on the network."""
+        return request.remote_addr in panel_addresses
 
     def app_route(rule, **options):
         """A /tv route for paired Apple TVs: passes the Apple TV's name as ``device``."""
