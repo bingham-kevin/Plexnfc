@@ -319,3 +319,68 @@ def marquee_vintage():
 
 
 DESIGNS["marquee"] = ("Marquee", marquee_vintage)
+
+
+def demo_assets(out: Path):
+    """The welcome screen's Marquee art and simple posters for the demo films (drawn here, not the films' own art)."""
+    import json
+
+    def imageset(name: str, img: Image.Image):
+        folder = out / f"{name}.imageset"
+        folder.mkdir(parents=True, exist_ok=True)
+        img.convert("RGB").save(folder / f"{name}.png")
+        (folder / "Contents.json").write_text(json.dumps(
+            {"images": [{"idiom": "tv", "filename": f"{name}.png", "scale": "1x"}],
+             "info": {"author": "xcode", "version": 1}}, indent=2))
+
+    back, front = (done(layer) for layer in marquee_vintage())
+    imageset("Marquee", Image.alpha_composite(back, front))
+
+    try:
+        title_font = ImageFont.truetype("/System/Library/Fonts/SFNS.ttf", 64)
+        small_font = ImageFont.truetype("/System/Library/Fonts/SFNS.ttf", 30)
+    except OSError:
+        title_font = small_font = ImageFont.load_default()
+
+    def poster(name, title, subtitle, top, bottom, draw_art):
+        pw, ph = 600, 900
+        img = Image.new("RGB", (pw, ph))
+        d = ImageDraw.Draw(img)
+        for y in range(ph):
+            t = y / (ph - 1)
+            d.line([(0, y), (pw, y)], fill=tuple(int(a + (b - a) * t) for a, b in zip(top, bottom)))
+        draw_art(d, pw, ph)
+        d.text((pw // 2, ph - 170), title, fill=(255, 255, 255), font=title_font, anchor="mm")
+        d.text((pw // 2, ph - 100), subtitle, fill=(230, 230, 230), font=small_font, anchor="mm")
+        imageset(name, img)
+
+    def bunny(d, w, h):  # a big round hill and a sun
+        d.ellipse([w * 0.62, h * 0.12, w * 0.86, h * 0.28], fill=(255, 226, 120))
+        d.ellipse([-w * 0.4, h * 0.45, w * 1.4, h * 1.3], fill=(92, 168, 72))
+        d.ellipse([w * 0.32, h * 0.30, w * 0.68, h * 0.62], fill=(240, 240, 236))  # a round, bunny-ish shape
+        d.ellipse([w * 0.38, h * 0.16, w * 0.46, h * 0.36], fill=(240, 240, 236))
+        d.ellipse([w * 0.54, h * 0.16, w * 0.62, h * 0.36], fill=(240, 240, 236))
+
+    def steel(d, w, h):  # a city skyline and a glowing robot eye
+        for i, bh in enumerate([300, 420, 260, 480, 340, 380]):
+            x = i * w / 6
+            d.rectangle([x + 8, h * 0.72 - bh, x + w / 6 - 8, h * 0.72], fill=(30, 40, 56))
+        d.ellipse([w * 0.40, h * 0.20, w * 0.60, h * 0.33], fill=(255, 80, 60))
+        d.ellipse([w * 0.46, h * 0.24, w * 0.54, h * 0.29], fill=(255, 220, 200))
+
+    def sintel(d, w, h):  # snowy peaks and a small dragon-like silhouette
+        d.polygon([(0, h * 0.7), (w * 0.3, h * 0.35), (w * 0.55, h * 0.7)], fill=(220, 230, 240))
+        d.polygon([(w * 0.35, h * 0.7), (w * 0.7, h * 0.28), (w, h * 0.7)], fill=(200, 212, 228))
+        d.polygon([(w * 0.45, h * 0.18), (w * 0.62, h * 0.12), (w * 0.55, h * 0.2), (w * 0.7, h * 0.22),
+                   (w * 0.52, h * 0.26)], fill=(120, 40, 50))
+
+    def jellyfish(d, w, h):  # a jellyfish bell with trailing tentacles
+        d.pieslice([w * 0.25, h * 0.15, w * 0.75, h * 0.55], 180, 360, fill=(255, 170, 220))
+        for i in range(6):
+            x = w * 0.3 + i * w * 0.08
+            d.line([(x, h * 0.35), (x + 18, h * 0.5), (x - 10, h * 0.62)], fill=(255, 190, 230), width=6)
+
+    poster("DemoBigBuckBunny", "Big Buck Bunny", "Blender Foundation · 2008", (120, 196, 240), (230, 246, 255), bunny)
+    poster("DemoSintel", "Sintel", "Preview · Blender Foundation", (60, 90, 140), (150, 170, 200), sintel)
+    poster("DemoJellyfish", "Jellyfish", "Preview", (10, 40, 90), (20, 110, 160), jellyfish)
+    print("demo assets:", out)

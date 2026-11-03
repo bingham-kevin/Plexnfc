@@ -1,13 +1,21 @@
 """Hand movies to the Marquee Apple TV app (tvos/MovieBook).
 
 The app can't be sent commands directly, but Home Assistant can open it, and
-it then asks plexnfc what to do: ``GET /tv/inbox?player=NAME&after=ID`` returns
-the newest command for that Apple TV, and ``POST /tv/status`` reports what's
-playing so /now and the control tags work.
+it then asks plexnfc what to do: ``GET /tv/inbox?after=ID`` returns the newest
+command for that Apple TV, and ``POST /tv/status`` reports what's playing so
+/now and the control tags work. The app can also browse the library itself.
+
+Every app request carries the secret the Apple TV got when it was paired
+(``Authorization: Bearer ...``): stream addresses include the Plex token, so
+only Apple TVs you approved get them.
 """
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
+import os
+import secrets
 import threading
 import time
 import uuid
@@ -51,6 +59,94 @@ class AppInbox:
         with self._lock:
             seen, status = self._status.get(player.casefold(), (0, None))
         return status if status and time.monotonic() - seen < STATUS_TTL else None
+
+
+PAIRING_TTL = 600  # a pairing code is good for 10 minutes
+
+
+def _hash(secret: str) -> str:
+    return hashlib.sha256(secret.encode()).hexdigest()
+
+
+class AppPairings:
+    """Apple TVs allowed to use the app API.
+
+    An Apple TV asks to pair and shows a 6-digit code; you approve the code in
+    plexnfc's panel, and the Apple TV then collects a secret it sends with every
+    request. Only a hash of each secret is saved, in ``path``.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self._lock = threading.Lock()
+        self._pending: dict[str, dict] = {}
+        try:
+            with open(path) as f:
+                self._devices: dict[str, dict] = json.load(f).get("devices", {})
+        except (OSError, ValueError):
+            self._devices = {}
+
+    def _save(self) -> None:
+        tmp = f"{self.path}.tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            json.dump({"devices": self._devices}, f)
+        os.replace(tmp, self.path)
+
+    def start(self, name: str) -> dict:
+        name = " ".join(name.split())[:40] or "Apple TV"
+        pair_id = secrets.token_urlsafe(16)
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        with self._lock:
+            self._pending = {k: v for k, v in self._pending.items() if time.monotonic() - v["created"] < PAIRING_TTL}
+            self._pending[pair_id] = {"name": name, "code": code, "created": time.monotonic(), "secret": None}
+        return {"pair_id": pair_id, "code": code}
+
+    def pending(self) -> list[dict]:
+        with self._lock:
+            return [{"pair_id": k, "name": v["name"], "code": v["code"]} for k, v in self._pending.items()
+                    if v["secret"] is None and time.monotonic() - v["created"] < PAIRING_TTL]
+
+    def approve(self, pair_id: str) -> bool:
+        with self._lock:
+            entry = self._pending.get(pair_id)
+            if not entry or time.monotonic() - entry["created"] > PAIRING_TTL:
+                return False
+            entry["secret"] = secrets.token_urlsafe(32)
+            self._devices[uuid.uuid4().hex] = {"name": entry["name"], "hash": _hash(entry["secret"]),
+                                               "paired": int(time.time())}
+            self._save()
+        return True
+
+    def poll(self, pair_id: str) -> dict | None:
+        """``pending`` until approved; then the secret, once. None if unknown or expired."""
+        with self._lock:
+            entry = self._pending.get(pair_id)
+            if not entry or time.monotonic() - entry["created"] > PAIRING_TTL:
+                return None
+            if entry["secret"] is None:
+                return {"status": "pending"}
+            del self._pending[pair_id]
+            return {"status": "approved", "secret": entry["secret"], "name": entry["name"]}
+
+    def devices(self) -> list[dict]:
+        with self._lock:
+            return [{"id": k, "name": v["name"], "paired": v["paired"]} for k, v in self._devices.items()]
+
+    def remove(self, device_id: str) -> None:
+        with self._lock:
+            if self._devices.pop(device_id, None) is not None:
+                self._save()
+
+    def device(self, secret: str | None) -> str | None:
+        """The paired Apple TV's name for this secret, or None."""
+        if not secret:
+            return None
+        wanted = _hash(secret)
+        with self._lock:
+            for device in self._devices.values():
+                if secrets.compare_digest(device["hash"], wanted):
+                    return device["name"]
+        return None
 
 
 def plex_hls_url(plex_url: str, token: str, rating_key, start: int, player: str) -> str:

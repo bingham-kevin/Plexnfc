@@ -10,7 +10,7 @@ Routes
   /tags                list every movie with the URL to write onto its tag (/tags.csv to download)
   /book                the printable book (?layout=grid&collection=NAME&title=...)
   /plex/login          Sign in with Plex (saves the token, so nobody has to find it by hand)
-  /tv/inbox /tv/status the Marquee Apple TV app asks what to play and says what's playing
+  /tv/...               the Marquee Apple TV app: pairing, inbox, status, library, search and play
   /poster/<key>        poster image (proxied so your Plex token stays private)
                        ?w=200&h=300 returns a resized baseline JPEG (for the ESP32 screen)
 
@@ -130,18 +130,86 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             return page("Error", f'<h1 class="err">{escape(str(e))}</h1>', 404)
         return page("Off", "<h1>Good night</h1>")
 
-    @app.get("/tv/inbox")
-    def tv_inbox():
-        command = plex.app_inbox.next(request.args.get("player", ""), request.args.get("after", 0, type=int))
+    # ---- the Marquee Apple TV app ----------------------------------------------------
+
+    def paired_device() -> str | None:
+        """The paired Apple TV making this request, from its ``Authorization: Bearer`` secret."""
+        auth = request.headers.get("Authorization", "")
+        return plex.app_pairings.device(auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else None)
+
+    def from_panel() -> bool:
+        """Pairings are approved only from the panel: through Home Assistant's ingress,
+        or on the machine plexnfc runs on, never from the open port on the network."""
+        return request.remote_addr in ("172.30.32.2", "127.0.0.1", "::1")
+
+    def app_route(rule, **options):
+        """A /tv route for paired Apple TVs: passes the Apple TV's name as ``device``."""
+        def decorator(fn):
+            def wrapped(**kwargs):
+                device = paired_device()
+                if device is None:
+                    return jsonify(ok=False, message="This Apple TV isn't paired"), 401
+                try:
+                    return fn(device=device, **kwargs)
+                except PlexNFCError as e:
+                    return jsonify(ok=False, message=str(e)), 404
+            wrapped.__name__ = fn.__name__
+            return app.route(rule, **options)(wrapped)
+        return decorator
+
+    @app.post("/tv/pair")
+    def tv_pair():
+        name = (request.get_json(silent=True) or {}).get("name", "")
+        return jsonify(plex.app_pairings.start(name))
+
+    @app.get("/tv/pair/<pair_id>")
+    def tv_pair_status(pair_id):
+        result = plex.app_pairings.poll(pair_id)
+        return jsonify(result) if result else (jsonify(status="expired"), 404)
+
+    @app.post("/tv/pair/<pair_id>/approve")
+    def tv_pair_approve(pair_id):
+        if not from_panel():
+            abort(403)
+        plex.app_pairings.approve(pair_id)
+        return page("Paired", '<h1>Apple TV paired</h1><p><a href="../../../">Back</a></p>')
+
+    @app.post("/tv/devices/<device_id>/remove")
+    def tv_device_remove(device_id):
+        if not from_panel():
+            abort(403)
+        plex.app_pairings.remove(device_id)
+        return page("Removed", '<h1>Apple TV removed</h1><p><a href="../../../">Back</a></p>')
+
+    @app_route("/tv/inbox")
+    def tv_inbox(device):
+        command = plex.app_inbox.next(device, request.args.get("after", 0, type=int))
         return jsonify(command) if command else ("", 204)
 
-    @app.post("/tv/status")
-    def tv_status():
+    @app_route("/tv/status", methods=["POST"])
+    def tv_status(device):
         status = request.get_json(silent=True) or {}
-        if not status.get("player"):
-            return jsonify(ok=False, message="add a player"), 400
-        plex.app_inbox.set_status(status["player"], status)
+        plex.app_inbox.set_status(device, {**status, "player": device})
         return jsonify(ok=True)
+
+    @app_route("/tv/library")
+    def tv_library(device):
+        return jsonify(rows=plex.app_library())
+
+    @app_route("/tv/movies")
+    def tv_movies(device):
+        return jsonify(plex.app_movies(request.args.get("start", 0, type=int),
+                                       min(request.args.get("size", 60, type=int), 200)))
+
+    @app_route("/tv/search")
+    def tv_search(device):
+        return jsonify(items=plex.app_search(request.args.get("q", "")))
+
+    @app_route("/tv/play", methods=["POST"])
+    def tv_play(device):
+        body = request.get_json(silent=True) or {}
+        resume = body.get("resume")
+        return jsonify(plex.app_play_details(device, body.get("key", ""), resume=resume))
 
     @app.get("/now")
     def now():
@@ -306,6 +374,23 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         plex.set_token("")
         return page("Signed out", '<h1>Signed out of Plex</h1><p><a href="../">Back</a></p>')
 
+    def marquee_section() -> str:
+        """Pairing requests and paired Apple TVs for the Marquee app."""
+        server = config.public_base_url.split("://", 1)[-1]
+        rows = "".join(
+            f'<tr><td>{escape(p["name"])} wants to pair</td><td><b style="font-size:1.4em">{p["code"]}</b></td>'
+            f'<td><form action="tv/pair/{escape(p["pair_id"])}/approve" method="post">'
+            f'<button>Approve</button></form></td></tr>'
+            for p in plex.app_pairings.pending())
+        rows += "".join(
+            f'<tr><td>{escape(d["name"])}</td><td>paired</td>'
+            f'<td><form action="tv/devices/{escape(d["id"])}/remove" method="post">'
+            f'<button>Remove</button></form></td></tr>'
+            for d in plex.app_pairings.devices())
+        table = f"<table>{rows}</table>" if rows else "<p>No Apple TVs yet.</p>"
+        return (f"<h1>Marquee Apple TVs</h1><p>In the Marquee app, connect to <code>{escape(server)}</code>, "
+                f"then approve the code it shows here. Reload this page to see new requests.</p>{table}")
+
     @app.get("/")
     def index():
         # Links are relative so this page works inside the Home Assistant sidebar (ingress).
@@ -319,6 +404,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         player_label = (f"the Marquee app ({config.app_player})" if config.app_player
                         else f"Jellyfin player {config.jellyfin_player}" if config.jellyfin_player
                         else config.ha_player or config.client or "(no player set)")
+        apple_tvs = marquee_section()
         if not config.plex_token:
             signin = ('<p class="err">plexnfc isn\'t signed in to Plex yet.</p>'
                       '<p><a class="btn" href="plex/login">Sign in with Plex</a></p>')
@@ -346,7 +432,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
           <p>Wait for all the posters to load, then print with margins <i>None</i> and background graphics on.</p>
           <h1>Write the tags</h1>
           <p><a style="color:#8ab4f8" href="tags">Tag URLs</a> &middot;
-             <a style="color:#8ab4f8" href="tags.csv">Download tags.csv</a></p>""")
+             <a style="color:#8ab4f8" href="tags.csv">Download tags.csv</a></p>
+          {apple_tvs}""")
 
     return app
 

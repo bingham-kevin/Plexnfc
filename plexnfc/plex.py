@@ -9,6 +9,7 @@ items without an external ID.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from types import SimpleNamespace
@@ -19,7 +20,7 @@ from plexapi.server import PlexServer
 from .config import Config
 from .homeassistant import HomeAssistant, HomeAssistantError
 from .jellyfin import TICKS_PER_SECOND, Jellyfin, JellyfinError, tag_key
-from .tvapp import AppInbox, jellyfin_hls_url, plex_hls_url
+from .tvapp import AppInbox, AppPairings, jellyfin_hls_url, plex_hls_url
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +41,15 @@ def movie_key(movie) -> str:
     return f"rk-{movie.ratingKey}"
 
 
+def app_movie(movie, key: str | None = None) -> dict:
+    """What the Marquee app shows for a movie in rows, search and the player."""
+    key = key or movie_key(movie)
+    return {"key": key, "title": movie.title, "year": getattr(movie, "year", None),
+            "summary": getattr(movie, "summary", None) or "",
+            "duration": int((getattr(movie, "duration", 0) or 0) / 1000),
+            "poster": f"/poster/{key}?w=400&h=600"}
+
+
 class Plex:
     def __init__(self, config: Config, server: PlexServer | None = None,
                  ha: HomeAssistant | None = None, jellyfin: Jellyfin | None = None):
@@ -51,6 +61,9 @@ class Plex:
         if self.ha is None and config.ha_url and config.ha_token:
             self.ha = HomeAssistant(config.ha_url, config.ha_token)
         self.app_inbox = AppInbox()
+        # Saved next to the Plex sign-in, so it lasts as long as the app's /data does
+        self.app_pairings = AppPairings(os.path.join(os.path.dirname(config.auth_file) or ".",
+                                                     "marquee_devices.json"))
         self.jellyfin = jellyfin
         if self.jellyfin is None and config.jellyfin_url and config.jellyfin_api_key:
             self.jellyfin = Jellyfin(config.jellyfin_url, config.jellyfin_api_key)
@@ -233,6 +246,13 @@ class Plex:
         return self.config.app_player or None
 
     def _play_in_app(self, name: str, key: str, movie, resume: bool) -> None:
+        log.info("Sending %s (%s) to the Marquee app on %s", movie.title, key, name)
+        self.app_inbox.send(name, "play", **self.app_play_details(name, key, movie, resume))
+
+    def app_play_details(self, name: str, key: str, movie=None, resume: bool | None = None) -> dict:
+        """A movie's stream address and details for the Marquee app on ``name``."""
+        movie = movie or self.find_movie(key)
+        resume = self.config.resume if resume is None else resume
         start = int((movie.viewOffset or 0) / 1000) if resume and getattr(movie, "viewOffset", 0) else 0
         if self.jellyfin and self.config.app_stream == "jellyfin":
             try:
@@ -242,11 +262,31 @@ class Plex:
             url = jellyfin_hls_url(self.config.jellyfin_url, self.config.jellyfin_api_key, item["Id"], start, name)
         else:
             url = plex_hls_url(self.config.plex_url, self.config.plex_token, movie.ratingKey, start, name)
-        log.info("Sending %s (%s) to the Marquee app on %s", movie.title, key, name)
         # The app shows these in its player; the poster comes from plexnfc's own /poster
-        self.app_inbox.send(name, "play", url=url, title=movie.title, key=key, start=0,
-                            year=getattr(movie, "year", None), summary=getattr(movie, "summary", None) or "",
-                            poster=f"/poster/{key}?w=600&h=900")
+        return {"url": url, "start": 0, **app_movie(movie, key), "poster": f"/poster/{key}?w=600&h=900"}
+
+    # ---- library for the Marquee app ------------------------------------------------
+
+    def app_library(self, row_size: int = 24, collections: int = 6) -> list[dict]:
+        """Poster rows for the app's home screen: recently added, then a few collections."""
+        rows = [{"title": "Recently Added",
+                 "items": [app_movie(m) for m in self.section.recentlyAdded(maxresults=row_size)]}]
+        try:
+            for collection in self.section.collections()[:collections]:
+                items = [app_movie(m) for m in collection.items()[:row_size]]
+                if items:
+                    rows.append({"title": collection.title, "items": items})
+        except Exception as e:  # collections are a nice-to-have
+            log.debug("Couldn't list collections: %s", e)
+        return rows
+
+    def app_movies(self, start: int = 0, size: int = 60) -> dict:
+        """One page of the whole library, sorted by title."""
+        items = self.section.search(sort="titleSort", container_start=start, container_size=size, maxresults=size)
+        return {"start": start, "items": [app_movie(m) for m in items], "total": self.section.totalSize}
+
+    def app_search(self, query: str, size: int = 40) -> list[dict]:
+        return [app_movie(m) for m in self.section.search(title=query, maxresults=size)] if query.strip() else []
 
     def _app_now(self, name: str) -> dict:
         status = self.app_inbox.status(name)

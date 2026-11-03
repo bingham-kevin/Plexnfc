@@ -619,6 +619,20 @@ def test_player_rejecting_play_is_reported(plex):
 
 # ---- Marquee Apple TV app -----------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _pairings_in_tmp(plex, tmp_path):
+    """Keep every test's paired Apple TVs in a temporary file."""
+    from plexnfc.tvapp import AppPairings
+    plex.app_pairings = AppPairings(str(tmp_path / "marquee_devices.json"))
+
+
+def pair(plex, name="Den") -> dict:
+    """Pair an Apple TV the way the app and panel do; returns its request headers."""
+    p = plex.app_pairings.start(name)
+    plex.app_pairings.approve(p["pair_id"])
+    return {"Authorization": f"Bearer {plex.app_pairings.poll(p['pair_id'])['secret']}"}
+
+
 def app_plex(plex, **cfg):
     from dataclasses import replace
     plex.config = replace(plex.config, **{"app_player": "Den", **cfg})
@@ -638,9 +652,10 @@ def test_app_play_leaves_stream_in_inbox_before_script(plex):
     assert "subtitles=none" in command["url"] and "offset=0" in command["url"]
     plex._client.playMedia.assert_not_called()
     # the app picks it up once, by ID
-    inbox = app.get(f"/tv/inbox?player=den&after=0").json
+    headers = pair(plex, "Den")
+    inbox = app.get("/tv/inbox?after=0", headers=headers).json
     assert inbox["id"] == command["id"]
-    assert app.get(f"/tv/inbox?player=Den&after={command['id']}").status_code == 204
+    assert app.get(f"/tv/inbox?after={command['id']}", headers=headers).status_code == 204
 
 
 def test_app_play_uses_jellyfin_stream_when_chosen(plex):
@@ -655,8 +670,8 @@ def test_app_status_controls_and_now(plex):
     plex = app_plex(plex)
     app = create_app(plex.config, plex).test_client()
     assert app.get("/now").json == {"state": "idle"}
-    app.post("/tv/status", json={"player": "Den", "state": "playing", "position": 60, "duration": 7200,
-                                 "title": "The Matrix", "key": "tmdb-603"})
+    app.post("/tv/status", headers=pair(plex, "Den"), json={"state": "playing", "position": 60, "duration": 7200,
+                                                            "title": "The Matrix", "key": "tmdb-603"})
     now = app.get("/now").json
     assert now["state"] == "playing" and now["key"] == "tmdb-603" and now["position"] == 60
     app.get("/toggle")
@@ -665,7 +680,7 @@ def test_app_status_controls_and_now(plex):
     assert plex.app_inbox.next("Den", 0) | {"id": 0} == {"id": 0, "action": "seek", "by": 30}
     app.get("/stop")
     assert plex.app_inbox.next("Den", 0)["action"] == "stop"
-    assert app.post("/tv/status", json={}).status_code == 400
+    assert app.post("/tv/status", json={}).status_code == 401  # not paired
 
 
 def test_app_inbox_expires_old_commands(monkeypatch):
@@ -699,3 +714,69 @@ def test_app_stream_is_plex_even_with_jellyfin_set_up(plex):
     create_app(plex.config, plex).test_client().get("/m/tmdb-603")
     assert "/video/:/transcode/universal/start.m3u8?" in plex.app_inbox.next("Den", 0)["url"]
     plex.jellyfin.find_movie.assert_not_called()
+
+
+# ---- Marquee pairing and library ---------------------------------------------
+
+def test_pairing_flow_and_panel(plex):
+    app = create_app(CONFIG, plex).test_client()
+    started = app.post("/tv/pair", json={"name": "Den"}).json
+    assert len(started["code"]) == 6
+    assert app.get(f"/tv/pair/{started['pair_id']}").json == {"status": "pending"}
+    # the panel lists the request with its code
+    page = app.get("/").data
+    assert started["code"].encode() in page and b"Den wants to pair" in page
+    # approving from the network port is refused; through the panel (ingress) it works
+    approve = f"/tv/pair/{started['pair_id']}/approve"
+    assert app.post(approve, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+    assert app.post(approve, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 200
+    result = app.get(f"/tv/pair/{started['pair_id']}").json
+    assert result["status"] == "approved" and result["name"] == "Den"
+    assert app.get(f"/tv/pair/{started['pair_id']}").status_code == 404  # the secret is handed out once
+    headers = {"Authorization": f"Bearer {result['secret']}"}
+    assert app.get("/tv/inbox", headers=headers).status_code == 204
+    # removing the Apple TV cuts it off
+    device = plex.app_pairings.devices()[0]
+    app.post(f"/tv/devices/{device['id']}/remove", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+    assert app.get("/tv/inbox", headers=headers).status_code == 401
+
+
+def test_pairings_survive_restart_and_store_only_a_hash(plex, tmp_path):
+    from plexnfc.tvapp import AppPairings
+    headers = pair(plex, "Den")
+    secret = headers["Authorization"].removeprefix("Bearer ")
+    saved = (tmp_path / "marquee_devices.json").read_text()
+    assert secret not in saved
+    assert AppPairings(str(tmp_path / "marquee_devices.json")).device(secret) == "Den"
+
+
+def test_app_api_needs_pairing(plex):
+    app = create_app(CONFIG, plex).test_client()
+    for path in ("/tv/inbox", "/tv/library", "/tv/movies", "/tv/search?q=matrix"):
+        assert app.get(path).status_code == 401
+        assert app.get(path, headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert app.post("/tv/play", json={"key": "tmdb-603"}).status_code == 401
+
+
+def test_app_library_search_and_play(plex):
+    movie = plex._movie
+    movie.duration = 8_160_000
+    section = plex.server.library.section.return_value
+    section.recentlyAdded.return_value = [movie]
+    section.collections.return_value = [mock.Mock(title="Poster Book", items=lambda: [movie])]
+    section.search.return_value = [movie]
+    section.totalSize = 1
+    app = create_app(CONFIG, plex).test_client()
+    headers = pair(plex, "Den")
+    rows = app.get("/tv/library", headers=headers).json["rows"]
+    assert [r["title"] for r in rows] == ["Recently Added", "Poster Book"]
+    assert rows[0]["items"][0] == {"key": "tmdb-603", "title": "The Matrix", "year": 1999, "summary": "",
+                                   "duration": 8160, "poster": "/poster/tmdb-603?w=400&h=600"}
+    page = app.get("/tv/movies?start=0&size=500", headers=headers).json
+    assert page["total"] == 1 and len(page["items"]) == 1
+    assert section.search.call_args.kwargs["container_size"] == 200  # capped
+    assert app.get("/tv/search?q=matrix", headers=headers).json["items"][0]["key"] == "tmdb-603"
+    played = app.post("/tv/play", headers=headers, json={"key": "tmdb-603", "resume": False}).json
+    assert "/video/:/transcode/universal/start.m3u8?" in played["url"] and played["title"] == "The Matrix"
+    assert "X-Plex-Client-Identifier=moviebook-Den" in played["url"]
+    assert app.post("/tv/play", headers=headers, json={"key": "nope"}).status_code == 404

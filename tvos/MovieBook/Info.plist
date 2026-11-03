@@ -21,7 +21,10 @@
 		<key>NSAllowsArbitraryLoadsForMedia</key>
 		<true/>
 	</dict>
+	<!-- Only Apple's built-in HTTPS; no other encryption (App Store export compliance) -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Marquee asks plexnfc on your home network which movie to play.</string>
+	<string>Marquee connects to your Movie Book server on your home network to show and play your movies.</string>
 </dict>
 </plist>
