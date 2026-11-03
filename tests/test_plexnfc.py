@@ -291,6 +291,17 @@ def test_book_has_contents_with_page_numbers():
     assert meta_line(movies[0]) == "2000 · 1 h 37 m · PG"
 
 
+def test_book_pages_fit_the_paper_whatever_the_window():
+    from plexnfc.book import render_html
+    movies = [NS(title="Up", year=2009, duration=0, summary="", thumb=None, guids=[NS(id="tmdb://14160")])]
+    for paper, size in (("letter", "8.5in 11in"), ("A4", "210mm 297mm"), ("nonsense", "8.5in 11in")):
+        html = render_html(NS(config=NS(ha_off_script="")), "http://nfc", movies, page_size=paper)
+        # never sized from the window (Safari prints with the window's height), and inside a printable margin
+        assert "vh" not in html.split("<style>")[1].split("</style>")[0].replace("overflow", "")
+        assert f"@page {{ size: {size}; margin: 0.25in; }}" in html
+        assert "section:last-child { page-break-after: auto" in html  # no blank page at the end
+
+
 def test_tags_csv(plex):
     r = create_app(CONFIG, plex).test_client().get("/tags.csv")
     assert b"The Matrix,1999,http://nfc.local:8080/m/tmdb-603" in r.data

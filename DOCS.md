@@ -51,7 +51,7 @@ The **Get-ready script** only runs for the default player, so a tap for another 
 
 In the **Movie Book** sidebar panel:
 
-- **Open printable book**: choose a title, a Plex collection and a layout. The book opens in a new tab from the **Tag base URL**, so do this on your home network. Wait for all the posters to load, then print with margins set to *None* and background graphics turned on. A whole library makes a very large book, so a Plex collection is recommended.
+- **Open printable book**: choose a title, a Plex collection and a layout. The book opens in a new tab from the **Tag base URL**, so do this on your home network. Wait for all the posters to load, then print at 100% scale with background graphics turned on. The book sets its own margins. A whole library makes a very large book, so a Plex collection is recommended.
 - **Tag URLs** / **tags.csv**: the URL to write onto each sticker with the NFC Tools app.
 
 ## Movie Remote

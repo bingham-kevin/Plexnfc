@@ -32,24 +32,34 @@ from .plex import Plex, movie_key
 FONTS = ("https://fonts.googleapis.com/css2?family=Limelight&family=Oswald:wght@500;600"
          "&family=Lora:ital,wght@0,400;1,400&display=swap")
 
+# Pages are sized in real units for the paper, never from the browser window (100vh): Safari
+# prints with the window's height, so in a tall window every page spilled onto a blank one.
+# The margin is one home printers can print to, and each page is a hair shorter than the
+# space inside it, so rounding never pushes a page over.
 CSS = """
-@page { size: $page; margin: 0; }
+@page { size: $page_width $page_height; margin: $margin; }
 * { box-sizing: border-box; }
 :root { --ink: #1d1b1a; --red: #a3241c; --gold: #b0852f; --teal: #124a4c; --paper: #fbf7ee; --muted: #6d655c; }
 html, body { margin: 0; background: #fff; color: var(--ink); }
 body { font-family: Lora, Georgia, 'Times New Roman', serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-section { position: relative; height: 100vh; overflow: hidden; page-break-after: always; break-after: page; }
+section { position: relative; width: calc($page_width - 2 * $margin); height: calc($page_height - 2 * $margin - 0.02in);
+          overflow: hidden; page-break-after: always; break-after: page; }
+section:last-child { page-break-after: auto; break-after: auto; }
+@media screen {
+  html, body { background: #8a8580; }
+  section { margin: 0.4in auto; box-shadow: 0 6px 30px rgba(0,0,0,.35); background-color: #fff; }
+}
 .display { font-family: Limelight, 'Didot', Georgia, serif; font-weight: normal; }
 .caps { font-family: Oswald, 'Arial Narrow', Arial, sans-serif; text-transform: uppercase; letter-spacing: .14em; }
 
 /* A thin double gold frame inside every page */
-.frame { position: absolute; inset: 0.3in; border: 1.5px solid var(--gold); pointer-events: none; }
+.frame { position: absolute; inset: 0.12in; border: 1.5px solid var(--gold); pointer-events: none; }
 .frame::after { content: ""; position: absolute; inset: 4px; border: 0.75px solid var(--gold); }
-.folio { position: absolute; bottom: 0.12in; left: 0; right: 0; text-align: center; font-size: 9px; color: var(--gold); }
+.folio { position: absolute; bottom: 0.01in; left: 0; right: 0; text-align: center; font-size: 9px; color: var(--gold); }
 
 /* Cover: a marquee sign with a border of bulbs */
 .cover { background: var(--paper); display: flex; flex-direction: column; align-items: center; justify-content: center;
-         text-align: center; padding: 1in; }
+         text-align: center; padding: 0.8in; }
 .sign { background: var(--red); color: #fff; border-radius: 22px; padding: 0.9in 0.7in 0.8in; position: relative;
         width: 100%; max-width: 6in; box-shadow: 0 0 0 6px var(--paper), 0 0 0 8px var(--gold); }
 .sign::before { content: ""; position: absolute; inset: 11px; border: 7px dotted #ffe9a8; border-radius: 14px; }
@@ -61,7 +71,7 @@ section { position: relative; height: 100vh; overflow: hidden; page-break-after:
 .how b { display: block; font-family: Limelight, Georgia, serif; font-weight: normal; font-size: 26px; color: var(--gold); margin-bottom: 4px; }
 
 /* Contents */
-.contents { padding: 0.75in 0.8in; }
+.contents { padding: 0.55in 0.6in; }
 .contents h2 { text-align: center; font-size: 40px; margin: 0 0 4px; color: var(--teal); }
 .contents .sub { text-align: center; margin-bottom: 0.3in; color: var(--gold); font-size: 11px; }
 .contents ol { columns: 2; column-gap: 0.45in; list-style: none; padding: 0; margin: 0; font-size: 12px; }
@@ -71,7 +81,7 @@ section { position: relative; height: 100vh; overflow: hidden; page-break-after:
 .contents li .n { font-family: Oswald, Arial, sans-serif; color: var(--red); }
 
 /* Poster pages */
-.sheet { display: grid; padding: 0.55in 0.55in 0.45in; gap: 0.3in;
+.sheet { display: grid; padding: 0.35in 0.35in 0.3in; gap: 0.3in;
          grid-template-columns: repeat($cols, 1fr); grid-template-rows: repeat($rows, minmax(0, 1fr)); }
 .card { display: flex; flex-direction: column; min-height: 0; }
 .poster-box { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
@@ -101,7 +111,7 @@ section { position: relative; height: 100vh; overflow: hidden; page-break-after:
 .tap span { font-family: Oswald, Arial, sans-serif; font-size: $tap_label; letter-spacing: .2em; }
 
 /* Back cover: the control tags as ticket stubs */
-.remote { background: var(--paper); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1in; }
+.remote { background: var(--paper); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0.8in; }
 .remote h2 { font-size: 44px; margin: 0; color: var(--teal); }
 .remote .sub { color: var(--muted); font-style: italic; margin: 6px 0 0.6in; font-size: 13px; }
 .tickets { display: grid; grid-template-columns: repeat(2, 2.6in); gap: 0.35in; }
@@ -121,6 +131,11 @@ LAYOUTS = {
     "grid": dict(cols=2, rows=2, title_size="15px", meta_size="9px", tap="0.85in", tap_label="7px",
                  qr="0.6in", band="0.95in", summary=False),
 }
+
+# Paper sizes the book can be printed on (width, height)
+PAPER = {"letter": ("8.5in", "11in"), "legal": ("8.5in", "14in"), "a4": ("210mm", "297mm"),
+         "a5": ("148mm", "210mm"), "a3": ("297mm", "420mm")}
+MARGIN = "0.25in"
 
 CONTENTS_PER_PAGE = 84  # two columns of titles
 
@@ -256,7 +271,9 @@ def render_html(plex: Plex, base_url: str, movies, layout: str = "full", title: 
         f'<div class="sub">Tap a ticket to control whatever is playing.</div>'
         f'<div class="tickets">{tickets}</div></section>'
     )
-    css = Template(CSS).substitute({k: v for k, v in spec.items() if k != "summary"}, page=page_size)
+    width, height = PAPER.get(page_size.casefold(), PAPER["letter"])
+    css = Template(CSS).substitute({k: v for k, v in spec.items() if k != "summary"},
+                                   page_width=width, page_height=height, margin=MARGIN)
     return (
         f"<!doctype html><html><head><meta charset='utf-8'><title>{escape(title)}</title>"
         f"<link rel='stylesheet' href='{FONTS}'><style>{css}</style></head><body>"
@@ -289,7 +306,7 @@ def main():
     parser.add_argument("--collection", help="only include movies in this Plex collection")
     parser.add_argument("--layout", choices=LAYOUTS, default="full", help="full = 1 per page, grid = 4 per page")
     parser.add_argument("--title", default="Movie Night")
-    parser.add_argument("--page-size", default="letter", help="CSS page size, e.g. letter, A4, 'A5'")
+    parser.add_argument("--page-size", default="letter", choices=PAPER, type=str.lower, help="paper size")
     parser.add_argument("--no-qr", action="store_true", help="leave out the QR code fallback")
     parser.add_argument("--out", default="out")
     args = parser.parse_args()

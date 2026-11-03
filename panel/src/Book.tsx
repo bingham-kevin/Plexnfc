@@ -30,6 +30,8 @@ export function Book({ overview }: { overview: Overview }) {
             <select value={paper} onChange={(e) => setPaper(e.target.value)}>
               <option value="letter">Letter</option>
               <option value="A4">A4</option>
+              <option value="legal">Legal</option>
+              <option value="A5">A5</option>
             </select>
           </label>
           <label className="check"><input type="checkbox" checked={qr} onChange={(e) => setQr(e.target.checked)} />
@@ -45,8 +47,8 @@ export function Book({ overview }: { overview: Overview }) {
           <p className="muted">{layout === "grid" ? "4 per page" : "1 per page"} · {paper}</p>
         </div>
       </div>
-      <p className="muted">Wait for all the posters to load, then print with margins set to <i>None</i> and background
-        graphics on.</p>
+      <p className="muted">Wait for all the posters to load, then print at 100% scale with background graphics on. The
+        book sets its own margins.</p>
     </section>
   );
 }

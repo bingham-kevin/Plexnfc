@@ -64,7 +64,7 @@ python -m plexnfc.book --collection "Poster Book"   # only a Plex collection (re
 python -m plexnfc.book --layout grid --page-size A4 # four per page, A4 paper
 ```
 
-This writes `out/book.html` and `out/tags.csv`. Open `book.html` in Chrome, then **Print** with margins set to *None* and *Background graphics* on. Print straight to paper or save as a PDF for a print shop.
+This writes `out/book.html` and `out/tags.csv`. Open `book.html` in Chrome, then **Print** at 100% scale with *Background graphics* on. The book sets its own margins. Print straight to paper or save as a PDF for a print shop.
 
 Each page has a dashed **NFC** circle where the sticker goes, in the same spot on every page. There's also a QR code with the same link, for phones without NFC (`--no-qr` leaves it out). The last page holds **Pause / Resume / Stop** control tags, which work well on the back cover.
 
