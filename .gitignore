@@ -12,3 +12,5 @@ tvos/**/*.xcworkspace/xcuserdata/
 tvos/icon-options/
 ios/**/xcuserdata/
 ios/**/*.xcworkspace/xcuserdata/
+macos/**/xcuserdata/
+macos/**/*.xcworkspace/xcuserdata/

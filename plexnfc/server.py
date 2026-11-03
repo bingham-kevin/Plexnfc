@@ -11,6 +11,7 @@ Routes
   /book                the printable book (?layout=grid&collection=NAME&title=...)
   /plex/login          Sign in with Plex (saves the token, so nobody has to find it by hand)
   /tv/...               the Marquee Apple TV app: pairing, inbox, status, library, search and play
+  /appletv/...         pair Apple TVs so plexnfc opens Marquee on them itself (needs pyatv)
   /phone/...           the Marquee Remote phone app: which player this phone's taps go to
   /poster/<key>        poster image (proxied so your Plex token stays private)
                        ?w=200&h=300 returns a resized baseline JPEG (for the ESP32 screen)
@@ -34,6 +35,7 @@ import requests
 from flask import Flask, Response, abort, jsonify, request
 
 from . import plexauth
+from .appletv import AppleTVError
 from .config import Config
 from .plex import Plex, PlexNFCError, movie_key
 
@@ -204,6 +206,76 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             abort(403)
         plex.app_pairings.remove(device_id)
         return page("Removed", '<h1>Apple TV removed</h1><p><a href="../../../">Back</a></p>')
+
+    # ---- opening Marquee on Apple TVs without Home Assistant ---------------------------
+
+    def appletv_error(e: AppleTVError, back: str) -> Response:
+        return page("Error", f'<h1 class="err">{escape(str(e))}</h1><p><a href="{back}">Back</a></p>', 400)
+
+    @app.get("/appletv/scan")
+    def appletv_scan():
+        if not from_panel():
+            abort(403)
+        try:
+            found = plex.apple_tvs.scan()
+        except AppleTVError as e:
+            return appletv_error(e, "../")
+        players = "".join(f'<option value="{escape(d["name"])}">' for d in plex.app_pairings.devices()
+                          if d["kind"] == "tv")
+        rows = "".join(
+            f'<tr><td>{escape(tv["name"])}<br><small>{escape(tv["address"])}</small></td>'
+            f'<td><form action="pair" method="post"><input type="hidden" name="identifier" '
+            f'value="{escape(tv["identifier"])}"><input name="player" list="players" required maxlength="40" '
+            f'value="{escape(tv["linked"] or tv["name"])}" aria-label="Marquee player"> '
+            f'<button>{"Pair again" if tv["linked"] else "Pair"}</button></form></td></tr>'
+            for tv in found)
+        table = f"<table>{rows}</table>" if rows else "<p>No Apple TVs found. Are they on and on this network?</p>"
+        return page("Apple TVs", f"<h1>Apple TVs on this network</h1><p>Pair one with the Marquee player it "
+                                 f"runs (the name you gave Marquee on it). The TV will show a PIN.</p>"
+                                 f'<datalist id="players">{players}</datalist>{table}'
+                                 f'<p><a href="../">Back</a></p>')
+
+    @app.post("/appletv/pair")
+    def appletv_pair():
+        if not from_panel():
+            abort(403)
+        try:
+            pair_id = plex.apple_tvs.start_pairing(request.form.get("identifier", ""), request.form.get("player", ""))
+        except AppleTVError as e:
+            return appletv_error(e, "scan")
+        return page("Enter the PIN", f'<h1>Enter the PIN on the TV</h1>'
+                                     f'<form action="pair/{escape(pair_id)}" method="post">'
+                                     f'<input name="pin" inputmode="numeric" autocomplete="one-time-code" '
+                                     f'maxlength="4" required autofocus aria-label="PIN"> <button>Pair</button></form>')
+
+    @app.post("/appletv/pair/<pair_id>")
+    def appletv_pair_finish(pair_id):
+        if not from_panel():
+            abort(403)
+        try:
+            player = plex.apple_tvs.finish_pairing(pair_id, request.form.get("pin", ""))
+        except AppleTVError as e:
+            return appletv_error(e, "../scan")
+        return page("Paired", f"<h1>Paired</h1><p>Taps for <code>app:{escape(player)}</code> now switch that "
+                              f"Apple TV on and open Marquee.</p><p><a href=\"../../\">Back</a></p>")
+
+    @app.post("/appletv/open")
+    def appletv_open():
+        if not from_panel():
+            abort(403)
+        player = request.form.get("player", "")
+        try:
+            plex.apple_tvs.open_marquee(player)
+        except AppleTVError as e:
+            return appletv_error(e, "../")
+        return page("Opened", f"<h1>Opened Marquee on {escape(player)}</h1><p><a href=\"../\">Back</a></p>")
+
+    @app.post("/appletv/remove")
+    def appletv_remove():
+        if not from_panel():
+            abort(403)
+        plex.apple_tvs.remove(request.form.get("player", ""))
+        return page("Removed", '<h1>Apple TV unpaired</h1><p><a href="../">Back</a></p>')
 
     # ---- the Marquee Remote phone app ------------------------------------------------
 
@@ -457,6 +529,22 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                 f"then approve the code it shows here. Name each Apple TV after its room: tags pick one with "
                 f"<code>?client=app:NAME</code>. Reload this page to see new requests.</p>{table}")
 
+    def apple_tv_section() -> str:
+        """Apple TVs plexnfc opens Marquee on itself, instead of a get-ready script."""
+        if not plex.apple_tvs.available:
+            return ""
+        rows = "".join(
+            f'<tr><td>{escape(player)}</td><td>{escape(link["name"])}</td>'
+            f'<td><form action="appletv/open" method="post" style="display:inline">'
+            f'<input type="hidden" name="player" value="{escape(player)}"><button>Open Marquee</button></form> '
+            f'<form action="appletv/remove" method="post" style="display:inline">'
+            f'<input type="hidden" name="player" value="{escape(player)}"><button>Unpair</button></form></td></tr>'
+            for player, link in plex.apple_tvs.linked().items())
+        table = f"<table>{rows}</table>" if rows else ""
+        return (f"<h1>Open Marquee automatically</h1><p>Pair an Apple TV here and a tap switches it on and opens "
+                f"Marquee, with no Home Assistant script.</p>{table}"
+                f'<p><a class="btn" href="appletv/scan">Find Apple TVs</a></p>')
+
     @app.get("/")
     def index():
         # Links are relative so this page works inside the Home Assistant sidebar (ingress).
@@ -499,7 +587,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
           <h1>Write the tags</h1>
           <p><a style="color:#8ab4f8" href="tags">Tag URLs</a> &middot;
              <a style="color:#8ab4f8" href="tags.csv">Download tags.csv</a></p>
-          {apple_tvs}""")
+          {apple_tvs}
+          {apple_tv_section()}""")
 
     return app
 

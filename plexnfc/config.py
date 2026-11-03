@@ -46,7 +46,7 @@ def _load_ha_app_options(path: str | None = None) -> None:
 
 @dataclass
 class Config:
-    plex_url: str
+    plex_url: str  # blank: the server on the signed-in Plex account
     plex_token: str
     library: str
     client: str
@@ -66,20 +66,19 @@ class Config:
     app_player: str = ""  # play in the Marquee Apple TV app with this player name
     app_stream: str = ""  # "jellyfin" streams from Jellyfin; anything else uses Plex
     player_scripts: dict | None = None  # player ID -> its own get-ready script, e.g. {"app:Living Room": "script.x"}
+    plex_server: str = ""  # with no PLEX_URL: which of the account's servers, if it has several
 
     @classmethod
     def from_env(cls) -> "Config":
         _load_ha_app_options()
         _load_dotenv()
-        if not os.environ.get("PLEX_URL"):
-            raise SystemExit("Missing required setting: PLEX_URL (see .env.example)")
         auth_file = os.environ.get("PLEX_AUTH_FILE") or (
             "/data/plex_auth.json" if os.path.exists(HA_APP_OPTIONS) else ".plex_auth.json")
         # A token set by hand wins; otherwise use the one from "Sign in with Plex", if any.
         from .plexauth import saved_token
 
         return cls(
-            plex_url=os.environ["PLEX_URL"].rstrip("/"),
+            plex_url=os.environ.get("PLEX_URL", "").rstrip("/"),
             plex_token=os.environ.get("PLEX_TOKEN") or saved_token(auth_file),
             library=os.environ.get("PLEX_LIBRARY", "Movies"),
             client=os.environ.get("PLEX_CLIENT", ""),
@@ -99,6 +98,7 @@ class Config:
             app_player=os.environ.get("APP_PLAYER", ""),
             app_stream=os.environ.get("APP_STREAM", "").lower(),
             player_scripts=parse_player_scripts(os.environ.get("PLAYER_SCRIPTS", "")),
+            plex_server=os.environ.get("PLEX_SERVER", ""),
         )
 
 

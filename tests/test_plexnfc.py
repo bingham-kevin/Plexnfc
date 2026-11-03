@@ -898,3 +898,171 @@ def test_app_library_search_and_play(plex):
     assert "/video/:/transcode/universal/start.m3u8?" in played["url"] and played["title"] == "The Matrix"
     assert "X-Plex-Client-Identifier=moviebook-Den" in played["url"]
     assert app.post("/tv/play", headers=headers, json={"key": "nope"}).status_code == 404
+
+
+# ---- opening Marquee on Apple TVs without Home Assistant -------------------------------
+
+def test_app_play_opens_marquee_on_paired_apple_tv_instead_of_script(plex):
+    from plexnfc.appletv import AppleTVError
+    plex = app_plex(ha_plex(plex), app_player="Den")
+    plex.apple_tvs = mock.Mock()
+    plex.apple_tvs.open_marquee.side_effect = lambda name: order.append(plex.app_inbox.next(name, 0))
+    order = []
+    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    assert r.status_code == 200
+    assert order[0]["key"] == "tmdb-603"  # the movie was waiting when Marquee opened
+    plex.apple_tvs.open_marquee.assert_called_once_with("Den")
+    plex.ha.run_script.assert_not_called()
+    # a TV that doesn't answer doesn't stop the tap: the movie waits in the inbox
+    plex.apple_tvs.open_marquee.side_effect = AppleTVError("The Apple TV didn't answer")
+    assert plex.prepare_tv("app:Den") == "The Apple TV didn't answer"
+
+
+def test_unpaired_app_player_still_runs_script(plex):
+    plex = app_plex(ha_plex(plex), app_player="Den")
+    plex.apple_tvs = mock.Mock()
+    plex.apple_tvs.link_for.return_value = None
+    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    plex.apple_tvs.open_marquee.assert_not_called()
+    plex.ha.run_script.assert_called_once()
+
+
+def fake_pyatv(identifier="ATV1", address="192.168.0.30"):
+    config = mock.Mock(identifier=identifier, address=address, all_identifiers=[identifier, "AA:BB"])
+    config.name = "Living Room"
+    config.device_info.raw_model = "AppleTV14,1"
+    pairing = mock.Mock(has_paired=True, service=mock.Mock(credentials="creds"))
+    pairing.begin = mock.AsyncMock()
+    pairing.finish = mock.AsyncMock()
+    pairing.close = mock.AsyncMock()
+    atv = mock.Mock()
+    atv.power.turn_on = mock.AsyncMock()
+    atv.apps.launch_app = mock.AsyncMock()
+    atv.close.return_value = set()
+    fake = mock.Mock(scan=mock.AsyncMock(return_value=[config]), pair=mock.AsyncMock(return_value=pairing),
+                     connect=mock.AsyncMock(return_value=atv))
+    return fake, config, pairing, atv
+
+
+def test_apple_tv_pairing_and_opening_marquee(tmp_path, monkeypatch):
+    pytest.importorskip("pyatv")
+    from plexnfc import appletv
+    fake, config, pairing, atv = fake_pyatv()
+    monkeypatch.setattr(appletv, "pyatv", fake)
+    homepod = mock.Mock(identifier="HP1", address="192.168.0.6", all_identifiers=["HP1"])
+    homepod.device_info.raw_model = "AudioAccessory1,1"
+    fake.scan.return_value = [config, homepod]
+    tvs = appletv.AppleTVs(str(tmp_path / "apple_tvs.json"))
+    assert tvs.scan() == [{"identifier": "ATV1", "name": "Living Room", "address": "192.168.0.30", "linked": None}]
+    pair_id = tvs.start_pairing("ATV1", "  Den ")
+    pairing.begin.assert_awaited_once()
+    assert tvs.finish_pairing(pair_id, "1234") == "Den"
+    pairing.pin.assert_called_once_with(1234)
+    with pytest.raises(appletv.AppleTVError):
+        tvs.finish_pairing(pair_id, "1234")  # used up
+    # saved without leaking credentials to the panel, and kept across restarts
+    assert tvs.linked() == {"Den": {"identifier": "ATV1", "identifiers": ["ATV1", "AA:BB"], "name": "Living Room",
+                                    "address": "192.168.0.30"}}
+    tvs = appletv.AppleTVs(str(tmp_path / "apple_tvs.json"))
+    # asked by address, pyatv names the same Apple TV by another of its IDs
+    config.identifier = "AA:BB"
+    assert tvs.scan()[0]["linked"] == "Den"
+    tvs.open_marquee("den")
+    config.set_credentials.assert_called_once()
+    assert config.set_credentials.call_args.args[1] == "creds"
+    atv.power.turn_on.assert_awaited_once()
+    atv.apps.launch_app.assert_awaited_once_with("com.binghamkevin.moviebook")
+    tvs.remove("Den")
+    with pytest.raises(appletv.AppleTVError):
+        tvs.open_marquee("Den")
+
+
+def test_apple_tv_wrong_pin(tmp_path, monkeypatch):
+    pytest.importorskip("pyatv")
+    from plexnfc import appletv
+    fake, _, pairing, _ = fake_pyatv()
+    pairing.has_paired = False
+    monkeypatch.setattr(appletv, "pyatv", fake)
+    tvs = appletv.AppleTVs(str(tmp_path / "apple_tvs.json"))
+    with pytest.raises(appletv.AppleTVError, match="PIN"):
+        tvs.finish_pairing(tvs.start_pairing("ATV1", "Den"), "9999")
+    pairing.close.assert_awaited_once()
+    assert tvs.linked() == {}
+
+
+def test_apple_tv_routes_are_panel_only(plex):
+    plex.apple_tvs = mock.Mock(available=True)
+    plex.apple_tvs.scan.return_value = [{"identifier": "ATV1", "name": "Living Room",
+                                         "address": "192.168.0.30", "linked": None}]
+    plex.apple_tvs.linked.return_value = {}
+    app = create_app(CONFIG, plex).test_client()
+    outside = {"REMOTE_ADDR": "192.168.0.50"}
+    assert app.get("/appletv/scan", environ_base=outside).status_code == 403
+    assert app.post("/appletv/pair", data={"identifier": "ATV1", "player": "Den"}, environ_base=outside).status_code == 403
+    assert app.post("/appletv/open", data={"player": "Den"}, environ_base=outside).status_code == 403
+    assert b"Living Room" in app.get("/appletv/scan").data
+    plex.apple_tvs.start_pairing.return_value = "abc"
+    assert b'action="pair/abc"' in app.post("/appletv/pair", data={"identifier": "ATV1", "player": "Den"}).data
+    plex.apple_tvs.finish_pairing.return_value = "Den"
+    assert b"app:Den" in app.post("/appletv/pair/abc", data={"pin": "1234"}).data
+    assert b"Find Apple TVs" in app.get("/").data
+
+
+# ---- finding the Plex server from the signed-in account ------------------------------
+
+def test_no_plex_url_uses_the_accounts_own_server(monkeypatch):
+    from dataclasses import replace
+    from plexnfc import plex as plex_module
+    shared = mock.Mock(provides="server", owned=False)
+    shared.name = "Friend's Plex"
+    own = mock.Mock(provides="server", owned=True)
+    own.name = "Plex"
+    own.connect.return_value = mock.Mock(_baseurl="https://192-168-0-142.abc.plex.direct:32400")
+    player = mock.Mock(provides="player,pubsub-player")
+    account = mock.Mock()
+    account.resources.return_value = [player, shared, own]
+    monkeypatch.setattr(plex_module, "MyPlexAccount", mock.Mock(return_value=account))
+    p = Plex(replace(CONFIG, plex_url=""))
+    assert p.server is own.connect.return_value
+    assert p.plex_url == "https://192-168-0-142.abc.plex.direct:32400"
+    shared.connect.assert_not_called()
+    # PLEX_SERVER picks another by name
+    p = Plex(replace(CONFIG, plex_url="", plex_server="friend's plex"))
+    assert p.server is shared.connect.return_value
+    with pytest.raises(PlexNFCError, match="no server named Den"):
+        _ = Plex(replace(CONFIG, plex_url="", plex_server="Den")).server
+
+
+def test_config_without_plex_url(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PLEX_URL", raising=False)
+    monkeypatch.setattr("plexnfc.config.HA_APP_OPTIONS", str(tmp_path / "none.json"))
+    assert Config.from_env().plex_url == ""
+
+
+# ---- a .local tag address that follows this machine ----------------------------------
+
+def test_local_name_follows_the_address(monkeypatch):
+    import socket
+    import threading
+    from plexnfc import discovery
+    addresses = iter(["192.168.0.20", "192.168.0.20", "192.168.0.31"])
+    monkeypatch.setattr(discovery, "lan_address", lambda: next(addresses))
+    zc, info, stop = mock.Mock(), mock.Mock(server="marquee.local."), threading.Event()
+    zc.update_service.side_effect = lambda _: stop.set() if info.addresses == [socket.inet_aton("192.168.0.31")] else None
+    discovery._follow_address(zc, info, "192.168.0.20", every=0, stop=stop)
+    zc.update_service.assert_called_once_with(info)
+    assert info.addresses == [socket.inet_aton("192.168.0.31")]
+
+
+def test_advertise_answers_for_a_local_name(monkeypatch):
+    import zeroconf
+    from plexnfc import discovery
+    monkeypatch.setattr(discovery, "lan_address", lambda: "192.168.0.20")
+    monkeypatch.setattr(discovery.threading, "Thread", mock.Mock())
+    zc = mock.Mock()
+    monkeypatch.setattr(zeroconf, "Zeroconf", mock.Mock(return_value=zc))
+    discovery.advertise("http://marquee.local:8080")
+    info = zc.register_service.call_args.args[0]
+    assert info.server == "marquee.local." and info.port == 8080
+    assert info.properties[b"url"] == b"http://marquee.local:8080"

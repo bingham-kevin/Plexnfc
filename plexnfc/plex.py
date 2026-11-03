@@ -15,9 +15,11 @@ import time
 from types import SimpleNamespace
 
 from plexapi.exceptions import NotFound
+from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
 
 from .config import Config
+from .appletv import AppleTVError, AppleTVs
 from .homeassistant import HomeAssistant, HomeAssistantError
 from .jellyfin import TICKS_PER_SECOND, Jellyfin, JellyfinError, tag_key
 from .tvapp import AppInbox, AppPairings, jellyfin_hls_url, plex_hls_url
@@ -52,7 +54,8 @@ def app_movie(movie, key: str | None = None) -> dict:
 
 class Plex:
     def __init__(self, config: Config, server: PlexServer | None = None,
-                 ha: HomeAssistant | None = None, jellyfin: Jellyfin | None = None):
+                 ha: HomeAssistant | None = None, jellyfin: Jellyfin | None = None,
+                 apple_tvs: AppleTVs | None = None):
         self.config = config
         self._server = server
         self._account = None
@@ -64,6 +67,8 @@ class Plex:
         # Saved next to the Plex sign-in, so it lasts as long as the app's /data does
         self.app_pairings = AppPairings(os.path.join(os.path.dirname(config.auth_file) or ".",
                                                      "marquee_devices.json"))
+        self.apple_tvs = apple_tvs or AppleTVs(os.path.join(os.path.dirname(config.auth_file) or ".",
+                                                            "apple_tvs.json"))
         self.jellyfin = jellyfin
         if self.jellyfin is None and config.jellyfin_url and config.jellyfin_api_key:
             self.jellyfin = Jellyfin(config.jellyfin_url, config.jellyfin_api_key)
@@ -73,8 +78,38 @@ class Plex:
         if self._server is None:
             if not self.config.plex_token:
                 raise PlexNFCError("Not signed in to Plex yet. Open plexnfc's page and choose Sign in with Plex.")
-            self._server = PlexServer(self.config.plex_url, self.config.plex_token)
+            if self.config.plex_url:
+                self._server = PlexServer(self.config.plex_url, self.config.plex_token)
+            else:
+                self._server = self._account_server()
         return self._server
+
+    def _account_server(self) -> PlexServer:
+        """With no PLEX_URL, the Plex server on the signed-in account: its own (or
+        PLEX_SERVER, by name), at whichever of its addresses answers."""
+        try:
+            account = MyPlexAccount(token=self.config.plex_token)
+            servers = [r for r in account.resources() if "server" in (r.provides or "")]
+        except Exception as e:  # plexapi raises several types here
+            raise PlexNFCError(f"Couldn't reach plex.tv to find your Plex server: {e}") from None
+        if name := self.config.plex_server:
+            servers = [r for r in servers if r.name.casefold() == name.casefold()]
+        if not servers:
+            raise PlexNFCError(f"Your Plex account has no server named {name}" if name
+                               else "Your Plex account has no Plex server")
+        resource = sorted(servers, key=lambda r: not r.owned)[0]
+        try:
+            server = resource.connect()
+        except Exception as e:
+            raise PlexNFCError(f"Couldn't connect to the Plex server {resource.name}: {e}") from None
+        log.info("Using Plex server %s at %s", resource.name, server._baseurl)
+        self._account = account
+        return server
+
+    @property
+    def plex_url(self) -> str:
+        """The Plex server's address: PLEX_URL, or the one found from the Plex account."""
+        return self.config.plex_url or self.server._baseurl.rstrip("/")
 
     def set_token(self, token: str) -> None:
         """Use a new token (after Sign in with Plex) from the next request on."""
@@ -198,11 +233,19 @@ class Plex:
         return None
 
     def prepare_tv(self, client_name: str | None = None) -> str | None:
-        """Run the Home Assistant "get the TV ready" script for this player, if there is one.
+        """Get the TV ready: open Marquee on its paired Apple TV, or else run the
+        Home Assistant "get the TV ready" script for this player, if there is one.
 
         Returns an error message instead of raising: the TV may already be on,
-        so a Home Assistant problem shouldn't stop the movie from trying.
+        so a problem here shouldn't stop the movie from trying.
         """
+        if (name := self._app_player(client_name)) and self.apple_tvs.link_for(name):
+            try:
+                self.apple_tvs.open_marquee(name)
+            except AppleTVError as e:
+                log.warning("Couldn't open Marquee on %s: %s", name, e)
+                return str(e)
+            return None
         script = self._ready_script(client_name)
         if not (self.ha and script):
             return None
@@ -257,7 +300,7 @@ class Plex:
         movie = self.find_movie(key)
         resume = self.config.resume if resume is None else resume
         if name := self._app_player(client_name):
-            # Leave the movie in the inbox before the script opens the app, which picks it up
+            # Leave the movie in the inbox before the app is opened, which picks it up
             self._play_in_app(name, key, movie, resume)
             self.prepare_tv(client_name)
             return movie, SimpleNamespace(title=name)
@@ -306,7 +349,7 @@ class Plex:
                 raise PlexNFCError(str(e)) from None
             url = jellyfin_hls_url(self.config.jellyfin_url, self.config.jellyfin_api_key, item["Id"], start, name)
         else:
-            url = plex_hls_url(self.config.plex_url, self.config.plex_token, movie.ratingKey, start, name)
+            url = plex_hls_url(self.plex_url, self.config.plex_token, movie.ratingKey, start, name)
         # The app shows these in its player; the poster comes from plexnfc's own /poster
         return {"url": url, "start": 0, **app_movie(movie, key), "poster": f"/poster/{key}?w=600&h=900"}
 
