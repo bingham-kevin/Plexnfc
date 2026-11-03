@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Movie Book: an Apple TV player that plexnfc can start remotely.
+/// Marquee: an Apple TV player that plexnfc can start remotely.
 ///
 /// Plex for Apple TV can't be told to play from another device, and other
 /// players ignore links. Home Assistant *can* open an app by name, so this one

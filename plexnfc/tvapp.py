@@ -1,4 +1,4 @@
-"""Hand movies to the Movie Book Apple TV app (tvos/MovieBook).
+"""Hand movies to the Marquee Apple TV app (tvos/MovieBook).
 
 The app can't be sent commands directly, but Home Assistant can open it, and
 it then asks plexnfc what to do: ``GET /tv/inbox?player=NAME&after=ID`` returns
@@ -66,7 +66,7 @@ def plex_hls_url(plex_url: str, token: str, rating_key, start: int, player: str)
         "protocol": "hls", "fastSeek": 1, "directPlay": 0, "directStream": 1, "directStreamAudio": 1,
         "mediaIndex": 0, "partIndex": 0, "subtitles": "none", "offset": int(start),
         "session": session, "X-Plex-Session-Identifier": session,
-        "X-Plex-Client-Identifier": f"moviebook-{player}", "X-Plex-Product": "Movie Book",
+        "X-Plex-Client-Identifier": f"moviebook-{player}", "X-Plex-Product": "Marquee",
         "X-Plex-Platform": "iOS", "X-Plex-Device": "Apple TV", "X-Plex-Token": token,
     }
     return f"{plex_url}/video/:/transcode/universal/start.m3u8?{urlencode(params)}"

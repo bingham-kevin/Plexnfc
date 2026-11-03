@@ -9,3 +9,4 @@ esphome/.esphome/
 .plex_auth.json
 tvos/**/xcuserdata/
 tvos/**/*.xcworkspace/xcuserdata/
+tvos/icon-options/

@@ -29,7 +29,7 @@ private struct WaitingView: View {
         VStack(spacing: 40) {
             Image(systemName: "film.stack")
                 .font(.system(size: 120))
-            Text("Movie Book")
+            Text("Marquee")
                 .font(.largeTitle.bold())
             Text(model.isConfigured ? "Tap a poster in the book to start a movie."
                                     : "Enter plexnfc's address to get started.")

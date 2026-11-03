@@ -1,12 +1,12 @@
-# Movie Book for Apple TV
+# Marquee for Apple TV
 
-A small Apple TV app that plexnfc can start movies in. Plex for Apple TV can't be told to play from another device, and other apps ignore links, but Home Assistant can open an app. When Movie Book opens (and every couple of seconds while it's open), it asks plexnfc what to play, then plays the stream in Apple's own player. Subtitles start off.
+A small Apple TV app that plexnfc can start movies in. Plex for Apple TV can't be told to play from another device, and other apps ignore links, but Home Assistant can open an app. When Marquee opens (and every couple of seconds while it's open), it asks plexnfc what to play, then plays the stream in Apple's own player. Subtitles start off.
 
 ## How a tap works
 
 1. plexnfc leaves the movie's stream address in that Apple TV's inbox (`GET /tv/inbox`). The stream comes from Jellyfin when plexnfc's Jellyfin settings are filled in, otherwise from Plex. Both turn MKV files into HLS, which Apple TV plays as is.
-2. The get-ready script opens Movie Book.
-3. Movie Book picks up the movie and plays it. It reports what's playing (`POST /tv/status`), so plexnfc's now-playing info, the Pause/Resume/Stop tags, ±30 s and the Movie Remote all work.
+2. The get-ready script opens Marquee.
+3. Marquee picks up the movie and plays it. It reports what's playing (`POST /tv/status`), so plexnfc's now-playing info, the Pause/Resume/Stop tags, ±30 s and the Movie Remote all work.
 
 It also accepts links, for testing or other setups:
 
@@ -28,8 +28,8 @@ With a free Apple ID, Apple lets the app run for 7 days before it has to be inst
 
 ## Set up plexnfc
 
-- **Movie Book player**: the player name you typed in the app, for example `Den`.
-- **Get-ready script**: wake the Apple TV and open Movie Book, for example:
+- **Marquee player**: the player name you typed in the app, for example `Den`.
+- **Get-ready script**: wake the Apple TV and open Marquee, for example:
 
   ```yaml
   sequence:
@@ -38,7 +38,7 @@ With a free Apple ID, Apple lets the app run for 7 days before it has to be inst
     - delay: { seconds: 3 }
     - action: media_player.select_source
       target: { entity_id: media_player.den_apple_tv }
-      data: { source: Movie Book }
+      data: { source: Marquee }
   ```
 
 A single tag can pick an app with `?client=app:NAME`.

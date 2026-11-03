@@ -10,7 +10,7 @@ Routes
   /tags                list every movie with the URL to write onto its tag (/tags.csv to download)
   /book                the printable book (?layout=grid&collection=NAME&title=...)
   /plex/login          Sign in with Plex (saves the token, so nobody has to find it by hand)
-  /tv/inbox /tv/status the Movie Book Apple TV app asks what to play and says what's playing
+  /tv/inbox /tv/status the Marquee Apple TV app asks what to play and says what's playing
   /poster/<key>        poster image (proxied so your Plex token stays private)
                        ?w=200&h=300 returns a resized baseline JPEG (for the ESP32 screen)
 
@@ -316,7 +316,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             warn = ('<p class="err">public_base_url is set to localhost. Phones can\'t reach that: '
                     "set it to this machine's IP address, e.g. http://192.168.1.20:8080</p>")
         # The same order play() picks a player in
-        player_label = (f"the Movie Book app ({config.app_player})" if config.app_player
+        player_label = (f"the Marquee app ({config.app_player})" if config.app_player
                         else f"Jellyfin player {config.jellyfin_player}" if config.jellyfin_player
                         else config.ha_player or config.client or "(no player set)")
         if not config.plex_token:

@@ -617,7 +617,7 @@ def test_player_rejecting_play_is_reported(plex):
     assert r.status_code == 404 and b"didn&#x27;t accept the movie" in r.data
 
 
-# ---- Movie Book Apple TV app --------------------------------------------------
+# ---- Marquee Apple TV app -----------------------------------------------------
 
 def app_plex(plex, **cfg):
     from dataclasses import replace

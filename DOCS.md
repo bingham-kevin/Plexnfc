@@ -29,13 +29,13 @@ Plex for Apple TV can't be started from another device, but Swiftfin, the Jellyf
 
 The movie is matched in Jellyfin by title and year and checked against the tag's TMDB/IMDb ID. A single tag can pick a Jellyfin player with `?client=jellyfin:NAME`.
 
-## Optional: the Movie Book Apple TV app
+## Optional: the Marquee Apple TV app
 
-`tvos/MovieBook` in the repository is a small Apple TV app that plexnfc can start movies in. Plex for Apple TV can't be started remotely, but Home Assistant can open an app, and Movie Book then asks plexnfc what to play.
+`tvos/MovieBook` in the repository is a small Apple TV app that plexnfc can start movies in. Plex for Apple TV can't be started remotely, but Home Assistant can open an app, and Marquee then asks plexnfc what to play.
 
 1. Build and install it from Xcode (see `tvos/README.md`). Open it once, enter this app's **Tag base URL** address and a player name, for example `Den`.
-2. Set **Movie Book player** to that name.
-3. Use a get-ready script that wakes the Apple TV and opens Movie Book (`media_player.select_source` with source `Movie Book`).
+2. Set **Marquee player** to that name.
+3. Use a get-ready script that wakes the Apple TV and opens Marquee (`media_player.select_source` with source `Marquee`).
 
 Streams come from Jellyfin when the Jellyfin settings are filled in, otherwise from Plex. A single tag can pick an app with `?client=app:NAME`.
 

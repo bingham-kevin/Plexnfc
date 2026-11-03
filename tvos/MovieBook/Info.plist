@@ -6,7 +6,7 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>Movie Book links</string>
+			<string>Marquee links</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>moviebook</string>
@@ -22,6 +22,6 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Movie Book asks plexnfc on your home network which movie to play.</string>
+	<string>Marquee asks plexnfc on your home network which movie to play.</string>
 </dict>
 </plist>

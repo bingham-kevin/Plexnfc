@@ -224,10 +224,10 @@ class Plex:
             self._rewind_when_playing(client, movie)
         return movie, client
 
-    # ---- the Movie Book Apple TV app ---------------------------------------------
+    # ---- the Marquee Apple TV app -------------------------------------------------
 
     def _app_player(self, client_name: str | None) -> str | None:
-        """The Movie Book player to use: ``?client=app:NAME``, else APP_PLAYER."""
+        """The Marquee player to use: ``?client=app:NAME``, else APP_PLAYER."""
         if client_name:
             return client_name.removeprefix("app:") if client_name.startswith("app:") else None
         return self.config.app_player or None
@@ -243,7 +243,7 @@ class Plex:
             url = jellyfin_hls_url(self.config.jellyfin_url, self.config.jellyfin_api_key, item["Id"], start, name)
         else:
             url = plex_hls_url(self.config.plex_url, self.config.plex_token, movie.ratingKey, start, name)
-        log.info("Sending %s (%s) to the Movie Book app on %s", movie.title, key, name)
+        log.info("Sending %s (%s) to the Marquee app on %s", movie.title, key, name)
         # The app shows these in its player; the poster comes from plexnfc's own /poster
         self.app_inbox.send(name, "play", url=url, title=movie.title, key=key, start=0,
                             year=getattr(movie, "year", None), summary=getattr(movie, "summary", None) or "",
