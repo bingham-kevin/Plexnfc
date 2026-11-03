@@ -1015,6 +1015,7 @@ def test_apple_tv_routes_are_panel_only(plex):
     plex.apple_tvs.scan.return_value = [{"identifier": "ATV1", "name": "Living Room",
                                          "address": "192.168.0.30", "linked": None}]
     plex.apple_tvs.linked.return_value = {}
+    plex.apple_tvs.link_for.return_value = {"identifier": "ATV1", "name": "Living Room", "address": "192.168.0.30"}
     app = create_app(CONFIG, plex).test_client()
     outside = {"REMOTE_ADDR": "192.168.0.50"}
     assert app.get("/appletv/scan", environ_base=outside).status_code == 403
@@ -1114,3 +1115,44 @@ def test_app_player_can_be_named_after_its_apple_tv(plex):
     assert r.status_code == 200
     assert plex.app_inbox.next("Den", 0)["action"] == "play"
     plex.apple_tvs.open_marquee.assert_called_once_with("Den")
+
+
+# ---- Marquee pairing itself on an Apple TV plexnfc paired with ------------------------
+
+def test_expected_apple_tv_pairs_marquee_without_a_code(plex):
+    app = create_app(CONFIG, plex).test_client()
+    tv, other = {"REMOTE_ADDR": "192.168.0.34"}, {"REMOTE_ADDR": "192.168.0.50"}
+    old = pair(plex, "Den")  # Marquee paired before, e.g. with its old name
+    assert app.get("/tv/expected", environ_base=tv).status_code == 204
+    plex.app_pairings.expect("192.168.0.34", "Den")
+    assert app.get("/tv/expected", environ_base=other).status_code == 204
+    assert app.get("/tv/expected", environ_base=tv).json == {"name": "Den"}
+    started = app.post("/tv/pair", json={"name": "Apple TV"}, environ_base=tv).json
+    result = app.get(f"/tv/pair/{started['pair_id']}").json
+    assert result["status"] == "approved" and result["name"] == "Den"  # takes the name over, no "Den 2"
+    assert [d["name"] for d in plex.app_pairings.devices()] == ["Den"]
+    assert app.get("/tv/inbox", headers=old).status_code == 401
+    # once only, and never for phones or other addresses
+    again = app.post("/tv/pair", json={"name": "Apple TV"}, environ_base=tv).json
+    assert app.get(f"/tv/pair/{again['pair_id']}").json == {"status": "pending"}
+    plex.app_pairings.expect("192.168.0.34", "Den")
+    phone = app.post("/tv/pair", json={"name": "iPhone", "kind": "phone"}, environ_base=tv).json
+    assert app.get(f"/tv/pair/{phone['pair_id']}").json == {"status": "pending"}
+    stranger = app.post("/tv/pair", json={"name": "Apple TV"}, environ_base=other).json
+    assert app.get(f"/tv/pair/{stranger['pair_id']}").json == {"status": "pending"}
+
+
+def test_pairing_an_apple_tv_expects_its_marquee(plex):
+    plex.apple_tvs = mock.Mock(available=True)
+    plex.apple_tvs.finish_pairing.return_value = "Den"
+    plex.apple_tvs.link_for.return_value = {"identifier": "ATV1", "name": "Den Apple TV", "address": "192.168.0.34"}
+    app = create_app(CONFIG, plex).test_client()
+    assert b"is connecting to this server as <b>Den</b>" in app.post("/appletv/pair/abc", data={"pin": "1234"}).data
+    plex.apple_tvs.open_marquee.assert_called_once_with("Den")
+    assert plex.app_pairings.expected("192.168.0.34") == "Den"
+    # Connect Marquee does the same for an Apple TV paired already; panel only
+    assert app.post("/appletv/connect", data={"player": "Den"},
+                    environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+    assert app.post("/appletv/connect", data={"player": "Den"}).status_code == 200
+    plex.apple_tvs.link_for.return_value = None
+    assert app.post("/appletv/connect", data={"player": "Nope"}).status_code == 404

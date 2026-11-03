@@ -20,11 +20,13 @@ struct MovieBookApp: App {
                 .environmentObject(app.library)
                 .onOpenURL { app.player.handle(url: $0) }
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase, initial: true) { _, phase in  // initial: a launch starts out active
             if phase == .active {
                 app.player.becameActive()
+                app.startPairingWithExpectingServers()
             } else {
                 app.player.resignedActive()
+                app.stopPairingWithExpectingServers()
             }
         }
     }

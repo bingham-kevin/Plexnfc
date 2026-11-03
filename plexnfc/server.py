@@ -12,6 +12,7 @@ Routes
   /plex/login          Sign in with Plex (saves the token, so nobody has to find it by hand)
   /plex/server         JSON: the Plex server in use (found from the sign-in when PLEX_URL isn't set)
   /tv/...               the Marquee Apple TV app: pairing, inbox, status, library, search and play
+                       (/tv/expected: Marquee pairs by itself on an Apple TV paired below)
   /appletv/...         pair Apple TVs so plexnfc opens Marquee on them itself (needs pyatv)
   /phone/...           the Marquee Remote phone app: which player this phone's taps go to
   /poster/<key>        poster image (proxied so your Plex token stays private)
@@ -177,7 +178,14 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     @app.post("/tv/pair")
     def tv_pair():
         body = request.get_json(silent=True) or {}
-        return jsonify(plex.app_pairings.start(body.get("name", ""), body.get("kind", "tv")))
+        return jsonify(plex.app_pairings.start(body.get("name", ""), body.get("kind", "tv"), request.remote_addr))
+
+    @app.get("/tv/expected")
+    def tv_expected():
+        """Whether this server is expecting Marquee on the Apple TV asking: Marquee asks
+        every server it finds when it opens, and pairs with one that is."""
+        name = plex.app_pairings.expected(request.remote_addr)
+        return jsonify(name=name) if name else ("", 204)
 
     @app.get("/tv/pair/<pair_id>")
     def tv_pair_status(pair_id):
@@ -250,6 +258,21 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                                      f'<input name="pin" inputmode="numeric" autocomplete="one-time-code" '
                                      f'maxlength="4" required autofocus aria-label="PIN"> <button>Pair</button></form>')
 
+    def connect_marquee(player: str) -> str:
+        """Open Marquee on ``player``'s Apple TV, expecting it to pair with this server as
+        ``player``. Returns a note for the page saying how that went."""
+        server = config.public_base_url.split("://", 1)[-1]
+        if link := plex.apple_tvs.link_for(player):
+            plex.app_pairings.expect(link["address"], player)
+        try:
+            plex.apple_tvs.open_marquee(player)
+            if link := plex.apple_tvs.link_for(player):
+                plex.app_pairings.expect(link["address"], player)  # its address, if it moved
+        except AppleTVError as e:
+            return (f'<p class="err">Couldn\'t open Marquee on it ({escape(str(e))}). In Marquee, connect to '
+                    f"<code>{escape(server)}</code> and approve its code here instead.</p>")
+        return f"<p>Marquee on that Apple TV is connecting to this server as <b>{escape(player)}</b>.</p>"
+
     @app.post("/appletv/pair/<pair_id>")
     def appletv_pair_finish(pair_id):
         if not from_panel():
@@ -259,7 +282,18 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         except AppleTVError as e:
             return appletv_error(e, "../scan")
         return page("Paired", f"<h1>Paired</h1><p>Taps for <code>app:{escape(player)}</code> now switch that "
-                              f"Apple TV on and open Marquee.</p><p><a href=\"../../\">Back</a></p>")
+                              f"Apple TV on and open Marquee.</p>{connect_marquee(player)}"
+                              f"<p><a href=\"../../\">Back</a></p>")
+
+    @app.post("/appletv/connect")
+    def appletv_connect():
+        if not from_panel():
+            abort(403)
+        player = request.form.get("player", "")
+        if not plex.apple_tvs.link_for(player):
+            abort(404)
+        return page("Connecting", f"<h1>Connecting Marquee</h1>{connect_marquee(player)}"
+                                  f'<p><a href="../">Back</a></p>')
 
     @app.post("/appletv/open")
     def appletv_open():
@@ -547,6 +581,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             f'<tr><td>{escape(player)}</td><td>{escape(link["name"])}</td>'
             f'<td><form action="appletv/open" method="post" style="display:inline">'
             f'<input type="hidden" name="player" value="{escape(player)}"><button>Open Marquee</button></form> '
+            f'<form action="appletv/connect" method="post" style="display:inline">'
+            f'<input type="hidden" name="player" value="{escape(player)}"><button>Connect Marquee</button></form> '
             f'<form action="appletv/remove" method="post" style="display:inline">'
             f'<input type="hidden" name="player" value="{escape(player)}"><button>Unpair</button></form></td></tr>'
             for player, link in plex.apple_tvs.linked().items())

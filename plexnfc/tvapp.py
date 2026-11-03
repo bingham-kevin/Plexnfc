@@ -85,6 +85,7 @@ class AppPairings:
         self.path = path
         self._lock = threading.Lock()
         self._pending: dict[str, dict] = {}
+        self._expected: dict[str, tuple[str, float]] = {}  # Apple TV address -> (Marquee name, when)
         try:
             with open(path) as f:
                 self._devices: dict[str, dict] = json.load(f).get("devices", {})
@@ -97,7 +98,25 @@ class AppPairings:
             json.dump({"devices": self._devices}, f)
         os.replace(tmp, self.path)
 
-    def start(self, name: str, kind: str = "tv") -> dict:
+    def expect(self, address: str, name: str) -> None:
+        """Pair Marquee from the Apple TV at ``address`` as ``name``, with no code to approve,
+        if it asks within the next few minutes.
+
+        plexnfc expects an Apple TV it has just paired with (by the PIN on the TV)
+        or opened Marquee on. Marquee asks every Movie Book server it finds whether
+        it's expected (``expected``) whenever it opens. tvOS won't pass a link to
+        Marquee over Companion, or this would travel in one.
+        """
+        with self._lock:
+            self._expected[address] = (" ".join(name.split())[:40], time.monotonic())
+
+    def expected(self, address: str | None) -> str | None:
+        """The Marquee name the Apple TV at ``address`` is expected to pair as, if any."""
+        with self._lock:
+            name, since = self._expected.get(address or "", (None, 0.0))
+        return name if name and time.monotonic() - since < PAIRING_TTL else None
+
+    def start(self, name: str, kind: str = "tv", address: str | None = None) -> dict:
         kind = "phone" if kind == "phone" else "tv"
         name = " ".join(name.split())[:40] or ("iPhone" if kind == "phone" else "Apple TV")
         pair_id = secrets.token_urlsafe(16)
@@ -106,6 +125,10 @@ class AppPairings:
             self._pending = {k: v for k, v in self._pending.items() if time.monotonic() - v["created"] < PAIRING_TTL}
             self._pending[pair_id] = {"name": name, "kind": kind, "code": code, "created": time.monotonic(),
                                      "secret": None}
+        if kind == "tv" and (expected := self.expected(address)):
+            with self._lock:
+                self._expected.pop(address, None)  # once
+            self.approve(pair_id, expected, replace=True)
         return {"pair_id": pair_id, "code": code}
 
     def pending(self) -> list[dict]:
@@ -114,12 +137,17 @@ class AppPairings:
                     for k, v in self._pending.items()
                     if v["secret"] is None and time.monotonic() - v["created"] < PAIRING_TTL]
 
-    def approve(self, pair_id: str, name: str | None = None) -> bool:
-        """Pair the Apple TV, under ``name`` if given (tvOS calls every Apple TV "Apple TV")."""
+    def approve(self, pair_id: str, name: str | None = None, replace: bool = False) -> bool:
+        """Pair the Apple TV, under ``name`` if given (tvOS calls every Apple TV "Apple TV").
+        ``replace`` takes the name over from an Apple TV already paired with it: the same
+        Apple TV pairing again."""
         with self._lock:
             entry = self._pending.get(pair_id)
             if not entry or time.monotonic() - entry["created"] > PAIRING_TTL:
                 return False
+            if replace and name:
+                self._devices = {k: d for k, d in self._devices.items()
+                                 if not (d.get("kind", "tv") == entry["kind"] and d["name"].casefold() == name.casefold())}
             entry["name"] = self._unique_name(" ".join((name or "").split())[:40] or entry["name"])
             entry["secret"] = secrets.token_urlsafe(32)
             self._devices[uuid.uuid4().hex] = {"name": entry["name"], "kind": entry["kind"],

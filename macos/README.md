@@ -7,7 +7,7 @@ plexnfc as a menu bar app, so the movie book works without Home Assistant. It se
                                    └─► pyatv: wake Apple TV, open Marquee ──► Marquee plays it from Plex
 ```
 
-Opening Marquee uses [pyatv](https://pyatv.dev) over Apple's Companion protocol, the same way Home Assistant's Apple TV integration does. The Apple TV shows no prompt. Because Companion is reverse-engineered rather than a public API, distribute this app notarized outside the Mac App Store.
+Opening Marquee uses [pyatv](https://pyatv.dev) over Apple's Companion protocol, the same way Home Assistant's Apple TV integration does. Opening an app this way shows no prompt on the TV; sending a `moviebook://` link would ask "Open in Marquee?" first, so the server doesn't send links. Because Companion is reverse-engineered rather than a public API, distribute this app notarized outside the Mac App Store.
 
 ## Prototype status
 
@@ -19,5 +19,5 @@ Opening Marquee uses [pyatv](https://pyatv.dev) over Apple's Companion protocol,
 1. Open `MarqueeServer/MarqueeServer.xcodeproj`, pick your team under **Signing & Capabilities**, and run it. A film icon appears in the menu bar.
 2. Allow **Local Network** access when macOS asks. If it doesn't ask, or you said no, turn **Marquee Server** on in **System Settings → Privacy & Security → Local Network**. Without it the server can't find Apple TVs.
 3. In **Settings…**, set the movie library and the **Marquee player** taps play on by default. Leave **Plex server** blank to use the one on your Plex account.
-4. **Open Control Panel**: sign in with Plex, approve Marquee on each Apple TV and Marquee Remote on each phone, then under **Open Marquee automatically** choose **Find Apple TVs**, pair each Apple TV with its Marquee player name and type the PIN the TV shows.
+4. **Open Control Panel**: sign in with Plex, then under **Open Marquee automatically** choose **Find Apple TVs** and pair each Apple TV with a player name (its room), typing the PIN the TV shows. Marquee on that Apple TV then connects to this server by itself under the same name: the server opens it, and Marquee pairs with a server that's expecting it. For an Apple TV paired already, **Connect Marquee** does the same. Approve Marquee Remote on each phone the usual way, with the code it shows.
 5. Write the tags from the control panel's tag list. They point at `http://marquee.local:8080/m/…`, a name Marquee Server answers for with whatever address the Mac has, so the Mac needs no fixed address. iPhones and iPads open `.local` names; many Android phones can't.

@@ -108,6 +108,16 @@ enum Pairing {
         return try JSONDecoder().decode(Started.self, from: data)
     }
 
+    /// Whether the server at `address` is expecting this Apple TV: it is for a few minutes
+    /// after it paired with the Apple TV itself, and then approves Marquee's pairing straight away.
+    static func isExpected(address: String) async -> Bool {
+        guard let base = Connection.baseURL(for: address),
+              let url = URL(string: "tv/expected", relativeTo: base),
+              let (_, response) = try? await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 5))
+        else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
+    }
+
     /// The pairing's state: nil while waiting, the secret once approved.
     static func check(address: String, pairID: String) async throws -> Result {
         guard let base = Connection.baseURL(for: address),
