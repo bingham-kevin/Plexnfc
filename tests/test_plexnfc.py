@@ -648,7 +648,7 @@ def test_app_play_uses_jellyfin_stream_when_set_up(plex):
     plex = app_plex(plex, jellyfin_url="http://jf:8096", jellyfin_api_key="k")
     create_app(plex.config, plex).test_client().get("/m/tmdb-603")
     url = plex.app_inbox.next("Den", 0)["url"]
-    assert url.startswith("http://jf:8096/Videos/abc/master.m3u8?") and "api_key=k" in url
+    assert url.startswith("http://jf:8096/Videos/abc/master.m3u8?") and "ApiKey=k" in url
 
 
 def test_app_status_controls_and_now(plex):

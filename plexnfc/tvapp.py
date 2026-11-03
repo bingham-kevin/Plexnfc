@@ -73,10 +73,13 @@ def plex_hls_url(plex_url: str, token: str, rating_key, start: int, player: str)
 
 
 def jellyfin_hls_url(jellyfin_url: str, api_key: str, item_id: str, start: int, player: str) -> str:
-    """Jellyfin's HLS stream for a movie: HEVC/H.264 copied into fMP4 segments where possible."""
+    """Jellyfin's HLS stream for a movie: HEVC/H.264 copied into fMP4 segments where possible.
+
+    The key goes in ``ApiKey``: current Jellyfin answers 401 to the old ``api_key``.
+    """
     params = {
         "MediaSourceId": item_id, "DeviceId": f"moviebook-{player}", "PlaySessionId": uuid.uuid4().hex,
-        "api_key": api_key, "VideoCodec": "hevc,h264", "AudioCodec": "aac,ac3,eac3",
+        "ApiKey": api_key, "VideoCodec": "hevc,h264", "AudioCodec": "aac,ac3,eac3",
         "SegmentContainer": "mp4", "TranscodingMaxAudioChannels": 6, "MaxStreamingBitrate": 120_000_000,
         "StartTimeTicks": int(start) * 10_000_000,
     }
