@@ -106,16 +106,28 @@ class AppPairings:
             return [{"pair_id": k, "name": v["name"], "code": v["code"]} for k, v in self._pending.items()
                     if v["secret"] is None and time.monotonic() - v["created"] < PAIRING_TTL]
 
-    def approve(self, pair_id: str) -> bool:
+    def approve(self, pair_id: str, name: str | None = None) -> bool:
+        """Pair the Apple TV, under ``name`` if given (tvOS calls every Apple TV "Apple TV")."""
         with self._lock:
             entry = self._pending.get(pair_id)
             if not entry or time.monotonic() - entry["created"] > PAIRING_TTL:
                 return False
+            entry["name"] = self._unique_name(" ".join((name or "").split())[:40] or entry["name"])
             entry["secret"] = secrets.token_urlsafe(32)
             self._devices[uuid.uuid4().hex] = {"name": entry["name"], "hash": _hash(entry["secret"]),
                                                "paired": int(time.time())}
             self._save()
         return True
+
+    def _unique_name(self, name: str) -> str:
+        """``name``, or ``name 2``, ``name 3``… if another Apple TV already has it, since taps find
+        an Apple TV by name."""
+        taken = {d["name"].lower() for d in self._devices.values()}
+        candidate, n = name, 1
+        while candidate.lower() in taken:
+            n += 1
+            candidate = f"{name} {n}"
+        return candidate
 
     def poll(self, pair_id: str) -> dict | None:
         """``pending`` until approved; then the secret, once. None if unknown or expired."""

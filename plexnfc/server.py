@@ -171,7 +171,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     def tv_pair_approve(pair_id):
         if not from_panel():
             abort(403)
-        plex.app_pairings.approve(pair_id)
+        plex.app_pairings.approve(pair_id, request.form.get("name"))
         return page("Paired", '<h1>Apple TV paired</h1><p><a href="../../../">Back</a></p>')
 
     @app.post("/tv/devices/<device_id>/remove")
@@ -380,6 +380,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         rows = "".join(
             f'<tr><td>{escape(p["name"])} wants to pair</td><td><b style="font-size:1.4em">{p["code"]}</b></td>'
             f'<td><form action="tv/pair/{escape(p["pair_id"])}/approve" method="post">'
+            f'<input name="name" value="{escape(p["name"])}" maxlength="40" aria-label="Name, e.g. the room"> '
             f'<button>Approve</button></form></td></tr>'
             for p in plex.app_pairings.pending())
         rows += "".join(
@@ -389,7 +390,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             for d in plex.app_pairings.devices())
         table = f"<table>{rows}</table>" if rows else "<p>No Apple TVs yet.</p>"
         return (f"<h1>Marquee Apple TVs</h1><p>In the Marquee app, connect to <code>{escape(server)}</code>, "
-                f"then approve the code it shows here. Reload this page to see new requests.</p>{table}")
+                f"then approve the code it shows here. Name each Apple TV after its room: tags pick one with "
+                f"<code>?client=app:NAME</code>. Reload this page to see new requests.</p>{table}")
 
     @app.get("/")
     def index():

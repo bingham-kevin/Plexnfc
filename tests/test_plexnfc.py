@@ -741,6 +741,19 @@ def test_pairing_flow_and_panel(plex):
     assert app.get("/tv/inbox", headers=headers).status_code == 401
 
 
+def test_approving_names_the_apple_tv_and_keeps_names_unique(plex):
+    app = create_app(CONFIG, plex).test_client()
+    pair(plex, "Apple TV")
+    names = []
+    for given in ("Living Room", "", "living room"):
+        started = app.post("/tv/pair", json={"name": "Apple TV"}).json
+        app.post(f"/tv/pair/{started['pair_id']}/approve", data={"name": given},
+                 environ_base={"REMOTE_ADDR": "172.30.32.2"})
+        names.append(app.get(f"/tv/pair/{started['pair_id']}").json["name"])
+    # blank keeps the Apple TV's own name; a name already taken gets a number
+    assert names == ["Living Room", "Apple TV 2", "living room 2"]
+
+
 def test_pairings_survive_restart_and_store_only_a_hash(plex, tmp_path):
     from plexnfc.tvapp import AppPairings
     headers = pair(plex, "Den")
