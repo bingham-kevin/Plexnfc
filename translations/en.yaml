@@ -1,0 +1,51 @@
+configuration:
+  plex_url:
+    name: Plex server URL
+    description: e.g. http://192.168.1.10:32400
+  plex_token:
+    name: Plex token
+    description: Leave blank and use "Sign in with Plex" in the Movie Book panel instead
+  plex_library:
+    name: Movie library
+    description: Name of the Plex library to use
+  plex_client:
+    name: Plex player
+    description: The player's name as Plex shows it, e.g. "Living Room". Also used to show what's playing on the Movie Remote.
+  public_base_url:
+    name: Tag base URL
+    description: Written onto every tag, so use this machine's fixed IP, e.g. http://192.168.1.20:8080
+  resume:
+    name: Resume
+    description: Continue partly watched movies instead of starting over
+  ha_script:
+    name: Get-ready script
+    description: Optional script to run before playing (TV on, HDMI input, open Plex), e.g. script.movie_night
+  ha_off_script:
+    name: Off script
+    description: Optional script for the "TV off" tag, e.g. script.movie_night_off
+  ha_started_script:
+    name: After-playback script
+    description: Optional script to run once a movie has been started, e.g. to press a button on the TV's remote
+  ha_player:
+    name: Home Assistant Plex player
+    description: Optional. Let Home Assistant start the movie on this Plex media_player (recommended for Apple TV)
+  player_wait:
+    name: Player wait (seconds)
+    description: How long to wait for the Plex app to start after the get-ready script
+  jellyfin_url:
+    name: Jellyfin server URL
+    description: Optional. To play on a Jellyfin app such as Swiftfin, e.g. http://192.168.1.10:8096
+  jellyfin_api_key:
+    name: Jellyfin API key
+    description: Create one in Jellyfin under Dashboard → API Keys
+  jellyfin_player:
+    name: Jellyfin player
+    description: Optional. Play on this Jellyfin app (its device name, e.g. "AppleTV") instead of the Plex player. Plex still makes the book.
+  app_player:
+    name: Marquee player
+    description: Optional. Play in the Marquee Apple TV app instead, on the Apple TV with this player name (shown in the app). Use a get-ready script that opens Marquee.
+  app_stream:
+    name: Marquee stream
+    description: Where the app's video comes from. Blank or plex uses Plex, which converts what the Apple TV can't play. jellyfin uses Jellyfin (needs the Jellyfin settings).
+network:
+  8080/tcp: Tag URLs (phones and the Movie Remote connect here)
