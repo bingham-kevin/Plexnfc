@@ -1,7 +1,7 @@
 # Home Assistant app manifest. (The plexnfc settings themselves live in .env
 # when you run it outside Home Assistant; see README.md.)
 name: plexnfc
-version: "0.5.1"
+version: "0.5.2"
 slug: plexnfc
 description: Tap an NFC-tagged movie poster to play the movie on Plex
 url: https://github.com/bingham-kevin/Plexnfc
@@ -37,6 +37,7 @@ options:
   jellyfin_api_key: ""
   jellyfin_player: ""
   app_player: ""
+  app_stream: ""
 schema:
   plex_url: url
   plex_token: password?
@@ -53,3 +54,4 @@ schema:
   jellyfin_api_key: password?
   jellyfin_player: str?
   app_player: str?
+  app_stream: list(|plex|jellyfin)?

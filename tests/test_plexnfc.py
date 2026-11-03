@@ -682,3 +682,20 @@ def test_client_param_picks_app(plex):
     plex = app_plex(plex, app_player="")
     create_app(plex.config, plex).test_client().get("/m/tmdb-603?client=app:Bedroom")
     assert plex.app_inbox.next("Bedroom", 0)["action"] == "play"
+
+
+def test_app_play_sends_poster_and_details(plex):
+    plex._movie.summary = "A hacker learns the truth."
+    plex = app_plex(plex)
+    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    command = plex.app_inbox.next("Den", 0)
+    assert command["poster"] == "/poster/tmdb-603?w=600&h=900"
+    assert command["year"] == 1999 and command["summary"] == "A hacker learns the truth."
+
+
+def test_app_stream_can_force_plex(plex):
+    plex = jf_plex(plex, jellyfin_player="")
+    plex = app_plex(plex, app_stream="plex")
+    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    assert "/video/:/transcode/universal/start.m3u8?" in plex.app_inbox.next("Den", 0)["url"]
+    plex.jellyfin.find_movie.assert_not_called()

@@ -234,7 +234,7 @@ class Plex:
 
     def _play_in_app(self, name: str, key: str, movie, resume: bool) -> None:
         start = int((movie.viewOffset or 0) / 1000) if resume and getattr(movie, "viewOffset", 0) else 0
-        if self.jellyfin:
+        if self.jellyfin and self.config.app_stream != "plex":
             # Jellyfin copies HEVC into the stream; Plex may convert more
             try:
                 item = self.jellyfin.find_movie(movie.title, movie.year, key)
@@ -244,7 +244,10 @@ class Plex:
         else:
             url = plex_hls_url(self.config.plex_url, self.config.plex_token, movie.ratingKey, start, name)
         log.info("Sending %s (%s) to the Movie Book app on %s", movie.title, key, name)
-        self.app_inbox.send(name, "play", url=url, title=movie.title, key=key, start=0)
+        # The app shows these in its player; the poster comes from plexnfc's own /poster
+        self.app_inbox.send(name, "play", url=url, title=movie.title, key=key, start=0,
+                            year=getattr(movie, "year", None), summary=getattr(movie, "summary", None) or "",
+                            poster=f"/poster/{key}?w=600&h=900")
 
     def _app_now(self, name: str) -> dict:
         status = self.app_inbox.status(name)

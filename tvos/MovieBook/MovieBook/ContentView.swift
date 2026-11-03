@@ -6,8 +6,15 @@ struct ContentView: View {
 
     var body: some View {
         if let player = model.player {
-            PlayerView(player: player, onDismiss: model.stop)
-                .ignoresSafeArea()
+            ZStack {
+                PlayerView(player: player, onDismiss: model.stop)
+                if !model.isReady {
+                    StartingCard()
+                        .transition(.opacity)
+                }
+            }
+            .ignoresSafeArea()
+            .animation(.easeOut(duration: 0.6), value: model.isReady)
         } else {
             WaitingView()
         }
@@ -50,6 +57,54 @@ private struct WaitingView: View {
             }
         }
         .padding(80)
+    }
+}
+
+/// Shown over the player while the stream starts: the poster, title and year.
+private struct StartingCard: View {
+    @EnvironmentObject private var model: PlayerModel
+
+    var body: some View {
+        ZStack {
+            Color.black
+            if let poster = model.poster {
+                // The poster, blurred, fills the screen behind the card
+                Image(uiImage: poster)
+                    .resizable()
+                    .scaledToFill()
+                    .blur(radius: 60)
+                    .opacity(0.45)
+            }
+            HStack(spacing: 80) {
+                Group {
+                    if let poster = model.poster {
+                        Image(uiImage: poster).resizable().scaledToFit()
+                    } else {
+                        RoundedRectangle(cornerRadius: 24).fill(.white.opacity(0.08))
+                            .overlay(Image(systemName: "film").font(.system(size: 90)).foregroundStyle(.secondary))
+                    }
+                }
+                .frame(width: 400, height: 600)
+                .clipShape(RoundedRectangle(cornerRadius: 24))
+                .shadow(radius: 40)
+
+                VStack(alignment: .leading, spacing: 20) {
+                    Text(model.info.title ?? "Starting…")
+                        .font(.system(size: 76, weight: .bold))
+                        .lineLimit(3)
+                    if let year = model.info.year {
+                        Text(String(year)).font(.title2).foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 16) {
+                        ProgressView()
+                        Text("Starting").font(.title3).foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 30)
+                }
+                .frame(maxWidth: 900, alignment: .leading)
+            }
+            .padding(120)
+        }
     }
 }
 

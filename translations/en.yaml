@@ -44,5 +44,8 @@ configuration:
   app_player:
     name: Movie Book player
     description: Optional. Play in the Movie Book Apple TV app instead, on the Apple TV with this player name (shown in the app). Use a get-ready script that opens Movie Book.
+  app_stream:
+    name: Movie Book stream
+    description: Where the app's video comes from. Blank uses Jellyfin when it's set up, else Plex. Plex converts what the Apple TV can't play.
 network:
   8080/tcp: Tag URLs (phones and the Movie Remote connect here)
