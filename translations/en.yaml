@@ -47,5 +47,8 @@ configuration:
   app_stream:
     name: Marquee stream
     description: Where the app's video comes from. Blank or plex uses Plex, which converts what the Apple TV can't play. jellyfin uses Jellyfin (needs the Jellyfin settings).
+  player_scripts:
+    name: Get-ready scripts for other players
+    description: "Optional, for rooms other than the default player's, e.g. app:Living Room = script.living_room_movie; Den TV = script.den_roku. The get-ready script above only runs for the default player."
 network:
   8080/tcp: Tag URLs (phones and the Movie Remote connect here)

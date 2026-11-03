@@ -153,16 +153,61 @@ class Plex:
         hint = f" Players found: {', '.join(available)}." if available else ""
         raise PlexNFCError(f"Couldn't find a Plex player named '{name}'. Is it switched on?{hint}")
 
-    def prepare_tv(self) -> str | None:
-        """Run the Home Assistant "get the TV ready" script, if configured.
+    def default_player(self) -> str:
+        """The ID of the player taps go to when nothing else is chosen."""
+        c = self.config
+        if c.app_player:
+            return f"app:{c.app_player}"
+        if c.jellyfin_player:
+            return f"jellyfin:{c.jellyfin_player}"
+        return c.ha_player or c.client
+
+    def players(self) -> list[dict]:
+        """Every player a phone can send its taps to: paired Marquee Apple TVs, Jellyfin
+        apps that are open, and Plex players. ``id`` is what ``?client=`` takes."""
+        found = [{"id": f"app:{d['name']}", "name": d["name"], "kind": "Marquee"}
+                 for d in self.app_pairings.devices() if d["kind"] == "tv"]
+        if self.jellyfin:
+            try:
+                found += [{"id": f"jellyfin:{n}", "name": n, "kind": "Jellyfin"} for n in self.jellyfin.players()]
+            except JellyfinError as e:
+                log.debug("Couldn't list Jellyfin players: %s", e)
+        try:
+            plex_names = {c.title for c in self.server.clients()} | set(self._account_players())
+        except Exception as e:  # Plex unreachable or signed out: list the others
+            log.debug("Couldn't list Plex players: %s", e)
+            plex_names = set()
+        if self.config.client:
+            plex_names.add(self.config.client)
+        found += [{"id": n, "name": n, "kind": "Plex"} for n in sorted(plex_names, key=str.casefold)]
+        if self.config.ha_player:
+            found.append({"id": self.config.ha_player, "name": self.config.ha_player, "kind": "Home Assistant"})
+        seen = set()
+        return [p for p in found if not (p["id"].casefold() in seen or seen.add(p["id"].casefold()))]
+
+    def _ready_script(self, client_name: str | None) -> str | None:
+        """The get-ready script for this player: its own from PLAYER_SCRIPTS, else HA_SCRIPT,
+        which belongs to the default player (so a tap for another room doesn't wake this one)."""
+        if not client_name:
+            return self.config.ha_script or None
+        scripts = {k.casefold(): v for k, v in (self.config.player_scripts or {}).items()}
+        if script := scripts.get(client_name.casefold()):
+            return script
+        if client_name.casefold() == self.default_player().casefold():
+            return self.config.ha_script or None
+        return None
+
+    def prepare_tv(self, client_name: str | None = None) -> str | None:
+        """Run the Home Assistant "get the TV ready" script for this player, if there is one.
 
         Returns an error message instead of raising: the TV may already be on,
         so a Home Assistant problem shouldn't stop the movie from trying.
         """
-        if not (self.ha and self.config.ha_script):
+        script = self._ready_script(client_name)
+        if not (self.ha and script):
             return None
         try:
-            self.ha.run_script(self.config.ha_script)
+            self.ha.run_script(script)
         except HomeAssistantError as e:
             log.warning("%s", e)
             return str(e)
@@ -214,15 +259,15 @@ class Plex:
         if name := self._app_player(client_name):
             # Leave the movie in the inbox before the script opens the app, which picks it up
             self._play_in_app(name, key, movie, resume)
-            self.prepare_tv()
+            self.prepare_tv(client_name)
             return movie, SimpleNamespace(title=name)
-        ha_error = self.prepare_tv()
+        ha_error = self.prepare_tv(client_name)
         if name := self._jellyfin_player(client_name):
             return self._play_via_jellyfin(name, key, movie, resume, ha_error)
         if entity := self._ha_entity(client_name):
             log.info("Playing %s (%s) on %s via Home Assistant", movie.title, key, entity)
             return self._play_via_ha(entity, movie, resume, ha_error)
-        wait = self.config.player_wait if self.config.ha_script else 0
+        wait = self.config.player_wait if self._ready_script(client_name) else 0
         try:
             client = self.get_client(client_name, wait=wait)
         except PlexNFCError as e:
@@ -330,7 +375,7 @@ class Plex:
             item = self.jellyfin.find_movie(movie.title, movie.year, key)
         except JellyfinError as e:
             raise PlexNFCError(str(e)) from None
-        wait = self.config.player_wait if self.config.ha_script else 0
+        wait = self.config.player_wait if self._ready_script(f"jellyfin:{name}") else 0
         try:
             session = self._jellyfin_session(name, wait)
         except PlexNFCError as e:

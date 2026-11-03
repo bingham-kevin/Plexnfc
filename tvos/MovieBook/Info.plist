@@ -24,6 +24,11 @@
 	<!-- Only Apple's built-in HTTPS; no other encryption (App Store export compliance) -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<!-- plexnfc announces itself with Bonjour, so the server can be picked from a list -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_moviebook._tcp</string>
+	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Marquee connects to your Movie Book server on your home network to show and play your movies.</string>
 </dict>

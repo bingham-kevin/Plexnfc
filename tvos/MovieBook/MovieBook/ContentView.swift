@@ -33,6 +33,7 @@ struct RootView: View {
 
 private struct WelcomeView: View {
     @EnvironmentObject private var app: AppModel
+    @StateObject private var browser = ServerBrowser()
     @State private var address = ""
 
     var body: some View {
@@ -48,7 +49,12 @@ private struct WelcomeView: View {
                 .fixedSize(horizontal: false, vertical: true)  // wrap, don't cut off
 
             VStack(spacing: 20) {
-                TextField("Movie Book server address, e.g. 192.168.1.20:8080", text: $address)
+                // Servers found on the network: one click instead of typing the address
+                ForEach(browser.servers) { server in
+                    Button("Connect to \(server.name) (\(server.address))") { app.pair(address: server.address) }
+                }
+                TextField(browser.servers.isEmpty ? "Movie Book server address, e.g. 192.168.1.20:8080"
+                                                  : "Or enter another server's address", text: $address)
                     .keyboardType(.URL)
                     .textContentType(.URL)
                     .frame(maxWidth: 1000)
@@ -65,7 +71,11 @@ private struct WelcomeView: View {
             }
         }
         .padding(80)
-        .onAppear { if address.isEmpty { address = app.savedAddress } }
+        .onAppear {
+            if address.isEmpty { address = app.savedAddress }
+            browser.start()
+        }
+        .onDisappear { browser.stop() }
     }
 
     private func connect() {

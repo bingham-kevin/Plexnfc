@@ -69,11 +69,16 @@ def _hash(secret: str) -> str:
 
 
 class AppPairings:
-    """Apple TVs allowed to use the app API.
+    """Apple TVs and phones allowed to use the app API.
 
-    An Apple TV asks to pair and shows a 6-digit code; you approve the code in
-    plexnfc's panel, and the Apple TV then collects a secret it sends with every
-    request. Only a hash of each secret is saved, in ``path``.
+    An Apple TV (or the Marquee Remote app on an iPhone or iPad) asks to pair and
+    shows a 6-digit code; you approve the code in plexnfc's panel, and it then
+    collects a secret it sends with every request. Only a hash of each secret is
+    saved, in ``path``.
+
+    A phone also keeps the player its taps should go to, and the Wi-Fi address it
+    last used: a tag tapped in the background opens in Safari, which can't send
+    the secret, so plexnfc recognizes the phone by its address instead.
     """
 
     def __init__(self, path: str):
@@ -92,18 +97,21 @@ class AppPairings:
             json.dump({"devices": self._devices}, f)
         os.replace(tmp, self.path)
 
-    def start(self, name: str) -> dict:
-        name = " ".join(name.split())[:40] or "Apple TV"
+    def start(self, name: str, kind: str = "tv") -> dict:
+        kind = "phone" if kind == "phone" else "tv"
+        name = " ".join(name.split())[:40] or ("iPhone" if kind == "phone" else "Apple TV")
         pair_id = secrets.token_urlsafe(16)
         code = f"{secrets.randbelow(1_000_000):06d}"
         with self._lock:
             self._pending = {k: v for k, v in self._pending.items() if time.monotonic() - v["created"] < PAIRING_TTL}
-            self._pending[pair_id] = {"name": name, "code": code, "created": time.monotonic(), "secret": None}
+            self._pending[pair_id] = {"name": name, "kind": kind, "code": code, "created": time.monotonic(),
+                                     "secret": None}
         return {"pair_id": pair_id, "code": code}
 
     def pending(self) -> list[dict]:
         with self._lock:
-            return [{"pair_id": k, "name": v["name"], "code": v["code"]} for k, v in self._pending.items()
+            return [{"pair_id": k, "name": v["name"], "kind": v["kind"], "code": v["code"]}
+                    for k, v in self._pending.items()
                     if v["secret"] is None and time.monotonic() - v["created"] < PAIRING_TTL]
 
     def approve(self, pair_id: str, name: str | None = None) -> bool:
@@ -114,8 +122,8 @@ class AppPairings:
                 return False
             entry["name"] = self._unique_name(" ".join((name or "").split())[:40] or entry["name"])
             entry["secret"] = secrets.token_urlsafe(32)
-            self._devices[uuid.uuid4().hex] = {"name": entry["name"], "hash": _hash(entry["secret"]),
-                                               "paired": int(time.time())}
+            self._devices[uuid.uuid4().hex] = {"name": entry["name"], "kind": entry["kind"],
+                                               "hash": _hash(entry["secret"]), "paired": int(time.time())}
             self._save()
         return True
 
@@ -142,22 +150,60 @@ class AppPairings:
 
     def devices(self) -> list[dict]:
         with self._lock:
-            return [{"id": k, "name": v["name"], "paired": v["paired"]} for k, v in self._devices.items()]
+            return [{"id": k, "name": v["name"], "kind": v.get("kind", "tv"), "paired": v["paired"],
+                     "player": v.get("player")} for k, v in self._devices.items()]
 
     def remove(self, device_id: str) -> None:
         with self._lock:
             if self._devices.pop(device_id, None) is not None:
                 self._save()
 
-    def device(self, secret: str | None) -> str | None:
-        """The paired Apple TV's name for this secret, or None."""
+    def _find(self, secret: str | None, kind: str) -> str | None:
         if not secret:
             return None
         wanted = _hash(secret)
+        for device_id, device in self._devices.items():
+            if device.get("kind", "tv") == kind and secrets.compare_digest(device["hash"], wanted):
+                return device_id
+        return None
+
+    def device(self, secret: str | None) -> str | None:
+        """The paired Apple TV's name for this secret, or None."""
+        with self._lock:
+            device_id = self._find(secret, "tv")
+            return self._devices[device_id]["name"] if device_id else None
+
+    def phone(self, secret: str | None, address: str | None = None) -> dict | None:
+        """The paired phone for this secret, or None. Notes ``address`` as where its taps come from."""
+        with self._lock:
+            device_id = self._find(secret, "phone")
+            if not device_id:
+                return None
+            device = self._devices[device_id]
+            if address and device.get("address") != address:
+                # one phone per address: a phone that moved there, or got its address back, wins it
+                for other in self._devices.values():
+                    if other.get("address") == address:
+                        other.pop("address")
+                device["address"] = address
+                self._save()
+            return {"id": device_id, "name": device["name"], "player": device.get("player")}
+
+    def set_player(self, device_id: str, player: str | None) -> None:
+        """Send this phone's taps to ``player`` (a player ID such as ``app:Den``), or None for the default."""
+        with self._lock:
+            if device_id in self._devices:
+                self._devices[device_id]["player"] = player or None
+                self._save()
+
+    def player_for(self, address: str | None) -> str | None:
+        """The player chosen on the paired phone at this address, if any."""
+        if not address:
+            return None
         with self._lock:
             for device in self._devices.values():
-                if secrets.compare_digest(device["hash"], wanted):
-                    return device["name"]
+                if device.get("kind") == "phone" and device.get("address") == address:
+                    return device.get("player")
         return None
 
 

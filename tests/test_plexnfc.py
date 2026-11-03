@@ -127,6 +127,7 @@ def test_home_assistant_failure_still_tries_to_play(plex):
     plex = ha_plex(plex)
     plex.ha.run_script.side_effect = HomeAssistantError("HA down")
     assert create_app(plex.config, plex).test_client().get("/m/tmdb-603").status_code == 200
+    plex.config.player_scripts = {"Nope": "script.nope"}
     r = create_app(plex.config, plex).test_client().get("/m/tmdb-603?client=Nope")
     assert b"HA down" in r.data
 
@@ -274,6 +275,18 @@ def test_book_page_uses_relative_poster_urls(plex):
     r = create_app(CONFIG, plex).test_client().get("/book?layout=grid&title=Our+Movies")
     assert r.status_code == 200
     assert b'src="poster/tmdb-603?w=1200&amp;h=1800"' in r.data and b"Our Movies" in r.data
+
+
+def test_book_has_contents_with_page_numbers():
+    from plexnfc.book import meta_line, render_html
+    movies = [NS(title=t, year=2000, duration=5_820_000, contentRating="PG", summary="", thumb=None,
+                 guids=[NS(id=f"tmdb://{i}")], ratingKey=i) for i, t in enumerate(["Zulu", "Alien", "Heat", "Up", "Big"])]
+    html = render_html(NS(config=NS(ha_off_script="")), "http://nfc", movies, "grid", qr=False)
+    # cover is page 1, contents page 2, then four posters a page: Big is the fifth, on page 4
+    assert html.index("Alien") < html.index("Big") < html.index("Heat")  # contents is alphabetical
+    assert '<span class="t">Big</span><span class="dots"></span><span class="n">4</span>' in html
+    assert html.count('class="tap"') == 5 + 3  # a tag spot per poster, and pause/resume/stop
+    assert meta_line(movies[0]) == "2000 · 1 h 37 m · PG"
 
 
 def test_tags_csv(plex):
@@ -725,7 +738,7 @@ def test_pairing_flow_and_panel(plex):
     assert app.get(f"/tv/pair/{started['pair_id']}").json == {"status": "pending"}
     # the panel lists the request with its code
     page = app.get("/").data
-    assert started["code"].encode() in page and b"Den wants to pair" in page
+    assert started["code"].encode() in page and b"Den (Apple TV) wants to pair" in page
     # approving from the network port is refused; through the panel (ingress) it works
     approve = f"/tv/pair/{started['pair_id']}/approve"
     assert app.post(approve, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
@@ -752,6 +765,70 @@ def test_approving_names_the_apple_tv_and_keeps_names_unique(plex):
         names.append(app.get(f"/tv/pair/{started['pair_id']}").json["name"])
     # blank keeps the Apple TV's own name; a name already taken gets a number
     assert names == ["Living Room", "Apple TV 2", "living room 2"]
+
+
+def test_each_player_gets_its_own_ready_script(plex):
+    plex = ha_plex(plex)
+    plex.config.player_scripts = {"app:Living Room": "script.living_room"}
+    plex.prepare_tv("app:living room")
+    plex.prepare_tv("Living Room")  # the default player gets HA_SCRIPT
+    plex.prepare_tv("Bedroom")  # another player with no script of its own wakes nothing
+    assert [c.args[0] for c in plex.ha.run_script.call_args_list] == ["script.living_room", plex.config.ha_script]
+
+
+def test_phone_picks_where_its_taps_go(plex):
+    app = create_app(CONFIG, plex).test_client()
+    pair(plex, "Den")  # a Marquee Apple TV
+    started = app.post("/tv/pair", json={"name": "iPhone", "kind": "phone"}).json
+    assert b"iPhone (phone) wants to pair" in app.get("/").data
+    app.post(f"/tv/pair/{started['pair_id']}/approve", data={"name": "Kevin's iPhone"},
+             environ_base={"REMOTE_ADDR": "172.30.32.2"})
+    secret = app.get(f"/tv/pair/{started['pair_id']}").json["secret"]
+    phone = {"headers": {"Authorization": f"Bearer {secret}"}, "environ_base": {"REMOTE_ADDR": "192.168.0.60"}}
+
+    players = app.get("/phone/players", **phone).json
+    assert players["default"] == "Living Room" and players["selected"] is None
+    assert {"id": "app:Den", "name": "Den", "kind": "Marquee"} in players["players"]
+    assert {"id": "Living Room", "name": "Living Room", "kind": "Plex"} in players["players"]
+    assert app.post("/phone/player", json={"player": "app:Den"}, **phone).json["selected"] == "app:Den"
+    assert b"taps go to app:Den" in app.get("/").data
+
+    # a tap from the phone's address goes to its player; other phones get the default
+    plex._play_in_app = mock.Mock()
+    app.get("/m/tmdb-603", environ_base={"REMOTE_ADDR": "192.168.0.60"})
+    assert plex._play_in_app.call_args.args[0] == "Den"
+    app.get("/m/tmdb-603", environ_base={"REMOTE_ADDR": "192.168.0.61"})
+    plex._client.playMedia.assert_called_once()
+    # ?client= on a tag still wins
+    app.get("/m/tmdb-603?client=Living Room", environ_base={"REMOTE_ADDR": "192.168.0.60"})
+    assert plex._client.playMedia.call_count == 2
+
+    # the phone moved to a new address: its taps follow it, and the old address is free
+    app.get("/phone/players", headers=phone["headers"], environ_base={"REMOTE_ADDR": "192.168.0.77"})
+    assert plex.app_pairings.player_for("192.168.0.77") == "app:Den"
+    assert plex.app_pairings.player_for("192.168.0.60") is None
+
+    # back to the default
+    app.post("/phone/player", json={"player": None}, **phone)
+    assert plex.app_pairings.player_for("192.168.0.77") is None
+
+
+def test_phone_api_needs_a_paired_phone(plex):
+    app = create_app(CONFIG, plex).test_client()
+    tv = pair(plex, "Den")
+    assert app.get("/phone/players").status_code == 401
+    assert app.get("/phone/players", headers=tv).status_code == 401  # an Apple TV isn't a phone
+    started = app.post("/tv/pair", json={"name": "iPad", "kind": "phone"}).json
+    plex.app_pairings.approve(started["pair_id"])
+    phone = {"Authorization": f"Bearer {plex.app_pairings.poll(started['pair_id'])['secret']}"}
+    assert app.get("/tv/inbox", headers=phone).status_code == 401  # and a phone isn't an Apple TV
+    assert app.post("/phone/player", json={"player": 5}, headers=phone).status_code == 400
+
+
+def test_player_scripts_setting():
+    from plexnfc.config import parse_player_scripts
+    assert parse_player_scripts("app:Living Room = script.lr; Den TV=script.den;; junk") == {
+        "app:Living Room": "script.lr", "Den TV": "script.den"}
 
 
 def test_pairings_survive_restart_and_store_only_a_hash(plex, tmp_path):

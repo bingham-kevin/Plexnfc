@@ -65,6 +65,7 @@ class Config:
     jellyfin_player: str = ""  # play on this Jellyfin player instead of PLEX_CLIENT
     app_player: str = ""  # play in the Marquee Apple TV app with this player name
     app_stream: str = ""  # "jellyfin" streams from Jellyfin; anything else uses Plex
+    player_scripts: dict | None = None  # player ID -> its own get-ready script, e.g. {"app:Living Room": "script.x"}
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -97,4 +98,15 @@ class Config:
             jellyfin_player=os.environ.get("JELLYFIN_PLAYER", ""),
             app_player=os.environ.get("APP_PLAYER", ""),
             app_stream=os.environ.get("APP_STREAM", "").lower(),
+            player_scripts=parse_player_scripts(os.environ.get("PLAYER_SCRIPTS", "")),
         )
+
+
+def parse_player_scripts(value: str) -> dict:
+    """``app:Living Room = script.living_room_movie; Den TV = script.den`` -> {player: script}."""
+    scripts = {}
+    for entry in value.split(";"):
+        player, sep, script = entry.partition("=")
+        if sep and player.strip() and script.strip():
+            scripts[player.strip()] = script.strip()
+    return scripts

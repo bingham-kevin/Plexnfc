@@ -11,6 +11,7 @@ Routes
   /book                the printable book (?layout=grid&collection=NAME&title=...)
   /plex/login          Sign in with Plex (saves the token, so nobody has to find it by hand)
   /tv/...               the Marquee Apple TV app: pairing, inbox, status, library, search and play
+  /phone/...           the Marquee Remote phone app: which player this phone's taps go to
   /poster/<key>        poster image (proxied so your Plex token stays private)
                        ?w=200&h=300 returns a resized baseline JPEG (for the ESP32 screen)
 
@@ -75,6 +76,11 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         value = request.args.get("resume")
         return None if value is None else value.lower() in ("1", "true", "yes")
 
+    def tap_client():
+        """The player for this request: ``?client=``, else the one chosen in Marquee Remote
+        on the phone that tapped (recognized by its address), else the default."""
+        return request.args.get("client") or plex.app_pairings.player_for(request.remote_addr)
+
     # Playback started with ?async=1. Shown by /now until Plex reports the movie playing.
     pending: dict = {}
     pending_lock = threading.Lock()
@@ -101,10 +107,10 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                 pending.clear()
                 pending.update(key=key, title=movie.title, year=movie.year, started=time.monotonic())
             threading.Thread(target=play_in_background, daemon=True,
-                             args=(key, request.args.get("client"), resume_param())).start()
+                             args=(key, tap_client(), resume_param())).start()
             return jsonify(state="starting", key=key, title=movie.title), 202
         try:
-            movie, client = plex.play(key, request.args.get("client"), resume_param())
+            movie, client = plex.play(key, tap_client(), resume_param())
         except PlexNFCError as e:
             return page("Can't play", f'<h1 class="err">Can\'t play that</h1><p>{escape(str(e))}</p>', 404)
         return page(
@@ -116,7 +122,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     @app.get("/<any(pause, play, stop):action>")
     def control(action):
         try:
-            client = plex.control(action, request.args.get("client"))
+            client = plex.control(action, tap_client())
         except PlexNFCError as e:
             return page("Error", f'<h1 class="err">{escape(str(e))}</h1>', 404)
         label = {"pause": "Paused", "play": "Resumed", "stop": "Stopped"}[action]
@@ -159,8 +165,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
 
     @app.post("/tv/pair")
     def tv_pair():
-        name = (request.get_json(silent=True) or {}).get("name", "")
-        return jsonify(plex.app_pairings.start(name))
+        body = request.get_json(silent=True) or {}
+        return jsonify(plex.app_pairings.start(body.get("name", ""), body.get("kind", "tv")))
 
     @app.get("/tv/pair/<pair_id>")
     def tv_pair_status(pair_id):
@@ -180,6 +186,37 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             abort(403)
         plex.app_pairings.remove(device_id)
         return page("Removed", '<h1>Apple TV removed</h1><p><a href="../../../">Back</a></p>')
+
+    # ---- the Marquee Remote phone app ------------------------------------------------
+
+    def phone_route(rule, **options):
+        """A /phone route for paired phones: passes the phone as ``phone``, and notes the
+        address it's using, which is how its taps (opened in Safari) are recognized."""
+        def decorator(fn):
+            def wrapped(**kwargs):
+                auth = request.headers.get("Authorization", "")
+                phone = plex.app_pairings.phone(
+                    auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else None,
+                    request.remote_addr)
+                if phone is None:
+                    return jsonify(ok=False, message="This phone isn't paired"), 401
+                return fn(phone=phone, **kwargs)
+            wrapped.__name__ = fn.__name__
+            return app.route(rule, **options)(wrapped)
+        return decorator
+
+    @phone_route("/phone/players")
+    def phone_players(phone):
+        return jsonify(players=plex.players(), default=plex.default_player(), selected=phone["player"],
+                       name=phone["name"])
+
+    @phone_route("/phone/player", methods=["POST"])
+    def phone_player(phone):
+        player = (request.get_json(silent=True) or {}).get("player")
+        if player is not None and not (isinstance(player, str) and 0 < len(player) <= 200):
+            return jsonify(ok=False, message="player must be a player ID, or null for the default"), 400
+        plex.app_pairings.set_player(phone["id"], player)
+        return jsonify(ok=True, selected=player)
 
     @app_route("/tv/inbox")
     def tv_inbox(device):
@@ -213,7 +250,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
 
     @app.get("/now")
     def now():
-        client = request.args.get("client")
+        client = tap_client()
         try:
             status = plex.now_playing(client)
         except Exception as e:
@@ -240,14 +277,14 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
 
     @app.get("/toggle")
     def toggle():
-        return json_action(lambda: plex.toggle(request.args.get("client")))
+        return json_action(lambda: plex.toggle(tap_client()))
 
     @app.get("/seek")
     def seek():
         by = request.args.get("by", type=int)
         if by is None:
             return jsonify(ok=False, message="add ?by=SECONDS"), 400
-        return json_action(lambda: plex.seek(by, request.args.get("client")))
+        return json_action(lambda: plex.seek(by, tap_client()))
 
     @app.get("/poster/<key>")
     def poster(key):
@@ -374,22 +411,29 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         plex.set_token("")
         return page("Signed out", '<h1>Signed out of Plex</h1><p><a href="../">Back</a></p>')
 
+    def device_status(device: dict) -> str:
+        if device["kind"] != "phone":
+            return "Apple TV, paired"
+        return f"phone, taps go to {device['player'] or 'the default player'}"
+
     def marquee_section() -> str:
-        """Pairing requests and paired Apple TVs for the Marquee app."""
+        """Pairing requests, and the paired Apple TVs and phones, for the Marquee apps."""
         server = config.public_base_url.split("://", 1)[-1]
         rows = "".join(
-            f'<tr><td>{escape(p["name"])} wants to pair</td><td><b style="font-size:1.4em">{p["code"]}</b></td>'
+            f'<tr><td>{escape(p["name"])} ({"phone" if p["kind"] == "phone" else "Apple TV"}) wants to pair</td>'
+            f'<td><b style="font-size:1.4em">{p["code"]}</b></td>'
             f'<td><form action="tv/pair/{escape(p["pair_id"])}/approve" method="post">'
             f'<input name="name" value="{escape(p["name"])}" maxlength="40" aria-label="Name, e.g. the room"> '
             f'<button>Approve</button></form></td></tr>'
             for p in plex.app_pairings.pending())
         rows += "".join(
-            f'<tr><td>{escape(d["name"])}</td><td>paired</td>'
+            f'<tr><td>{escape(d["name"])}</td><td>{escape(device_status(d))}</td>'
             f'<td><form action="tv/devices/{escape(d["id"])}/remove" method="post">'
             f'<button>Remove</button></form></td></tr>'
             for d in plex.app_pairings.devices())
-        table = f"<table>{rows}</table>" if rows else "<p>No Apple TVs yet.</p>"
-        return (f"<h1>Marquee Apple TVs</h1><p>In the Marquee app, connect to <code>{escape(server)}</code>, "
+        table = f"<table>{rows}</table>" if rows else "<p>Nothing paired yet.</p>"
+        return (f"<h1>Marquee Apple TVs and phones</h1><p>In Marquee (Apple TV) or Marquee Remote (iPhone, iPad), "
+                f"connect to <code>{escape(server)}</code>, "
                 f"then approve the code it shows here. Name each Apple TV after its room: tags pick one with "
                 f"<code>?client=app:NAME</code>. Reload this page to see new requests.</p>{table}")
 
@@ -448,7 +492,11 @@ def main():
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
-    create_app().run(host=args.host, port=args.port)
+    config = Config.from_env()
+    from .discovery import advertise
+
+    announcement = advertise(config.public_base_url)  # noqa: F841 (kept alive while serving)
+    create_app(config).run(host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

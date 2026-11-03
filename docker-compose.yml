@@ -2,6 +2,7 @@ services:
   plexnfc:
     build: .
     env_file: .env
-    ports:
-      - "8080:8080"
+    # The host's network, so Bonjour announces plexnfc to the Marquee apps.
+    # (Port 8080 is then used directly; this replaces a ports: mapping.)
+    network_mode: host
     restart: unless-stopped

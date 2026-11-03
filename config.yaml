@@ -1,7 +1,7 @@
 # Home Assistant app manifest. (The plexnfc settings themselves live in .env
 # when you run it outside Home Assistant; see README.md.)
 name: plexnfc
-version: "0.7.1"
+version: "0.8.0"
 slug: plexnfc
 description: Tap an NFC-tagged movie poster to play the movie on Plex
 url: https://github.com/bingham-kevin/Plexnfc
@@ -14,6 +14,8 @@ startup: application
 boot: auto
 homeassistant_api: true
 ingress: true
+# Bonjour (so the Marquee apps find plexnfc) needs the home network itself
+host_network: true
 ingress_port: 8080
 panel_icon: mdi:filmstrip-box-multiple
 panel_title: Movie Book
@@ -38,6 +40,7 @@ options:
   jellyfin_player: ""
   app_player: ""
   app_stream: ""
+  player_scripts: ""
 schema:
   plex_url: url
   plex_token: password?
@@ -55,3 +58,4 @@ schema:
   jellyfin_player: str?
   app_player: str?
   app_stream: list(|plex|jellyfin)?
+  player_scripts: str?
