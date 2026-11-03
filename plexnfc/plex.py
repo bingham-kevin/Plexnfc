@@ -14,6 +14,7 @@ import time
 from types import SimpleNamespace
 
 from plexapi.exceptions import NotFound
+from plexapi.client import PlexClient
 from plexapi.server import PlexServer
 
 from .config import Config
@@ -92,7 +93,24 @@ class Plex:
 
     # ---- playback -----------------------------------------------------------
 
+    def _relayed_client(self, name: str) -> PlexClient:
+        """A player reached through the Plex server, by its player ID.
+
+        Players such as Plex for Apple TV take no direct connections and don't
+        show up by name, but the server relays commands to them when they're
+        addressed by ID (the X-Plex-Target-Client-Identifier header).
+        """
+        client = PlexClient(server=self.server, identifier=self.config.client_id, connect=False)
+        client.machineIdentifier = self.config.client_id
+        client.title = name
+        client.product = ""
+        client.protocolCapabilities = ["playback", "timeline", "playqueues"]
+        client.proxyThroughServer(True, self.server)
+        return client
+
     def _find_client(self, name: str):
+        if self.config.client_id and name == self.config.client:
+            return self._relayed_client(name)
         try:
             return self.server.client(name)
         except NotFound:
