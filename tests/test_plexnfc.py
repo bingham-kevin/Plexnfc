@@ -610,15 +610,8 @@ def test_jellyfin_subtitles_wait_for_the_new_start(plex, monkeypatch):
     plex.jellyfin.subtitles_off.assert_called_once_with(new)
 
 
-def test_player_id_relays_play_through_the_server(plex, monkeypatch):
-    from dataclasses import replace
-    plex.config = replace(CONFIG, client="Den Plex", client_id="4DEEA963")
-    sent = []
-    monkeypatch.setattr("plexapi.client.PlexClient.playMedia",
-                        lambda self, media, offset=0, **kw: sent.append(self))
-    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603?resume=0")
-    assert r.status_code == 200 and b"Den Plex" in r.data
-    client = sent[0]
-    assert client.machineIdentifier == "4DEEA963" and client._proxyThroughServer
-    assert client._server is plex.server
-    plex.server.client.assert_not_called()  # not looked up by name
+def test_player_rejecting_play_is_reported(plex):
+    from plexapi.exceptions import NotFound
+    plex._client.playMedia.side_effect = NotFound("(404) not_found")
+    r = create_app(CONFIG, plex).test_client().get("/m/tmdb-603")
+    assert r.status_code == 404 and b"didn&#x27;t accept the movie" in r.data

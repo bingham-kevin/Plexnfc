@@ -60,7 +60,6 @@ class Config:
     ha_player: str = ""
     player_wait: int = 45
     auth_file: str = ""  # where "Sign in with Plex" keeps its token
-    client_id: str = ""  # PLEX_CLIENT's player ID: send its commands through the Plex server
     jellyfin_url: str = ""
     jellyfin_api_key: str = ""
     jellyfin_player: str = ""  # play on this Jellyfin player instead of PLEX_CLIENT
@@ -91,7 +90,6 @@ class Config:
             ha_player=os.environ.get("HA_PLAYER", ""),
             player_wait=int(os.environ.get("PLAYER_WAIT", "45")),
             auth_file=auth_file,
-            client_id=os.environ.get("PLEX_CLIENT_ID", ""),
             jellyfin_url=os.environ.get("JELLYFIN_URL", "").rstrip("/"),
             jellyfin_api_key=os.environ.get("JELLYFIN_API_KEY", ""),
             jellyfin_player=os.environ.get("JELLYFIN_PLAYER", ""),
