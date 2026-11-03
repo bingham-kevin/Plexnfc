@@ -98,8 +98,8 @@ Plex for Apple TV can't be remote-started, but Swiftfin (Jellyfin's Apple TV app
 
 | URL | What it does |
 | --- | --- |
-| `/m/tmdb-603` | Play the movie (resumes if partly watched) |
-| `/m/tmdb-603?resume=0` | Start from the beginning |
+| `/m/tmdb-603` | Play the movie from the beginning |
+| `/m/tmdb-603?resume=1` | Resume where it was left off |
 | `/m/tmdb-603?client=Bedroom TV` | Play on a different player (or `?client=media_player.xyz` to play through Home Assistant) |
 | `/pause`, `/play`, `/stop` | Control whatever is playing |
 | `/now`, `/toggle`, `/seek?by=30` | Used by the Movie Remote: what's playing (JSON), play/pause, skip |

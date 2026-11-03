@@ -31,6 +31,15 @@ struct RootView: View {
             }
         }
         .animation(.default, value: player.notice)
+        .confirmationDialog(player.resumeOffer?.title ?? "", isPresented: Binding(
+            get: { player.resumeOffer != nil }, set: { if !$0 { player.resumeOffer = nil } }),
+                            titleVisibility: .visible, presenting: player.resumeOffer) { offer in
+            Button("Resume from \(offer.watchedText)") { Task { await player.play(offer, resume: true) } }
+            Button("Start from the Beginning") { Task { await player.play(offer, resume: false) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("You've watched part of this movie.")
+        }
         .alert("Can't play", isPresented: Binding(get: { player.playError != nil },
                                                   set: { if !$0 { player.playError = nil } })) {
             Button("OK", role: .cancel) {}

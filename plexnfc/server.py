@@ -40,7 +40,7 @@ from flask import Flask, Response, abort, jsonify, request
 from . import plexauth
 from .appletv import AppleTVError
 from .config import Config
-from .plex import Plex, PlexNFCError, movie_key
+from .plex import Plex, PlexNFCError, app_movie, movie_key
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -79,8 +79,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     app = Flask(__name__)
 
     def resume_param():
-        value = request.args.get("resume")
-        return None if value is None else value.lower() in ("1", "true", "yes")
+        """Tags start movies from the beginning, unless the tag asks with ``?resume=1``."""
+        return request.args.get("resume", "").lower() in ("1", "true", "yes")
 
     def tap_client():
         """The player for this request: ``?client=``, else the one chosen in Marquee Remote
@@ -409,6 +409,13 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         threading.Thread(target=play_in_background, daemon=True,
                          args=(body["key"], player, body.get("resume"))).start()
         return jsonify(ok=True, title=movie.title, player=player), 202
+
+    @app_route("/tv/movie/<key>")
+    def tv_movie(device, key):
+        """A movie's details and how far it's been watched (``watched``, seconds), so
+        Marquee can ask whether to resume a scanned movie."""
+        movie = plex.find_movie(key)
+        return jsonify(**app_movie(movie, key), watched=int((getattr(movie, "viewOffset", 0) or 0) / 1000))
 
     @app_route("/tv/play", methods=["POST"])
     def tv_play(device):

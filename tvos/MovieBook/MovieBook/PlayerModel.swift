@@ -41,6 +41,26 @@ private struct RemotePlayers: Decodable {
 
 private struct RemoteStart: Decodable { let title: String }
 
+/// A movie's progress, from `/tv/movie/KEY`.
+private struct MovieProgress: Decodable {
+    let title: String
+    let duration: Int  // seconds
+    let watched: Int   // seconds
+}
+
+/// A scanned movie that's partly watched: resume it, or start over?
+struct ResumeOffer: Identifiable {
+    let id = UUID()
+    let key: String
+    let title: String
+    let watched: Int  // seconds
+
+    var watchedText: String {
+        watched >= 3600 ? String(format: "%d:%02d:%02d", watched / 3600, watched / 60 % 60, watched % 60)
+                        : String(format: "%d:%02d", watched / 60, watched % 60)
+    }
+}
+
 /// What the player shows about the movie: on the starting card and in the info panel.
 struct MovieInfo {
     var title: String?
@@ -63,6 +83,7 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var playsOn: String?
     @Published private(set) var remotePlayers: [RemotePlayer] = []
     @Published private(set) var notice: String?  // e.g. "Starting Alien on Den"
+    @Published var resumeOffer: ResumeOffer?
 
     var api: ServerAPI? {
         didSet {
@@ -112,15 +133,18 @@ final class PlayerModel: ObservableObject {
         await play(key: movie.key, title: movie.title)
     }
 
-    /// Play a movie from the server: here, or on the player chosen to play on.
-    private func play(key: String, title: String?) async {
+    /// Play a movie from the server: here, or on the player chosen to play on. `resume` nil
+    /// follows the server's Resume setting.
+    private func play(key: String, title: String?, resume: Bool? = nil) async {
         guard let api else { return }
         if let playsOn {
-            await start(key: key, on: playsOn, api: api)
+            await start(key: key, resume: resume, on: playsOn, api: api)
             return
         }
+        var body: [String: Any] = ["key": key]
+        if let resume { body["resume"] = resume }
         do {
-            let (data, _) = try await api.request("tv/play", method: "POST", body: ["key": key])
+            let (data, _) = try await api.request("tv/play", method: "POST", body: body)
             let details = try JSONDecoder().decode(PlayDetails.self, from: data)
             start(stream: details.url, key: key, at: details.start ?? 0,
                   info: MovieInfo(title: details.title ?? title, year: details.year, summary: details.summary,
@@ -138,11 +162,22 @@ final class PlayerModel: ObservableObject {
             playError = "That code isn't a movie from the movie book."
             return
         }
-        guard api != nil else {
+        guard let api else {
             playError = "Connect a Movie Book server in Settings to play movies from the book."
             return
         }
-        await play(key: key, title: nil)
+        // Partly watched (past the first minute, not in the closing credits): ask first
+        if let progress = try? await api.get("tv/movie/\(key)", as: MovieProgress.self),
+           progress.watched >= 60, progress.duration == 0 || progress.watched < progress.duration - 120 {
+            resumeOffer = ResumeOffer(key: key, title: progress.title, watched: progress.watched)
+            return
+        }
+        await play(key: key, title: nil, resume: false)
+    }
+
+    /// The answer to a resume offer.
+    func play(_ offer: ResumeOffer, resume: Bool) async {
+        await play(key: offer.key, title: offer.title, resume: resume)
     }
 
     static func movieKey(in code: String) -> String? {
@@ -182,10 +217,12 @@ final class PlayerModel: ObservableObject {
         }
     }
 
-    private func start(key: String, on player: String, api: ServerAPI) async {
+    private func start(key: String, resume: Bool?, on player: String, api: ServerAPI) async {
         let name = playsOnName ?? player
+        var body: [String: Any] = ["key": key, "player": player]
+        if let resume { body["resume"] = resume }
         do {
-            let (data, _) = try await api.request("tv/start", method: "POST", body: ["key": key, "player": player])
+            let (data, _) = try await api.request("tv/start", method: "POST", body: body)
             let started = try JSONDecoder().decode(RemoteStart.self, from: data)
             show("Starting \(started.title) on \(name)")
         } catch {
@@ -262,6 +299,8 @@ final class PlayerModel: ObservableObject {
             playError = "That isn't a stream address."
             return
         }
+        // A tap or scan replaces whatever's playing, including a movie carried on in Picture in Picture
+        empty(self.player)
         let item = AVPlayerItem(url: url)
         item.externalMetadata = Self.metadata(for: info, artwork: info.posterImage?.jpegData(compressionQuality: 0.9))
         self.info = info
@@ -305,7 +344,7 @@ final class PlayerModel: ObservableObject {
     }
 
     func stop() {
-        player?.pause()
+        empty(player)
         player = nil
         info = MovieInfo()
         poster = nil
@@ -313,6 +352,12 @@ final class PlayerModel: ObservableObject {
         readyObservation = nil
         key = nil
         Task { await reportStatus() }
+    }
+
+    /// Stop a player for good. Picture in Picture can keep one alive after the app lets go of it.
+    private func empty(_ player: AVPlayer?) {
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
     }
 
     /// Title, year, summary and poster for Apple's player (the info panel on the Siri Remote).

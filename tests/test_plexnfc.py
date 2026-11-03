@@ -46,13 +46,13 @@ def test_play_starts_movie_on_client(plex):
     plex._client.playMedia.assert_called_once_with(plex._movie, offset=0)
 
 
-def test_play_resumes(plex):
+def test_taps_start_from_the_beginning(plex):
     plex._movie.viewOffset = 5000
     create_app(CONFIG, plex).test_client().get("/m/tmdb-603")
-    plex._client.playMedia.assert_called_once_with(plex._movie, offset=5000)
-    plex._client.playMedia.reset_mock()
-    create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=0")
     plex._client.playMedia.assert_called_once_with(plex._movie, offset=0)
+    plex._client.playMedia.reset_mock()
+    create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=1")  # unless the tag asks
+    plex._client.playMedia.assert_called_once_with(plex._movie, offset=5000)
 
 
 def test_unknown_movie_and_bad_key(plex):
@@ -157,7 +157,7 @@ def test_playback_via_home_assistant(plex):
     r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
     assert r.status_code == 200 and b"media_player.plex_apple_tv" in r.data
     plex.ha.run_script.assert_called_once_with("script.movie_night")
-    plex.ha.play_plex.assert_called_once_with("media_player.plex_apple_tv", 42, True)
+    plex.ha.play_plex.assert_called_once_with("media_player.plex_apple_tv", 42, False)  # taps start over
     plex._client.playMedia.assert_not_called()
 
 
@@ -950,6 +950,10 @@ def test_app_library_search_and_play(plex):
     assert "/video/:/transcode/universal/start.m3u8?" in played["url"] and played["title"] == "The Matrix"
     assert "X-Plex-Client-Identifier=moviebook-Den" in played["url"]
     assert app.post("/tv/play", headers=headers, json={"key": "nope"}).status_code == 404
+    # how far it's been watched, for Marquee's "Resume?" after scanning a code
+    movie.viewOffset = 2_530_000
+    assert app.get("/tv/movie/tmdb-603", headers=headers).json["watched"] == 2530
+    assert app.get("/tv/movie/tmdb-603", headers=headers).json["title"] == "The Matrix"
 
 
 # ---- opening Marquee on Apple TVs without Home Assistant -------------------------------
