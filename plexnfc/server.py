@@ -10,6 +10,7 @@ Routes
   /tags                list every movie with the URL to write onto its tag (/tags.csv to download)
   /book                the printable book (?layout=grid&collection=NAME&title=...)
   /plex/login          Sign in with Plex (saves the token, so nobody has to find it by hand)
+  /tv/inbox /tv/status the Movie Book Apple TV app asks what to play and says what's playing
   /poster/<key>        poster image (proxied so your Plex token stays private)
                        ?w=200&h=300 returns a resized baseline JPEG (for the ESP32 screen)
 
@@ -129,6 +130,19 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             return page("Error", f'<h1 class="err">{escape(str(e))}</h1>', 404)
         return page("Off", "<h1>Good night</h1>")
 
+    @app.get("/tv/inbox")
+    def tv_inbox():
+        command = plex.app_inbox.next(request.args.get("player", ""), request.args.get("after", 0, type=int))
+        return jsonify(command) if command else ("", 204)
+
+    @app.post("/tv/status")
+    def tv_status():
+        status = request.get_json(silent=True) or {}
+        if not status.get("player"):
+            return jsonify(ok=False, message="add a player"), 400
+        plex.app_inbox.set_status(status["player"], status)
+        return jsonify(ok=True)
+
     @app.get("/now")
     def now():
         client = request.args.get("client")
@@ -146,7 +160,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                 else:
                     return jsonify(state="starting", title=pending["title"], year=pending["year"],
                                    key=pending["key"], poster=f"/poster/{pending['key']}",
-                                   position=0, duration=0, player=client or config.jellyfin_player or config.client)
+                                   position=0, duration=0, player=client or config.app_player or config.jellyfin_player or config.client)
         return jsonify(status)
 
     def json_action(fn):
@@ -301,6 +315,10 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         if "localhost" in config.public_base_url or "127.0.0.1" in config.public_base_url:
             warn = ('<p class="err">public_base_url is set to localhost. Phones can\'t reach that: '
                     "set it to this machine's IP address, e.g. http://192.168.1.20:8080</p>")
+        # The same order play() picks a player in
+        player_label = (f"the Movie Book app ({config.app_player})" if config.app_player
+                        else f"Jellyfin player {config.jellyfin_player}" if config.jellyfin_player
+                        else config.ha_player or config.client or "(no player set)")
         if not config.plex_token:
             signin = ('<p class="err">plexnfc isn\'t signed in to Plex yet.</p>'
                       '<p><a class="btn" href="plex/login">Sign in with Plex</a></p>')
@@ -313,7 +331,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
           <h1>plexnfc</h1>
           {signin}
           <p>Tags point at <code>{escape(config.public_base_url)}</code>, playing on
-             <b>{escape(config.ha_player or config.client or "(no player set)")}</b></p>{warn}
+             <b>{escape(player_label)}</b></p>{warn}
           <h1>Make the book</h1>
           <form action="{escape(config.public_base_url)}/book" target="_blank"
                 style="display:inline-grid;gap:8px;text-align:left">

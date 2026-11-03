@@ -7,3 +7,5 @@ out/
 esphome/secrets.yaml
 esphome/.esphome/
 .plex_auth.json
+tvos/**/xcuserdata/
+tvos/**/*.xcworkspace/xcuserdata/

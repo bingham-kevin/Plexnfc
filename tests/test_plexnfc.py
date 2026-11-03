@@ -615,3 +615,70 @@ def test_player_rejecting_play_is_reported(plex):
     plex._client.playMedia.side_effect = NotFound("(404) not_found")
     r = create_app(CONFIG, plex).test_client().get("/m/tmdb-603")
     assert r.status_code == 404 and b"didn&#x27;t accept the movie" in r.data
+
+
+# ---- Movie Book Apple TV app --------------------------------------------------
+
+def app_plex(plex, **cfg):
+    from dataclasses import replace
+    plex.config = replace(plex.config, **{"app_player": "Den", **cfg})
+    return plex
+
+
+def test_app_play_leaves_stream_in_inbox_before_script(plex):
+    plex = app_plex(ha_plex(plex), app_player="Den")
+    order = []
+    plex.ha.run_script.side_effect = lambda *a, **k: order.append(("script", plex.app_inbox.next("Den", 0)))
+    app = create_app(plex.config, plex).test_client()
+    r = app.get("/m/tmdb-603?resume=0")
+    assert r.status_code == 200
+    command = order[0][1]  # already waiting when the script opened the app
+    assert command["action"] == "play" and command["key"] == "tmdb-603" and command["title"] == "The Matrix"
+    assert "/video/:/transcode/universal/start.m3u8?" in command["url"] and "X-Plex-Token=tok" in command["url"]
+    assert "subtitles=none" in command["url"] and "offset=0" in command["url"]
+    plex._client.playMedia.assert_not_called()
+    # the app picks it up once, by ID
+    inbox = app.get(f"/tv/inbox?player=den&after=0").json
+    assert inbox["id"] == command["id"]
+    assert app.get(f"/tv/inbox?player=Den&after={command['id']}").status_code == 204
+
+
+def test_app_play_uses_jellyfin_stream_when_set_up(plex):
+    plex = jf_plex(plex, jellyfin_player="")
+    plex = app_plex(plex, jellyfin_url="http://jf:8096", jellyfin_api_key="k")
+    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    url = plex.app_inbox.next("Den", 0)["url"]
+    assert url.startswith("http://jf:8096/Videos/abc/master.m3u8?") and "api_key=k" in url
+
+
+def test_app_status_controls_and_now(plex):
+    plex = app_plex(plex)
+    app = create_app(plex.config, plex).test_client()
+    assert app.get("/now").json == {"state": "idle"}
+    app.post("/tv/status", json={"player": "Den", "state": "playing", "position": 60, "duration": 7200,
+                                 "title": "The Matrix", "key": "tmdb-603"})
+    now = app.get("/now").json
+    assert now["state"] == "playing" and now["key"] == "tmdb-603" and now["position"] == 60
+    app.get("/toggle")
+    assert plex.app_inbox.next("Den", 0)["action"] == "pause"
+    app.get("/seek?by=30")
+    assert plex.app_inbox.next("Den", 0) | {"id": 0} == {"id": 0, "action": "seek", "by": 30}
+    app.get("/stop")
+    assert plex.app_inbox.next("Den", 0)["action"] == "stop"
+    assert app.post("/tv/status", json={}).status_code == 400
+
+
+def test_app_inbox_expires_old_commands(monkeypatch):
+    from plexnfc import tvapp
+    inbox = tvapp.AppInbox()
+    clock = [1000.0]
+    monkeypatch.setattr(tvapp.time, "monotonic", lambda: clock[0])
+    inbox.send("Den", "play", url="u")
+    clock[0] += tvapp.PLAY_TTL + 1
+    assert inbox.next("Den", 0) is None
+
+
+def test_client_param_picks_app(plex):
+    plex = app_plex(plex, app_player="")
+    create_app(plex.config, plex).test_client().get("/m/tmdb-603?client=app:Bedroom")
+    assert plex.app_inbox.next("Bedroom", 0)["action"] == "play"

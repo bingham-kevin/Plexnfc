@@ -41,5 +41,8 @@ configuration:
   jellyfin_player:
     name: Jellyfin player
     description: Optional. Play on this Jellyfin app (its device name, e.g. "AppleTV") instead of the Plex player. Plex still makes the book.
+  app_player:
+    name: Movie Book player
+    description: Optional. Play in the Movie Book Apple TV app instead, on the Apple TV with this player name (shown in the app). Use a get-ready script that opens Movie Book.
 network:
   8080/tcp: Tag URLs (phones and the Movie Remote connect here)

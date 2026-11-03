@@ -19,6 +19,7 @@ from plexapi.server import PlexServer
 from .config import Config
 from .homeassistant import HomeAssistant, HomeAssistantError
 from .jellyfin import TICKS_PER_SECOND, Jellyfin, JellyfinError, tag_key
+from .tvapp import AppInbox, jellyfin_hls_url, plex_hls_url
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class Plex:
         self.ha = ha
         if self.ha is None and config.ha_url and config.ha_token:
             self.ha = HomeAssistant(config.ha_url, config.ha_token)
+        self.app_inbox = AppInbox()
         self.jellyfin = jellyfin
         if self.jellyfin is None and config.jellyfin_url and config.jellyfin_api_key:
             self.jellyfin = Jellyfin(config.jellyfin_url, config.jellyfin_api_key)
@@ -195,8 +197,13 @@ class Plex:
 
     def _play(self, key: str, client_name: str | None, resume: bool | None):
         movie = self.find_movie(key)
-        ha_error = self.prepare_tv()
         resume = self.config.resume if resume is None else resume
+        if name := self._app_player(client_name):
+            # Leave the movie in the inbox before the script opens the app, which picks it up
+            self._play_in_app(name, key, movie, resume)
+            self.prepare_tv()
+            return movie, SimpleNamespace(title=name)
+        ha_error = self.prepare_tv()
         if name := self._jellyfin_player(client_name):
             return self._play_via_jellyfin(name, key, movie, resume, ha_error)
         if entity := self._ha_entity(client_name):
@@ -216,6 +223,37 @@ class Plex:
         if not resume and getattr(movie, "viewOffset", 0):
             self._rewind_when_playing(client, movie)
         return movie, client
+
+    # ---- the Movie Book Apple TV app ---------------------------------------------
+
+    def _app_player(self, client_name: str | None) -> str | None:
+        """The Movie Book player to use: ``?client=app:NAME``, else APP_PLAYER."""
+        if client_name:
+            return client_name.removeprefix("app:") if client_name.startswith("app:") else None
+        return self.config.app_player or None
+
+    def _play_in_app(self, name: str, key: str, movie, resume: bool) -> None:
+        start = int((movie.viewOffset or 0) / 1000) if resume and getattr(movie, "viewOffset", 0) else 0
+        if self.jellyfin:
+            # Jellyfin copies HEVC into the stream; Plex may convert more
+            try:
+                item = self.jellyfin.find_movie(movie.title, movie.year, key)
+            except JellyfinError as e:
+                raise PlexNFCError(str(e)) from None
+            url = jellyfin_hls_url(self.config.jellyfin_url, self.config.jellyfin_api_key, item["Id"], start, name)
+        else:
+            url = plex_hls_url(self.config.plex_url, self.config.plex_token, movie.ratingKey, start, name)
+        log.info("Sending %s (%s) to the Movie Book app on %s", movie.title, key, name)
+        self.app_inbox.send(name, "play", url=url, title=movie.title, key=key, start=0)
+
+    def _app_now(self, name: str) -> dict:
+        status = self.app_inbox.status(name)
+        if not status or status.get("state") == "idle":
+            return {"state": "idle"}
+        key = status.get("key") or ""
+        return {"state": status.get("state"), "title": status.get("title"), "key": key,
+                "poster": f"/poster/{key}" if key else None, "player": name,
+                "position": int(status.get("position") or 0), "duration": int(status.get("duration") or 0)}
 
     # ---- Jellyfin players (e.g. Swiftfin on Apple TV) ---------------------------
 
@@ -355,6 +393,9 @@ class Plex:
             raise PlexNFCError(str(e)) from None
 
     def control(self, action: str, client_name: str | None = None):
+        if name := self._app_player(client_name):
+            self.app_inbox.send(name, {"pause": "pause", "play": "resume", "stop": "stop"}[action])
+            return SimpleNamespace(title=name)
         if name := self._jellyfin_player(client_name):
             command = {"pause": "Pause", "play": "Unpause", "stop": "Stop"}[action]
             return self._jellyfin_command(name, "command", command)
@@ -404,6 +445,8 @@ class Plex:
         return self._session_keys[rating_key]
 
     def now_playing(self, client_name: str | None = None) -> dict:
+        if name := self._app_player(client_name):
+            return self._app_now(name)
         if name := self._jellyfin_player(client_name):
             return self._jellyfin_now(name)
         session = self.current_session(client_name)
@@ -423,6 +466,9 @@ class Plex:
         }
 
     def toggle(self, client_name: str | None = None):
+        if self._app_player(client_name):
+            playing = self.now_playing(client_name)["state"] == "playing"
+            return self.control("pause" if playing else "play", client_name)
         if self._jellyfin_player(client_name):
             playing = self.now_playing(client_name)["state"] == "playing"
             return self.control("pause" if playing else "play", client_name)
@@ -431,6 +477,9 @@ class Plex:
         return self.control("pause" if playing else "play", client_name)
 
     def seek(self, by_seconds: int, client_name: str | None = None):
+        if name := self._app_player(client_name):
+            self.app_inbox.send(name, "seek", by=by_seconds)
+            return SimpleNamespace(title=name)
         if name := self._jellyfin_player(client_name):
             now = self._jellyfin_now(name)
             if now["state"] == "idle":

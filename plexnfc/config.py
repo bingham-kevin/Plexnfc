@@ -63,6 +63,7 @@ class Config:
     jellyfin_url: str = ""
     jellyfin_api_key: str = ""
     jellyfin_player: str = ""  # play on this Jellyfin player instead of PLEX_CLIENT
+    app_player: str = ""  # play in the Movie Book Apple TV app with this player name
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -93,4 +94,5 @@ class Config:
             jellyfin_url=os.environ.get("JELLYFIN_URL", "").rstrip("/"),
             jellyfin_api_key=os.environ.get("JELLYFIN_API_KEY", ""),
             jellyfin_player=os.environ.get("JELLYFIN_PLAYER", ""),
+            app_player=os.environ.get("APP_PLAYER", ""),
         )
