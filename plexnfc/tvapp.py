@@ -127,10 +127,10 @@ class AppPairings:
             self._save()
         return True
 
-    def _unique_name(self, name: str) -> str:
+    def _unique_name(self, name: str, skip: str | None = None) -> str:
         """``name``, or ``name 2``, ``name 3``… if another Apple TV already has it, since taps find
-        an Apple TV by name."""
-        taken = {d["name"].lower() for d in self._devices.values()}
+        an Apple TV by name. ``skip`` is a device whose own name doesn't count."""
+        taken = {d["name"].lower() for k, d in self._devices.items() if k != skip}
         candidate, n = name, 1
         while candidate.lower() in taken:
             n += 1
@@ -152,6 +152,25 @@ class AppPairings:
         with self._lock:
             return [{"id": k, "name": v["name"], "kind": v.get("kind", "tv"), "paired": v["paired"],
                      "player": v.get("player")} for k, v in self._devices.items()]
+
+    def rename(self, device_id: str, name: str) -> str | None:
+        """Rename a paired device; the new name, or None if it isn't paired.
+
+        An Apple TV's player ID is ``app:NAME``, so phones sending their taps to it follow the
+        new name. Settings that name it (Marquee player, get-ready scripts) need changing by hand.
+        """
+        name = " ".join(name.split())[:40]
+        with self._lock:
+            device = self._devices.get(device_id)
+            if not device or not name:
+                return None
+            old, device["name"] = device["name"], self._unique_name(name, skip=device_id)
+            if device.get("kind", "tv") == "tv":
+                for other in self._devices.values():
+                    if (other.get("player") or "").casefold() == f"app:{old}".casefold():
+                        other["player"] = f"app:{device['name']}"
+            self._save()
+            return device["name"]
 
     def remove(self, device_id: str) -> None:
         with self._lock:

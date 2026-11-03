@@ -773,6 +773,28 @@ def test_approving_names_the_apple_tv_and_keeps_names_unique(plex):
     assert names == ["Living Room", "Apple TV 2", "living room 2"]
 
 
+def test_panel_renames_a_paired_apple_tv(plex):
+    app = create_app(CONFIG, plex).test_client()
+    secret = pair(plex, "Apple TV")["Authorization"].removeprefix("Bearer ")
+    pair(plex, "Den")
+    started = app.post("/tv/pair", json={"name": "iPhone", "kind": "phone"}).json
+    app.post(f"/tv/pair/{started['pair_id']}/approve", environ_base={"REMOTE_ADDR": "172.30.32.2"})
+    tv, _, phone = plex.app_pairings.devices()
+    plex.app_pairings.set_player(phone["id"], "app:Apple TV")
+    rename = f"/tv/devices/{tv['id']}/rename"
+    assert app.post(rename, data={"name": "Living Room"}, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+    assert app.post(rename, data={"name": " "}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 400
+    assert app.post(rename, data={"name": "Living  Room"}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 200
+    # the Apple TV keeps its pairing under the new name, and the phone follows it
+    assert plex.app_pairings.device(secret) == "Living Room"
+    assert plex.app_pairings.devices()[2]["player"] == "app:Living Room"
+    # another device's name gets a number; its own name (even in another case) doesn't
+    app.post(rename, data={"name": "den"}, environ_base={"REMOTE_ADDR": "172.30.32.2"})
+    assert plex.app_pairings.device(secret) == "den 2"
+    app.post(rename, data={"name": "DEN 2"}, environ_base={"REMOTE_ADDR": "172.30.32.2"})
+    assert plex.app_pairings.device(secret) == "DEN 2"
+
+
 def test_each_player_gets_its_own_ready_script(plex):
     plex = ha_plex(plex)
     plex.config.player_scripts = {"app:Living Room": "script.living_room"}

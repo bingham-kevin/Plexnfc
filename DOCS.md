@@ -33,7 +33,7 @@ The movie is matched in Jellyfin by title and year and checked against the tag's
 
 `tvos/MovieBook` in the repository is a small Apple TV app that plexnfc can start movies in. Plex for Apple TV can't be started remotely, but Home Assistant can open an app, and Marquee then asks plexnfc what to play.
 
-1. Build and install it from Xcode (see `tvos/README.md`). Open it and choose this server from the list (it announces itself on your network), or enter this app's **Tag base URL** address, and approve the 6-digit code it shows under **Marquee Apple TVs and phones** on this panel. Type the room in the name box before you approve it, e.g. `Living Room`, since tvOS calls every Apple TV "Apple TV".
+1. Build and install it from Xcode (see `tvos/README.md`). Open it and choose this server from the list (it announces itself on your network), or enter this app's **Tag base URL** address, and approve the 6-digit code it shows under **Marquee Apple TVs and phones** on this panel. Type the room in the name box before you approve it, e.g. `Living Room`, since tvOS calls every Apple TV "Apple TV". To rename one later, change its name in the panel's list and choose **Rename**; phones sending taps to it follow the new name, but change **Marquee player** and any get-ready script setting that names it yourself.
 2. Set **Marquee player** to the Apple TV's name as the panel lists it.
 3. Use a get-ready script that wakes the Apple TV and opens Marquee (`media_player.select_source` with source `Marquee`).
 

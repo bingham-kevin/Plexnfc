@@ -187,6 +187,17 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         plex.app_pairings.approve(pair_id, request.form.get("name"))
         return page("Paired", '<h1>Apple TV paired</h1><p><a href="../../../">Back</a></p>')
 
+    @app.post("/tv/devices/<device_id>/rename")
+    def tv_device_rename(device_id):
+        if not from_panel():
+            abort(403)
+        name = plex.app_pairings.rename(device_id, request.form.get("name", ""))
+        if name is None:
+            abort(400)
+        return page("Renamed", f'<h1>Renamed to {escape(name)}</h1><p>If <b>Marquee player</b> or a '
+                               f'get-ready script names it, change those to <code>app:{escape(name)}</code> '
+                               f'too.</p><p><a href="../../../">Back</a></p>')
+
     @app.post("/tv/devices/<device_id>/remove")
     def tv_device_remove(device_id):
         if not from_panel():
@@ -434,7 +445,9 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             f'<button>Approve</button></form></td></tr>'
             for p in plex.app_pairings.pending())
         rows += "".join(
-            f'<tr><td>{escape(d["name"])}</td><td>{escape(device_status(d))}</td>'
+            f'<tr><td><form action="tv/devices/{escape(d["id"])}/rename" method="post">'
+            f'<input name="name" value="{escape(d["name"])}" maxlength="40" required aria-label="Name"> '
+            f'<button>Rename</button></form></td><td>{escape(device_status(d))}</td>'
             f'<td><form action="tv/devices/{escape(d["id"])}/remove" method="post">'
             f'<button>Remove</button></form></td></tr>'
             for d in plex.app_pairings.devices())
