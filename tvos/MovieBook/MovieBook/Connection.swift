@@ -51,7 +51,7 @@ struct ServerAPI {
         case notPaired, server(String)
         var errorDescription: String? {
             switch self {
-            case .notPaired: "This Apple TV isn't paired with the server anymore. Pair it again in Settings."
+            case .notPaired: "Marquee isn't paired with the server anymore. Pair it again in Settings."
             case .server(let message): message
             }
         }

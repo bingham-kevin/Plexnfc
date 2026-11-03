@@ -32,6 +32,9 @@ final class AppModel: ObservableObject {
 
     var savedAddress: String { UserDefaults.standard.string(forKey: "serverAddress") ?? "" }
 
+    /// "Apple TV", "iPhone" or "iPad", for the words on screen.
+    let deviceKind = UIDevice.current.model
+
     // MARK: - Setup
 
     func startDemo() {
@@ -108,7 +111,7 @@ final class AppModel: ObservableObject {
                 }
             } catch is CancellationError {
             } catch {
-                setupError = "Couldn't reach a Movie Book server at \(address). Check the address and that the Apple TV is on the same network."
+                setupError = "Couldn't reach a Movie Book server at \(address). Check the address and that this \(deviceKind) is on the same network."
                 stage = .welcome
             }
         }

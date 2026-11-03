@@ -98,7 +98,7 @@ private struct PairingView: View {
         VStack(spacing: 28) {
             Spacer()
             Text("Pair this \(model.deviceWord)").font(.largeTitle.bold())
-            Text("In Home Assistant, open the Movie Book panel, name this \(model.deviceWord), and approve this code.")
+            Text("Open your Movie Book server's control panel (Marquee Server on the Mac, or the Movie Book panel in Home Assistant), name this \(model.deviceWord), and approve this code.")
                 .foregroundStyle(.secondary).multilineTextAlignment(.center)
             Text(spacedCode)
                 .font(.system(size: 56, weight: .bold, design: .monospaced))
@@ -126,7 +126,7 @@ private struct PlayersView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showSettings = false
 
-    /// Players grouped by kind, Marquee Apple TVs first.
+    /// Players grouped by kind, Marquee (Apple TVs, iPhones, iPads) first.
     private var groups: [(kind: String, players: [Player])] {
         let order = ["Marquee", "Jellyfin", "Plex", "Home Assistant"]
         return Dictionary(grouping: model.players, by: \.kind)
@@ -151,7 +151,7 @@ private struct PlayersView: View {
                     Text("Default follows the server's setting, like everyone else's taps.")
                 }
                 ForEach(groups, id: \.kind) { group in
-                    Section(group.kind == "Marquee" ? "Marquee Apple TVs" : group.kind) {
+                    Section(group.kind) {
                         ForEach(group.players) { player in
                             PlayerRow(title: player.name, subtitle: nil,
                                       isSelected: model.selected?.caseInsensitiveCompare(player.id) == .orderedSame) {

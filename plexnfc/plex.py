@@ -357,7 +357,7 @@ class Plex:
         # Marquee only collects movies from a server it's paired with, so don't report one as playing
         if not any(d["kind"] == "tv" and d["name"].casefold() == name.casefold()
                    for d in self.app_pairings.devices()):
-            raise PlexNFCError(f"Marquee on {name} isn't connected to this server. In Marquee on that Apple TV, "
+            raise PlexNFCError(f"Marquee on {name} isn't connected to this server. In Marquee on that device, "
                                f"connect to {self.config.public_base_url.split('://', 1)[-1]} and approve its "
                                f"code in the control panel, naming it {name}.")
         log.info("Sending %s (%s) to the Marquee app on %s", movie.title, key, name)

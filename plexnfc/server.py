@@ -547,14 +547,14 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
 
     def device_status(device: dict) -> str:
         if device["kind"] != "phone":
-            return "Apple TV, paired"
+            return "Marquee player, paired"
         return f"phone, taps go to {device['player'] or 'the default player'}"
 
     def marquee_section() -> str:
-        """Pairing requests, and the paired Apple TVs and phones, for the Marquee apps."""
+        """Pairing requests, and the paired Marquee players and phones, for the Marquee apps."""
         server = config.public_base_url.split("://", 1)[-1]
         rows = "".join(
-            f'<tr><td>{escape(p["name"])} ({"phone" if p["kind"] == "phone" else "Apple TV"}) wants to pair</td>'
+            f'<tr><td>{escape(p["name"])} ({"Marquee Remote" if p["kind"] == "phone" else "Marquee"}) wants to pair</td>'
             f'<td><b style="font-size:1.4em">{p["code"]}</b></td>'
             f'<td><form action="tv/pair/{escape(p["pair_id"])}/approve" method="post">'
             f'<input name="name" value="{escape(p["name"])}" maxlength="40" aria-label="Name, e.g. the room"> '
@@ -568,9 +568,9 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             f'<button>Remove</button></form></td></tr>'
             for d in plex.app_pairings.devices())
         table = f"<table>{rows}</table>" if rows else "<p>Nothing paired yet.</p>"
-        return (f"<h1>Marquee Apple TVs and phones</h1><p>In Marquee (Apple TV) or Marquee Remote (iPhone, iPad), "
+        return (f"<h1>Marquee players and phones</h1><p>In Marquee (Apple TV, iPhone, iPad) or Marquee Remote (iPhone, iPad), "
                 f"connect to <code>{escape(server)}</code>, "
-                f"then approve the code it shows here. Name each Apple TV after its room: tags pick one with "
+                f"then approve the code it shows here. Name each Marquee player after its room or owner: tags pick one with "
                 f"<code>?client=app:NAME</code>. Reload this page to see new requests.</p>{table}")
 
     def apple_tv_section() -> str:

@@ -758,7 +758,7 @@ def test_pairing_flow_and_panel(plex):
     assert app.get(f"/tv/pair/{started['pair_id']}").json == {"status": "pending"}
     # the panel lists the request with its code
     page = app.get("/").data
-    assert started["code"].encode() in page and b"Den (Apple TV) wants to pair" in page
+    assert started["code"].encode() in page and b"Den (Marquee) wants to pair" in page
     # approving from the network port is refused; through the panel (ingress) it works
     approve = f"/tv/pair/{started['pair_id']}/approve"
     assert app.post(approve, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
@@ -828,7 +828,7 @@ def test_phone_picks_where_its_taps_go(plex):
     app = create_app(CONFIG, plex).test_client()
     pair(plex, "Den")  # a Marquee Apple TV
     started = app.post("/tv/pair", json={"name": "iPhone", "kind": "phone"}).json
-    assert b"iPhone (phone) wants to pair" in app.get("/").data
+    assert b"iPhone (Marquee Remote) wants to pair" in app.get("/").data
     app.post(f"/tv/pair/{started['pair_id']}/approve", data={"name": "Kevin's iPhone"},
              environ_base={"REMOTE_ADDR": "172.30.32.2"})
     secret = app.get(f"/tv/pair/{started['pair_id']}").json["secret"]
