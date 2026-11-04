@@ -62,5 +62,5 @@ Don't leave the book lying flat on the reader. With many tags stacked in range, 
 - **Pairing:** the box asks for a code with `POST /tv/pair` (`kind: remote`), then checks `/tv/pair/<id>` until you approve it. It keeps the secret it's given in flash and sends it with every request.
 - **Tags:** when it reads a tag, it sends the tag's URL to `POST /remote/tap`. Marquee Server plays the movie on the box's player and answers at once. Meanwhile the screen shows "Starting…" with the poster.
 - **The screen:** every 2 seconds the box asks `/remote/now` what its player is playing.
-- **Posters:** they come from `/poster/<key>?w=120&h=180`, resized and re-encoded as baseline JPEGs that the ESP32 can decode.
+- **Posters:** they come from `/poster/<key>?w=112&h=168`, resized and re-encoded as baseline JPEGs that the ESP32 can decode.
 - **The buttons:** they call `POST /remote/control` with `toggle`, `seek` or `stop`.

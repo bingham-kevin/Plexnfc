@@ -328,7 +328,7 @@ script:
                   - lvgl.widget.hide: poster_img
                   - online_image.set_url:
                       id: poster
-                      url: !lambda 'return std::string("${marquee_url}") + id(now_poster) + "?w=200&h=300";'
+                      url: !lambda 'return std::string("${marquee_url}") + id(now_poster) + "?w=112&h=168";'
                   - component.update: poster
 
   - id: screen_timer
@@ -463,11 +463,15 @@ touchscreen:
     cs_pin: GPIO33
     update_interval: 20ms
     threshold: 800
+    # Measured on this panel by pressing its corners
     calibration:
-      x_min: 200
-      x_max: 3900
-      y_min: 200
-      y_max: 3900
+      x_min: 360
+      x_max: 3600
+      y_min: 380
+      y_max: 3800
+    # Its touch runs bottom to top
+    transform:
+      mirror_y: true
     on_touch:
       - light.turn_on: backlight
 
@@ -476,7 +480,8 @@ online_image:
     url: ${marquee_url}/poster/none
     format: JPEG
     type: RGB565
-    resize: 200x300
+    # 38 KB: this ESP32 has no PSRAM, and its largest free block is about 45 KB
+    resize: 112x168
     update_interval: never
     on_download_finished:
       - lvgl.image.update:
@@ -524,13 +529,13 @@ lvgl:
             id: poster_img
             src: poster
             align: TOP_MID
-            y: 12
+            y: 20
             hidden: true
 
         - label:
             id: title_lbl
             align: TOP_MID
-            y: 322
+            y: 206
             width: 300
             long_mode: DOT
             text_align: CENTER
@@ -542,7 +547,7 @@ lvgl:
         - label:
             id: info_lbl
             align: TOP_MID
-            y: 350
+            y: 236
             width: 300
             long_mode: DOT
             text_align: CENTER
@@ -553,7 +558,7 @@ lvgl:
         - bar:
             id: progress
             align: TOP_MID
-            y: 376
+            y: 266
             width: 280
             height: 6
             min_value: 0
@@ -567,7 +572,7 @@ lvgl:
         - label:
             id: time_lbl
             align: TOP_MID
-            y: 388
+            y: 280
             text_font: montserrat_12
             text_color: 0x9E9E9E
             text: ""
