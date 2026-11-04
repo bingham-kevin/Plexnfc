@@ -991,6 +991,57 @@ def test_home_assistant_hears_what_marquee_players_play(plex):
     assert thread.call_args.kwargs["args"] == ("tmdb-603", "app:Den", False)
 
 
+def test_movie_remote_pairs_then_plays_on_its_player(plex):
+    app = create_app(CONFIG, plex).test_client()
+    den = pair(plex, "Den")
+    # an unpaired box can't do anything
+    assert app.get("/remote/now").status_code == 401
+    assert app.post("/remote/tap", json={"url": "http://marquee.local:8080/m/tmdb-603"}).status_code == 401
+    assert app.get("/remote/now", headers=den).status_code == 401  # a Marquee isn't a Movie Remote
+    started = app.post("/tv/pair", json={"name": "Movie Remote", "kind": "remote"}).json
+    app.post(f"/panel/api/pairings/{started['pair_id']}/approve", json={"name": "Den Remote"},
+             environ_base={"REMOTE_ADDR": "172.30.32.2"})
+    secret = app.get("/tv/pair/" + started["pair_id"]).json["secret"]
+    box = {"Authorization": f"Bearer {secret}"}
+    device = next(d for d in app.get("/panel/api/overview").json["devices"] if d["kind"] == "remote")
+    assert device["name"] == "Den Remote"
+    assert "app:Den Remote" not in [p["id"] for p in plex.players()]  # it's not somewhere to play
+
+    # its player is chosen in the panel
+    assert app.post(f"/panel/api/devices/{device['id']}/player", json={"player": "app:Den"},
+                    environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
+    assert app.post(f"/panel/api/devices/{device['id']}/player", json={"player": "app:Den"}).json["ok"]
+
+    # a tag from any address plays there, from the beginning unless the tag asks to resume
+    with mock.patch.object(plex, "play") as play:
+        tapped = app.post("/remote/tap", json={"url": "https://movies.1912productions.com/m/tmdb-603"}, headers=box)
+        assert tapped.status_code == 202 and tapped.json["player"] == "Den"
+        assert app.get("/remote/now", headers=box).json["state"] in ("starting", "idle")
+        for _ in range(50):
+            if play.called:
+                break
+            time.sleep(0.02)
+        play.assert_called_with("tmdb-603", "app:Den", False)
+    assert app.post("/remote/tap", json={"url": "http://marquee.local:8080/book"}, headers=box).status_code == 400
+
+    # the screen shows what Den reports
+    app.post("/tv/status", json={"state": "playing", "key": "tmdb-603", "title": "The Matrix", "position": 5,
+                                 "duration": 8160}, headers=den)
+    now = app.get("/remote/now", headers=box).json
+    assert (now["state"], now["title"], now["player"], now["name"]) == ("playing", "The Matrix", "Den", "Den Remote")
+
+    # the buttons control Den
+    assert app.post("/remote/control", json={"action": "toggle"}, headers=box).json["ok"]
+    assert app.get("/tv/inbox", headers=den).json["action"] == "pause"
+    assert app.post("/remote/control", json={"action": "seek", "by": -30}, headers=box).json["ok"]
+    assert app.get("/tv/inbox?after=0", headers=den).json == mock.ANY
+    assert app.post("/remote/control", json={"action": "eject"}, headers=box).status_code == 400
+
+    # removed in the panel: it's refused, and pairs again
+    app.post(f"/panel/api/devices/{device['id']}/remove")
+    assert app.get("/remote/now", headers=box).status_code == 401
+
+
 def test_player_scripts_setting():
     from plexnfc.config import parse_player_scripts
     assert parse_player_scripts("app:Living Room = script.lr; Den TV=script.den;; junk") == {

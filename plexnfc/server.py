@@ -36,7 +36,7 @@ import socket
 import threading
 import time
 from html import escape
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import requests
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
@@ -388,6 +388,103 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         resume = body.get("resume")
         return jsonify(plex.app_play_details(device, body.get("key", ""), resume=resume))
 
+    # ---- the Movie Remote: an ESP32 box with an NFC reader and a touchscreen -----------
+    # It pairs like Marquee (showing its code on its screen), then sends the tags it reads
+    # and its buttons with its secret. Nothing here works for a box that isn't paired.
+
+    remote_pending: dict[str, dict] = {}  # remote ID -> the movie it just started, until it plays
+
+    def remote_route(rule, **options):
+        def decorator(fn):
+            def wrapped(**kwargs):
+                remote = plex.app_pairings.remote(bearer())
+                if remote is None:
+                    return jsonify(ok=False, message="This Movie Remote isn't paired"), 401
+                try:
+                    return fn(remote=remote, **kwargs)
+                except PlexNFCError as e:
+                    return jsonify(ok=False, message=str(e)), 404
+            wrapped.__name__ = fn.__name__
+            return app.route(rule, **options)(wrapped)
+        return decorator
+
+    def player_label(player: str | None) -> str:
+        player = player or plex.default_player() or ""
+        return player.split(":", 1)[1] if player.startswith(("app:", "jellyfin:")) else player
+
+    @remote_route("/remote/tap", methods=["POST"])
+    def remote_tap(remote):
+        """A tag the box read: its URL, from whichever address it was written with (only the
+        /m/KEY path and the tag's own ?client= and ?resume= count). Returns at once."""
+        url = urlsplit(str((request.get_json(silent=True) or {}).get("url", "")))
+        parts = url.path.strip("/").split("/")
+        if len(parts) != 2 or parts[0] != "m" or not parts[1]:
+            return jsonify(ok=False, message="Not a movie book tag"), 400
+        key, query = parts[1], parse_qs(url.query)
+        movie = plex.find_movie(key)
+        player = (query.get("client") or [remote["player"]])[0]
+        resume = (query.get("resume") or [""])[0].lower() in ("1", "true", "yes")
+        with pending_lock:
+            remote_pending[remote["id"]] = {"key": key, "title": movie.title, "started": time.monotonic()}
+
+        def run():
+            try:
+                plex.play(key, player, resume)
+                update = {"done": time.monotonic()}
+            except Exception as e:
+                logging.getLogger(__name__).warning("Movie Remote couldn't play %s: %s", key, e)
+                update = {"done": time.monotonic(), "error": str(e)}
+            with pending_lock:
+                if remote_pending.get(remote["id"], {}).get("key") == key:
+                    remote_pending[remote["id"]].update(update)
+
+        threading.Thread(target=run, daemon=True).start()
+        return jsonify(ok=True, title=movie.title, player=player_label(player)), 202
+
+    @remote_route("/remote/now")
+    def remote_now(remote):
+        """What the box's player is playing, for its screen."""
+        player = remote["player"]
+        try:
+            status = dict(plex.now_playing(player))
+        except Exception as e:
+            status = {"state": "error", "message": f"Can't reach the player: {e}"}
+        status["player"] = player_label(player)
+        status["name"] = remote["name"]
+        with pending_lock:
+            started = remote_pending.get(remote["id"])
+            if started:
+                done = started.get("done")
+                if status.get("key") == started["key"] and status.get("state") not in (None, "idle"):
+                    remote_pending.pop(remote["id"], None)  # it's playing
+                elif done and time.monotonic() - done > 30:
+                    remote_pending.pop(remote["id"], None)  # the player never said so: give up
+                elif "error" in started:
+                    return jsonify(state="error", message=started["error"], title=started["title"],
+                                   player=status["player"], name=remote["name"])
+                else:
+                    return jsonify(state="starting", title=started["title"], key=started["key"],
+                                   poster=f"/poster/{started['key']}", position=0, duration=0,
+                                   player=status["player"], name=remote["name"])
+        return jsonify(status)
+
+    @remote_route("/remote/control", methods=["POST"])
+    def remote_control(remote):
+        """The box's buttons: toggle, pause, play, stop, seek (with ``by`` seconds) and off."""
+        body = request.get_json(silent=True) or {}
+        action, player = body.get("action"), remote["player"]
+        if action == "toggle":
+            plex.toggle(player)
+        elif action in ("pause", "play", "stop"):
+            plex.control(action, player)
+        elif action == "seek" and isinstance(body.get("by"), int):
+            plex.seek(body["by"], player)
+        elif action == "off":
+            plex.tv_off()
+        else:
+            return jsonify(ok=False, message="Send an action: toggle, pause, play, stop, seek (with by) or off"), 400
+        return jsonify(ok=True)
+
     @app.get("/now")
     def now():
         client = tap_client()
@@ -657,6 +754,17 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         if name is None:
             return jsonify(ok=False, message="Give it a name"), 400
         return jsonify(ok=True, name=name)
+
+    @panel_route("/devices/<device_id>/player", methods=["POST"])
+    def panel_device_player(device_id):
+        """Where a Movie Remote's (or a phone's) taps and buttons go: a player ID, or null for the default."""
+        player = panel_body().get("player")
+        if player is not None and not (isinstance(player, str) and 0 < len(player) <= 200):
+            return jsonify(ok=False, message="Choose a player"), 400
+        if not any(d["id"] == device_id for d in plex.app_pairings.devices()):
+            return jsonify(ok=False, message="That device isn't paired"), 404
+        plex.app_pairings.set_player(device_id, player)
+        return jsonify(ok=True)
 
     @panel_route("/devices/<device_id>/remove", methods=["POST"])
     def panel_remove(device_id):

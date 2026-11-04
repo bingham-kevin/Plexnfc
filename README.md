@@ -94,7 +94,7 @@ Plex for Apple TV can't be remote-started, but Swiftfin (Jellyfin's Apple TV app
 
 ## Optional: a "Movie Remote" with a screen
 
-[esphome/](esphome/) has firmware for an ESP32-S3 box with an NFC reader and a 3.5" touchscreen. Hold a page to the box and the movie starts. The screen then shows the poster, the progress, and play/pause, ±30 s, stop and TV-off buttons. It costs about $40 in parts. The parts list and wiring are in [esphome/README.md](esphome/README.md).
+[esphome/](esphome/) has firmware for a 4" ESP32 touchscreen (the Hosyond ESP32-32E) with a PN532 NFC reader. Hold a page to the box and the movie starts on your Marquee player. The screen then shows the poster, the progress, and play/pause, ±30 s and stop buttons. The box pairs with Marquee Server like Marquee does, and you choose its player in the control panel. The parts list and wiring are in [esphome/README.md](esphome/README.md).
 
 ## Tag URLs
 

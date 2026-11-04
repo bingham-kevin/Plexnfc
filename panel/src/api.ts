@@ -1,7 +1,7 @@
 // The server's control panel API (/panel/api in plexnfc/server.py). Addresses are relative,
 // so they work under Home Assistant's ingress path too.
 
-export type Kind = "tv" | "phone" | "homeassistant";
+export type Kind = "tv" | "remote" | "phone" | "homeassistant";
 
 export interface PlayerStatus {
   state: "playing" | "paused";

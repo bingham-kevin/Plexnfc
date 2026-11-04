@@ -56,7 +56,7 @@ In the **Movie Book** sidebar panel:
 
 ## Movie Remote
 
-The ESP32 Movie Remote firmware is in the repository's `esphome/` folder. Paste it into the **ESPHome Builder** app. Set `plexnfc_url` to the same address as **Tag base URL**.
+The ESP32 Movie Remote firmware is in the repository's `esphome/` folder. Paste it into the **ESPHome Builder** app. Set `marquee_url` to the same address as **Tag base URL**. Then approve the code the box shows in this panel.
 
 ## Network
 

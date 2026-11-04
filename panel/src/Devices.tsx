@@ -1,9 +1,10 @@
 import { useState } from "react";
 import type { Device, Kind, Overview, PairingRequest } from "./api";
-import { useAction } from "./hooks";
+import { useAction, usePlayers } from "./hooks";
 
 export const KIND_NAMES: Record<Kind, string> = {
   tv: "Marquee",
+  remote: "Movie Remote",
   phone: "Marquee Remote",
   homeassistant: "Home Assistant",
 };
@@ -39,6 +40,7 @@ function Request({ request, canManage }: { request: PairingRequest; canManage: b
 function describe(device: Device): string {
   if (device.kind === "phone") return `Taps go to ${device.player ?? "the default player"}`;
   if (device.kind === "homeassistant") return "Media players and triggers in Home Assistant";
+  if (device.kind === "remote") return "Tags and buttons go to";
   if (device.status) return `${device.status.state === "paused" ? "Paused" : "Playing"}: ${device.status.title}`;
   return device.player ? `Plays on ${device.player}` : "Marquee player";
 }
@@ -51,7 +53,7 @@ export function Devices({ overview }: { overview: Overview }) {
   return (
     <section className="card">
       <h2>Paired</h2>
-      <p className="muted">In Marquee (Apple TV, iPhone, iPad), Marquee Remote or Home Assistant's Marquee integration,
+      <p className="muted">In Marquee (Apple TV, iPhone, iPad), Marquee Remote, a Movie Remote box or Home Assistant's Marquee integration,
         connect to <code>{overview.tag_address.split("://")[1]}</code> and approve the code it shows. Tags pick a
         Marquee player with <code>?client=app:NAME</code>.</p>
       {devices.length === 0 ? (
@@ -92,7 +94,10 @@ function DeviceRow({ device, canManage }: { device: Device; canManage: boolean }
         ) : device.name}
       </td>
       <td><span className={`kind ${device.kind}`}>{KIND_NAMES[device.kind]}</span></td>
-      <td className="muted">{describe(device)}</td>
+      <td className="muted">
+        {describe(device)}
+        {device.kind === "remote" && <> <PlayerChoice device={device} canManage={canManage} /></>}
+      </td>
       <td className="muted">{new Date(device.paired * 1000).toLocaleDateString()}</td>
       <td>
         {canManage && (
@@ -103,5 +108,25 @@ function DeviceRow({ device, canManage }: { device: Device; canManage: boolean }
         )}
       </td>
     </tr>
+  );
+}
+
+/** Which player a Movie Remote controls. */
+function PlayerChoice({ device, canManage }: { device: Device; canManage: boolean }) {
+  const players = usePlayers();
+  const choose = useAction<string>(() => `devices/${device.id}/player`, (player) => ({ player: player || null }),
+                                   () => `${device.name} will play there`);
+  const choices = players.data?.players ?? [];
+  const current = device.player ?? "";
+  if (!canManage) {
+    return <>{choices.find((p) => p.id === current)?.name ?? (current || "the default player")}</>;
+  }
+  return (
+    <select value={current} aria-label={`Player for ${device.name}`} disabled={choose.isPending}
+            onChange={(e) => choose.mutate(e.target.value)}>
+      <option value="">The default player</option>
+      {current && !choices.some((p) => p.id === current) && <option value={current}>{current}</option>}
+      {choices.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.kind})</option>)}
+    </select>
   );
 }

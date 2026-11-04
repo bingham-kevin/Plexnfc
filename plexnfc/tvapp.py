@@ -72,7 +72,7 @@ class AppInbox:
 
 
 PAIRING_TTL = 600  # a pairing code is good for 10 minutes
-DEFAULT_NAMES = {"tv": "Apple TV", "phone": "iPhone", "homeassistant": "Home Assistant"}
+DEFAULT_NAMES = {"tv": "Apple TV", "phone": "iPhone", "homeassistant": "Home Assistant", "remote": "Movie Remote"}
 
 
 def _hash(secret: str) -> str:
@@ -128,7 +128,7 @@ class AppPairings:
         return name if name and time.monotonic() - since < PAIRING_TTL else None
 
     def start(self, name: str, kind: str = "tv", address: str | None = None) -> dict:
-        kind = kind if kind in ("phone", "homeassistant") else "tv"
+        kind = kind if kind in ("phone", "homeassistant", "remote") else "tv"
         name = " ".join(name.split())[:40] or DEFAULT_NAMES[kind]
         pair_id = secrets.token_urlsafe(16)
         code = f"{secrets.randbelow(1_000_000):06d}"
@@ -236,6 +236,16 @@ class AppPairings:
         with self._lock:
             device_id = self._find(secret, "homeassistant")
             return self._devices[device_id]["name"] if device_id else None
+
+    def remote(self, secret: str | None) -> dict | None:
+        """The paired Movie Remote (the ESP32 box with a reader and a screen) for this secret,
+        or None: its ID, name, and the player its taps and buttons go to (None: the default)."""
+        with self._lock:
+            device_id = self._find(secret, "remote")
+            if not device_id:
+                return None
+            device = self._devices[device_id]
+            return {"id": device_id, "name": device["name"], "player": device.get("player")}
 
     def phone(self, secret: str | None, address: str | None = None) -> dict | None:
         """The paired phone for this secret, or None. Notes ``address`` as where its taps come from."""
