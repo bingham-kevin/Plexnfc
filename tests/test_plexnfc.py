@@ -321,7 +321,7 @@ def test_control_panel_is_served_with_relative_addresses(plex):
     assert movies["movies"] == [{"key": "tmdb-603", "title": "The Matrix", "year": 1999,
                                  "url": "http://nfc.local:8080/m/tmdb-603"}]
     assert [c["action"] for c in movies["controls"]] == ["pause", "play", "stop"]
-    assert app.post("/panel/api/play", json={"key": "tmdb-603"}, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+    assert app.post("/panel/api/play", json={"key": "tmdb-603"}, environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
     with mock.patch("plexnfc.server.threading.Thread") as thread:
         assert app.post("/panel/api/play", json={"key": "tmdb-603", "player": "Bedroom"}).json["title"] == "The Matrix"
     assert thread.call_args.kwargs["args"] == ("tmdb-603", "Bedroom", False)
@@ -374,7 +374,7 @@ def test_sign_in_with_plex(plex, tmp_path, monkeypatch):
     overview = app.get("/panel/api/overview")
     assert b"newtok" not in overview.data and overview.json["plex"]["signed_in_here"]
 
-    assert app.post("/panel/api/plex/logout", environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+    assert app.post("/panel/api/plex/logout", environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
     app.post("/panel/api/plex/logout")
     assert config.plex_token == "" and plexauth.saved_token(auth) == ""
 
@@ -791,7 +791,7 @@ def test_pairing_flow_and_panel(plex):
         {"pair_id": started["pair_id"], "name": "Den", "kind": "tv", "code": started["code"]}]
     # approving from the network port is refused; through the panel (ingress) it works
     approve = f"/panel/api/pairings/{started['pair_id']}/approve"
-    assert app.post(approve, json={}, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+    assert app.post(approve, json={}, environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
     assert app.post(approve, json={}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 200
     assert app.post("/panel/api/pairings/nope/approve", json={}).status_code == 404
     # on the host network, ingress comes from the host's own address (the tag address's host)
@@ -800,6 +800,13 @@ def test_pairing_flow_and_panel(plex):
     again = host_app.post("/tv/pair", json={"name": "Den 2"}).json
     assert host_app.post(f"/panel/api/pairings/{again['pair_id']}/approve", json={},
                          environ_base={"REMOTE_ADDR": "127.0.0.2"}).status_code == 200
+    # and so does this machine by its network address (the panel opened at marquee.local on the Mac)
+    own = own_network_address()
+    if own:
+        third = app.post("/tv/pair", json={"name": "Den 3"}).json
+        assert app.get("/panel/api/overview", environ_base={"REMOTE_ADDR": own}).json["can_manage"]
+        assert app.post(f"/panel/api/pairings/{third['pair_id']}/approve", json={},
+                        environ_base={"REMOTE_ADDR": f"::ffff:{own}"}).status_code == 200
     result = app.get(f"/tv/pair/{started['pair_id']}").json
     assert result["status"] == "approved" and result["name"] == "Den"
     assert app.get(f"/tv/pair/{started['pair_id']}").status_code == 404  # the secret is handed out once
@@ -833,7 +840,7 @@ def test_panel_renames_a_paired_apple_tv(plex):
     tv, _, phone = plex.app_pairings.devices()
     plex.app_pairings.set_player(phone["id"], "app:Apple TV")
     rename = f"/panel/api/devices/{tv['id']}/rename"
-    assert app.post(rename, json={"name": "Living Room"}, environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+    assert app.post(rename, json={"name": "Living Room"}, environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
     assert app.post(rename, json={"name": " "}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 400
     assert app.post(rename, json={"name": "Living  Room"}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 200
     # the Apple TV keeps its pairing under the new name, and the phone follows it
@@ -1132,7 +1139,7 @@ def test_apple_tv_routes_are_panel_only(plex):
     plex.apple_tvs.linked.return_value = {}
     plex.apple_tvs.link_for.return_value = {"identifier": "ATV1", "name": "Living Room", "address": "192.168.0.30"}
     app = create_app(CONFIG, plex).test_client()
-    outside = {"REMOTE_ADDR": "192.168.0.50"}
+    outside = {"REMOTE_ADDR": "192.0.2.50"}
     assert app.post("/panel/api/appletvs/scan", environ_base=outside).status_code == 403
     assert app.post("/panel/api/appletvs/pair", json={"identifier": "ATV1", "player": "Den"},
                     environ_base=outside).status_code == 403
@@ -1241,7 +1248,7 @@ def test_app_player_can_be_named_after_its_apple_tv(plex):
 
 def test_expected_apple_tv_pairs_marquee_without_a_code(plex):
     app = create_app(CONFIG, plex).test_client()
-    tv, other = {"REMOTE_ADDR": "192.168.0.34"}, {"REMOTE_ADDR": "192.168.0.50"}
+    tv, other = {"REMOTE_ADDR": "192.168.0.34"}, {"REMOTE_ADDR": "192.0.2.50"}
     old = pair(plex, "Den")  # Marquee paired before, e.g. with its old name
     assert app.get("/tv/expected", environ_base=tv).status_code == 204
     plex.app_pairings.expect("192.168.0.34", "Den")
@@ -1272,7 +1279,19 @@ def test_pairing_an_apple_tv_expects_its_marquee(plex):
     assert plex.app_pairings.expected("192.168.0.34") == "Den"
     # Connect Marquee does the same for an Apple TV paired already; panel only
     assert app.post("/panel/api/appletvs/connect", json={"player": "Den"},
-                    environ_base={"REMOTE_ADDR": "192.168.0.50"}).status_code == 403
+                    environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
     assert app.post("/panel/api/appletvs/connect", json={"player": "Den"}).status_code == 200
     plex.apple_tvs.link_for.return_value = None
     assert app.post("/panel/api/appletvs/connect", json={"player": "Nope"}).status_code == 404
+
+
+def own_network_address() -> str | None:
+    """This machine's address on the network, if it has one (no packet is sent)."""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))
+            address = probe.getsockname()[0]
+    except OSError:
+        return None
+    return None if address.startswith("127.") else address

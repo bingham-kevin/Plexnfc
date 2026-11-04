@@ -27,10 +27,12 @@ For the ESP32 remote (see esphome/):
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import io
 import logging
 import os
+import socket
 import threading
 import time
 from html import escape
@@ -73,6 +75,24 @@ def resize_jpeg(data: bytes, width: int, height: int) -> bytes:
     out = io.BytesIO()
     img.save(out, "JPEG", quality=85, progressive=False, optimize=False)
     return out.getvalue()
+
+
+
+@functools.lru_cache(maxsize=64)
+def _own_address(address: str) -> bool:
+    try:
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        with socket.socket(family, socket.SOCK_DGRAM) as probe:
+            probe.bind((address, 0))  # only an address of this machine's can be bound
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def is_own_address(address: str) -> bool:
+    """Whether a request from ``address`` comes from this machine, by any of its network
+    addresses: the control panel opened at marquee.local on the Mac itself, say."""
+    return bool(address) and _own_address(address)
 
 
 def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
@@ -163,14 +183,14 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
 
     # Home Assistant's ingress, and this machine itself. On the host network (needed for
     # Bonjour) ingress requests come from the host's own address, the tag address's host.
-    # (A host name isn't looked up: the tag address is a fixed IP in practice.)
     panel_addresses = {"172.30.32.2", "172.30.32.1", "127.0.0.1", "::1"}
     panel_addresses.add(urlsplit(config.public_base_url).hostname or "")
 
     def from_panel() -> bool:
         """Pairings are approved only from the panel: through Home Assistant's ingress,
         or on the machine plexnfc runs on, never from another device on the network."""
-        return request.remote_addr in panel_addresses
+        address = (request.remote_addr or "").removeprefix("::ffff:")
+        return address in panel_addresses or is_own_address(address)
 
     def app_route(rule, **options):
         """A /tv route for paired Apple TVs: passes the Apple TV's name as ``device``."""
