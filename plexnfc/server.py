@@ -468,6 +468,12 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                                    player=status["player"], name=remote["name"])
         return jsonify(status)
 
+    @remote_route("/remote/unpair", methods=["POST"])
+    def remote_unpair(remote):
+        """The box is being reset: forget it, so the panel doesn't keep a box that's gone."""
+        plex.app_pairings.remove(remote["id"])
+        return jsonify(ok=True)
+
     @remote_route("/remote/control", methods=["POST"])
     def remote_control(remote):
         """The box's buttons: toggle, pause, play, stop, seek (with ``by`` seconds) and off."""

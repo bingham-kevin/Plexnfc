@@ -1,0 +1,619 @@
+# Movie Remote on the Elecrow CrowPanel Advance 5.0 (DIS02050A, v1.2/v1.3)
+#
+# An ESP32-S3 with 8 MB of PSRAM, an 800x480 RGB IPS screen and GT911 capacitive
+# touch. The PN532 reader goes on the I2C-OUT connector (IO15 SDA, IO16 SCL), which
+# it shares with the touch chip, the clock and the board's STC8H1K28 helper chip.
+#
+# The logic is in common/movie-remote.yaml; this file is the board.
+# Flash with:  esphome run movie-remote-crowpanel.yaml
+
+substitutions:
+  name: movie-remote
+  friendly_name: Movie Remote
+  # Marquee Server's address (no trailing slash)
+  marquee_url: http://marquee.local:8080
+  # Turn the screen off after this long with nothing playing
+  screen_timeout: 5min
+  # The poster's size: with PSRAM it can be large
+  poster_w: "240"
+  poster_h: "360"
+  wifi_name_width: "520"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  # Its own build folder, so building the other board doesn't start this one over
+  build_path: build/movie-remote-crowpanel
+  on_boot:
+    # Once the I2C bus is up, before the touch chip is set up: make sure the board's
+    # helper chip is answering and has released the touch chip from reset.
+    - priority: 800
+      then:
+        - lambda: |-
+            auto *bus = id(board_i2c);
+            uint8_t probe = 0;
+            for (int attempt = 0; attempt < 5; attempt++) {
+              bool helper = bus->write(0x30, nullptr, 0) == i2c::ERROR_OK;
+              bool touch = bus->write(0x5D, nullptr, 0) == i2c::ERROR_OK ||
+                           bus->write(0x14, nullptr, 0) == i2c::ERROR_OK;
+              if (helper && touch) break;
+              ESP_LOGW("board", "Waking the touch controller (helper %s, touch %s)",
+                       helper ? "found" : "missing", touch ? "found" : "missing");
+              uint8_t wake = 250;  // the helper chip's "activate the touchscreen"
+              bus->write(0x30, &wake, 1);
+              // A short low pulse on the touch interrupt line, then let it go
+              gpio_set_direction(GPIO_NUM_1, GPIO_MODE_OUTPUT);
+              gpio_set_level(GPIO_NUM_1, 0);
+              delay(120);
+              gpio_set_direction(GPIO_NUM_1, GPIO_MODE_INPUT);
+              delay(100);
+            }
+    # After the screen library is set up and before Wi-Fi takes its share of internal
+    # RAM: give it a drawing buffer of 15 lines in fast internal RAM. ESPHome's own is
+    # at least 1/8 of the screen, too big for internal RAM, so it lands in PSRAM; then
+    # every redraw goes through PSRAM twice, and the screen, which also reads its frame
+    # from PSRAM, falls behind and the picture slips.
+    - priority: 300
+      then:
+        - lambda: |-
+            const size_t size = 800 * 15 * 2;
+            void *buf = heap_caps_aligned_alloc(LV_DRAW_BUF_ALIGN, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            if (buf == nullptr) {
+              ESP_LOGW("board", "No internal RAM for the drawing buffer; keeping the one in PSRAM");
+              return;
+            }
+            lv_display_set_buffers(id(ui).get_disp(), buf, nullptr, size, LV_DISPLAY_RENDER_MODE_PARTIAL);
+            ESP_LOGI("board", "Drawing buffer: 15 lines in internal RAM");
+    - priority: -100
+      then:
+        - script.execute: connect_box
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  cpu_frequency: 240MHz
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      # Let ordinary allocations (the JPEG decoder, HTTP buffers) use PSRAM, keeping
+      # small ones in internal RAM, which Wi-Fi and the screen need
+      CONFIG_SPIRAM_USE_CAPS_ALLOC: n
+      CONFIG_SPIRAM_USE_MALLOC: y
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "4096"
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL: "65536"
+      # When the screen falls behind reading its frame from PSRAM, the picture below
+      # that point shifts down. Restart its stream at every frame so a slip can't stay.
+      CONFIG_LCD_RGB_RESTART_IN_VSYNC: y
+      # The screen reads its frame from PSRAM nonstop, and flash shares PSRAM's bus, so
+      # code that isn't in the cache waits behind it. With the default 16 KB cache,
+      # Wi-Fi's code kept missing it: pings took 300-700 ms and requests over a second.
+      # With 32 KB, pings take about 60 ms.
+      CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: y
+      # Not CONFIG_ESP32S3_DATA_CACHE_64KB: that made Wi-Fi drop most packets
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+packages:
+  remote: !include common/movie-remote.yaml
+
+# ESPHome's RGB display driver, set up as Elecrow's own (see components/mipi_rgb)
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [mipi_rgb]
+
+# The USB-C port goes through the board's CH340K to UART0, not the S3's own USB
+logger:
+  hardware_uart: UART0
+
+# Touch, the clock, the helper chip (0x30) and the PN532 (0x24) share this bus
+i2c:
+  id: board_i2c
+  sda: GPIO15
+  scl: GPIO16
+  scan: true
+  frequency: 100kHz
+
+# ---- screen and touch --------------------------------------------------------------
+
+# The backlight is run by the helper chip: 0 is brightest, 244 dimmest, 245 off.
+output:
+  - platform: template
+    id: backlight_out
+    type: float
+    write_action:
+      - lambda: |-
+          uint8_t level = state <= 0.0f ? 245 : (uint8_t) lroundf(244.0f * (1.0f - state));
+          id(board_i2c)->write(0x30, &level, 1);
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: Backlight
+    output: backlight_out
+    # Keeps the brightness chosen on the settings screen
+    restore_mode: RESTORE_AND_ON
+    default_transition_length: 300ms
+
+display:
+  - platform: mipi_rgb
+    id: screen
+    # Elecrow's 5" Advance uses the same pins and timing as the 7"
+    model: CROWPANEL-ADVANCE-7
+    # Elecrow's own examples for the 5" run it at 16 MHz. Slower loses sync.
+    pclk_frequency: 16MHz
+    update_interval: never
+    auto_clear_enabled: false
+
+touchscreen:
+  - platform: gt911
+    id: touch
+    i2c_id: board_i2c
+    update_interval: 20ms
+    on_touch:
+      - light.turn_on: backlight
+
+# A placeholder for the poster widget: the poster itself is downloaded and decoded in
+# the background by marquee_link
+image:
+  - platform: online_image
+    id: poster
+    url: ${marquee_url}/poster/none
+    format: JPEG
+    type: RGB565
+    resize: 16x16
+    update_interval: never
+
+lvgl:
+  id: ui
+  displays: [screen]
+  touchscreens: [touch]
+  # 1/8 of the screen: small enough to sit in fast internal RAM
+  buffer_size: 12.5%
+  bg_color: 0x101010
+  default_font: montserrat_20
+  theme:
+    button:
+      bg_color: 0x2A2A2A
+      text_color: 0xFFFFFF
+      radius: 40
+      border_width: 0
+      pressed:
+        bg_color: 0xE5A00D
+  pages:
+    # Poster on the left, what's playing and the buttons on the right
+    - id: main_page
+      bg_color: 0x101010
+      widgets:
+        - image:
+            id: poster_img
+            src: poster
+            align: TOP_LEFT
+            x: 40
+            y: 60
+            radius: 10
+            clip_corner: true
+            hidden: true
+
+        - button:
+            id: gear_btn
+            align: TOP_LEFT
+            x: 12
+            y: 8
+            width: 48
+            height: 48
+            radius: 24
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text_font: montserrat_24
+                  text_color: 0x9A9A9A
+                  text: ""
+            on_click:
+              - script.execute: show_settings
+
+        - label:
+            id: idle_lbl
+            align: CENTER
+            y: -60
+            width: 640
+            text_align: CENTER
+            text_font: montserrat_32
+            text_color: 0x9A9A9A
+            text: "Connecting..."
+
+        - label:
+            id: code_lbl
+            align: CENTER
+            y: 100
+            text_font: montserrat_48
+            text_color: 0xE5A00D
+            text_letter_space: 8
+            text: ""
+
+        # What's playing, stacked so a two-line title pushes the rest down.
+        # The block is centred in the space above the buttons.
+        - obj:
+            align: TOP_LEFT
+            x: 316
+            y: 56
+            width: 456
+            height: 236
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            layout:
+              type: FLEX
+              flex_flow: COLUMN
+              pad_row: 12
+              flex_align_main: CENTER
+              flex_align_cross: START
+              flex_align_track: START
+            widgets:
+              - label:
+                  id: title_lbl
+                  width: 450
+                  # Up to two lines, then "..."
+                  max_height: 80
+                  long_mode: DOT
+                  text_font: montserrat_32
+                  text_color: 0xFFFFFF
+                  text: ""
+                  hidden: true
+
+              - label:
+                  id: info_lbl
+                  width: 450
+                  long_mode: DOT
+                  text_font: montserrat_20
+                  text_color: 0x9E9E9E
+                  text: ""
+                  hidden: true
+
+              - bar:
+                  id: progress
+                  width: 444
+                  height: 10
+                  min_value: 0
+                  max_value: 1000
+                  value: 0
+                  bg_color: 0x333333
+                  indicator:
+                    bg_color: 0xE5A00D
+                  hidden: true
+
+              - label:
+                  id: time_lbl
+                  text_font: montserrat_18
+                  text_color: 0x9E9E9E
+                  text: ""
+                  hidden: true
+
+        - obj:
+            id: controls
+            align: TOP_LEFT
+            x: 300
+            y: 300
+            width: 476
+            height: 120
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            hidden: true
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_EVENLY
+              flex_align_cross: CENTER
+              flex_align_track: CENTER
+            widgets:
+              - button:
+                  width: 92
+                  height: 80
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text_font: montserrat_24
+                        text: "-30"
+                  on_click:
+                    - script.execute: { id: send_control, action: seek, by: -30 }
+              - button:
+                  width: 108
+                  height: 108
+                  radius: 54
+                  bg_color: 0xE5A00D
+                  widgets:
+                    - label:
+                        id: play_icon
+                        align: CENTER
+                        text_font: montserrat_40
+                        text: ""
+                  on_click:
+                    - script.execute: { id: send_control, action: toggle, by: 0 }
+              - button:
+                  width: 92
+                  height: 80
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text_font: montserrat_24
+                        text: "+30"
+                  on_click:
+                    - script.execute: { id: send_control, action: seek, by: 30 }
+              - button:
+                  width: 92
+                  height: 80
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text_font: montserrat_28
+                        text: ""
+                  on_click:
+                    - script.execute: { id: send_control, action: stop, by: 0 }
+
+    # Details on the left, brightness and actions on the right
+    - id: settings_page
+      bg_color: 0x101010
+      widgets:
+        - button:
+            align: TOP_LEFT
+            x: 12
+            y: 8
+            width: 48
+            height: 48
+            radius: 24
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text: ""
+            on_click:
+              - lvgl.page.show: main_page
+        - label:
+            align: TOP_MID
+            y: 18
+            text_font: montserrat_28
+            text_color: 0xFFFFFF
+            text: "Settings"
+        - label:
+            id: info_lbl2
+            align: TOP_LEFT
+            x: 40
+            y: 80
+            width: 380
+            text_font: montserrat_18
+            text_color: 0xC8C8C8
+            text_line_space: 2
+            text: ""
+        - label:
+            align: TOP_LEFT
+            x: 450
+            y: 86
+            text_color: 0x9E9E9E
+            text: "Brightness"
+        - slider:
+            id: brightness
+            align: TOP_LEFT
+            x: 460
+            y: 130
+            width: 290
+            height: 14
+            min_value: 10
+            max_value: 100
+            value: 100
+            bg_color: 0x333333
+            indicator:
+              bg_color: 0xE5A00D
+            knob:
+              bg_color: 0xFFFFFF
+              pad_all: 8
+            on_value:
+              - light.turn_on:
+                  id: backlight
+                  brightness: !lambda 'return x / 100.0f;'
+                  transition_length: 0s
+        - button:
+            align: TOP_LEFT
+            x: 450
+            y: 200
+            width: 310
+            height: 64
+            radius: 14
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "   Change Wi-Fi"
+            on_click:
+              - script.execute: wifi_scan
+        - button:
+            align: TOP_LEFT
+            x: 450
+            y: 284
+            width: 310
+            height: 64
+            radius: 14
+            bg_color: 0x4A1C1C
+            widgets:
+              - label:
+                  align: CENTER
+                  text_color: 0xFF8A80
+                  text: "Reset to defaults"
+            on_click:
+              - lvgl.label.update:
+                  id: reset_lbl
+                  text: "Reset Movie Remote?\n\nIt forgets its Wi-Fi network and its pairing with Marquee Server, then starts setup again from the Movie Remote hotspot."
+              - lvgl.page.show: reset_page
+
+    - id: wifi_page
+      bg_color: 0x101010
+      widgets:
+        - button:
+            align: TOP_LEFT
+            x: 12
+            y: 8
+            width: 48
+            height: 48
+            radius: 24
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text: ""
+            on_click:
+              - script.execute: show_settings
+        - label:
+            align: TOP_MID
+            y: 18
+            text_font: montserrat_28
+            text_color: 0xFFFFFF
+            text: "Wi-Fi"
+        - button:
+            align: TOP_RIGHT
+            x: -12
+            y: 8
+            width: 48
+            height: 48
+            radius: 24
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text: ""
+            on_click:
+              - script.execute: wifi_scan
+        - label:
+            id: wifi_status
+            align: TOP_MID
+            y: 64
+            text_color: 0x9E9E9E
+            text: ""
+        - obj:
+            id: wifi_list
+            align: TOP_MID
+            y: 100
+            width: 620
+            height: 372
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: true
+
+    - id: password_page
+      bg_color: 0x101010
+      widgets:
+        - button:
+            align: TOP_LEFT
+            x: 12
+            y: 8
+            width: 48
+            height: 48
+            radius: 24
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text: ""
+            on_click:
+              - lvgl.page.show: wifi_page
+        - label:
+            id: pw_title
+            align: TOP_MID
+            y: 18
+            width: 560
+            long_mode: DOT
+            text_align: CENTER
+            text_font: montserrat_28
+            text_color: 0xFFFFFF
+            text: ""
+        - textarea:
+            id: pw_ta
+            align: TOP_MID
+            x: -56
+            y: 70
+            width: 520
+            height: 56
+            one_line: true
+            password_mode: true
+            placeholder_text: "Password"
+            max_length: 64
+        - button:
+            id: pw_show
+            align: TOP_MID
+            x: 270
+            y: 70
+            width: 96
+            height: 56
+            radius: 14
+            widgets:
+              - label:
+                  id: pw_show_lbl
+                  align: CENTER
+                  text: "Show"
+            on_click:
+              - lambda: |-
+                  bool hidden = lv_textarea_get_password_mode(id(pw_ta));
+                  lv_textarea_set_password_mode(id(pw_ta), !hidden);
+                  lv_label_set_text(id(pw_show_lbl), hidden ? "Hide" : "Show");
+        - label:
+            align: TOP_MID
+            y: 136
+            text_font: montserrat_16
+            text_color: 0x9E9E9E
+            text: "Press the check key to join"
+        - keyboard:
+            id: pw_kb
+            textarea: pw_ta
+            align: BOTTOM_MID
+            width: 800
+            height: 300
+            text_font: montserrat_22
+            on_ready:
+              - script.execute: wifi_join
+            on_cancel:
+              - lvgl.page.show: wifi_page
+
+    - id: reset_page
+      bg_color: 0x101010
+      widgets:
+        - label:
+            id: reset_lbl
+            align: CENTER
+            y: -60
+            width: 560
+            text_align: CENTER
+            text_font: montserrat_24
+            text_color: 0xFFFFFF
+            text: ""
+        - button:
+            align: BOTTOM_MID
+            x: -120
+            y: -50
+            width: 200
+            height: 64
+            radius: 14
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "Cancel"
+            on_click:
+              - lvgl.page.show: settings_page
+        - button:
+            align: BOTTOM_MID
+            x: 120
+            y: -50
+            width: 200
+            height: 64
+            radius: 14
+            bg_color: 0xC62828
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "Reset"
+            on_click:
+              - script.execute: reset_box

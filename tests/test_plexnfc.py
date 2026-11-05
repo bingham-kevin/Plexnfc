@@ -1042,6 +1042,17 @@ def test_movie_remote_pairs_then_plays_on_its_player(plex):
     assert app.get("/remote/now", headers=box).status_code == 401
 
 
+def test_movie_remote_reset_forgets_its_pairing(plex):
+    app = create_app(CONFIG, plex).test_client()
+    started = app.post("/tv/pair", json={"name": "Movie Remote", "kind": "remote"}).json
+    plex.app_pairings.approve(started["pair_id"])
+    box = {"Authorization": f"Bearer {plex.app_pairings.poll(started['pair_id'])['secret']}"}
+    assert app.post("/remote/unpair", json={}).status_code == 401  # only the box itself
+    assert app.post("/remote/unpair", json={}, headers=box).json["ok"]
+    assert not [d for d in app.get("/panel/api/overview").json["devices"] if d["kind"] == "remote"]
+    assert app.get("/remote/now", headers=box).status_code == 401
+
+
 def test_player_scripts_setting():
     from plexnfc.config import parse_player_scripts
     assert parse_player_scripts("app:Living Room = script.lr; Den TV=script.den;; junk") == {
