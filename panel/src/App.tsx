@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AppleTVs } from "./AppleTVs";
 import { Book } from "./Book";
+import { Cards } from "./Cards";
 import { Devices, PairingRequests } from "./Devices";
 import { useAction, useOverview } from "./hooks";
 import { NowPlaying } from "./NowPlaying";
@@ -10,6 +11,7 @@ const TABS = [
   { id: "home", label: "Now Playing" },
   { id: "devices", label: "Devices" },
   { id: "tags", label: "Tags" },
+  { id: "cards", label: "Cards" },
   { id: "book", label: "Book" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
@@ -80,6 +82,7 @@ export default function App() {
             </>
           )}
           {tab === "tags" && <Tags overview={data} />}
+          {tab === "cards" && <Cards overview={data} />}
           {tab === "book" && <Book overview={data} />}
         </main>
       )}

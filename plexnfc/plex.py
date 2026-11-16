@@ -21,6 +21,7 @@ from plexapi.server import PlexServer
 
 from .config import Config
 from .appletv import AppleTVError, AppleTVs
+from .cards import Cards
 from .homeassistant import HomeAssistant, HomeAssistantError
 from .jellyfin import TICKS_PER_SECOND, Jellyfin, JellyfinError, tag_key
 from .tvapp import AppInbox, AppPairings, jellyfin_hls_url, plex_hls_url
@@ -70,6 +71,8 @@ class Plex:
                                                      "marquee_devices.json"))
         self.apple_tvs = apple_tvs or AppleTVs(os.path.join(os.path.dirname(config.auth_file) or ".",
                                                             "apple_tvs.json"))
+        # Cards linked to movies by their ID, for the Movie Remote
+        self.cards = Cards(os.path.join(os.path.dirname(config.auth_file) or ".", "movie_cards.json"))
         self.jellyfin = jellyfin
         if self.jellyfin is None and config.jellyfin_url and config.jellyfin_api_key:
             self.jellyfin = Jellyfin(config.jellyfin_url, config.jellyfin_api_key)
@@ -142,10 +145,26 @@ class Plex:
         except NotFound:
             raise PlexNFCError(f"No movie in '{self.config.library}' matches {key}") from None
 
-    def movies(self, collection: str | None = None):
+    def movies(self, collection: str | None = None, label: str | None = None):
         if collection:
             return self.section.collection(collection).items()
+        if label:
+            return self.section.search(label=label, sort="titleSort")
         return self.section.all(sort="titleSort")
+
+    def movie_filters(self) -> dict:
+        """The library's collections (with how many movies each holds) and labels, to choose
+        movies by."""
+        def listed(get):
+            try:
+                return sorted(get(), key=lambda c: c.title.casefold())
+            except Exception as e:  # an empty library or an older Plex: just none to offer
+                log.debug("Couldn't list filters: %s", e)
+                return []
+        return {"collections": [{"title": c.title, "count": getattr(c, "childCount", None)}
+                                for c in listed(self.section.collections)],
+                "labels": sorted({c.title for c in listed(lambda: self.section.listFilterChoices("label"))},
+                                 key=str.casefold)}
 
     # ---- playback -----------------------------------------------------------
 

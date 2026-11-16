@@ -6,6 +6,7 @@ from unittest import mock
 import pytest
 from plexapi.exceptions import NotFound
 
+from plexnfc.cards import Cards, normalize_uid
 from plexnfc.config import Config
 from plexnfc.plex import Plex, PlexNFCError, movie_key
 from plexnfc.server import create_app
@@ -19,7 +20,7 @@ def make_movie(title="The Matrix", guids=("imdb://tt0133093", "tmdb://603"), off
 
 
 @pytest.fixture
-def plex():
+def plex(tmp_path):
     movie = make_movie()
     client = mock.Mock(title="Living Room")
     section = mock.Mock()
@@ -31,6 +32,7 @@ def plex():
     server.myPlexAccount.return_value.resource.side_effect = NotFound()
     server.clients.return_value = [client]
     p = Plex(CONFIG, server=server)
+    p.cards = Cards(str(tmp_path / "movie_cards.json"))
     p._movie, p._client = movie, client
     return p
 
@@ -319,7 +321,7 @@ def test_control_panel_is_served_with_relative_addresses(plex):
     # the tag list, and trying a tag from the panel
     movies = app.get("/panel/api/movies").json
     assert movies["movies"] == [{"key": "tmdb-603", "title": "The Matrix", "year": 1999,
-                                 "url": "http://nfc.local:8080/m/tmdb-603"}]
+                                 "url": "http://nfc.local:8080/m/tmdb-603", "cards": []}]
     assert [c["action"] for c in movies["controls"]] == ["pause", "play", "stop"]
     assert app.post("/panel/api/play", json={"key": "tmdb-603"}, environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
     with mock.patch("plexnfc.server.threading.Thread") as thread:
@@ -1022,7 +1024,7 @@ def test_movie_remote_pairs_then_plays_on_its_player(plex):
                 break
             time.sleep(0.02)
         play.assert_called_with("tmdb-603", "app:Den", False)
-    assert app.post("/remote/tap", json={"url": "http://marquee.local:8080/book"}, headers=box).status_code == 400
+    assert app.post("/remote/tap", json={"url": "http://marquee.local:8080/book"}, headers=box).status_code == 404
 
     # the screen shows what Den reports
     app.post("/tv/status", json={"state": "playing", "key": "tmdb-603", "title": "The Matrix", "position": 5,
@@ -1357,3 +1359,114 @@ def own_network_address() -> str | None:
     except OSError:
         return None
     return None if address.startswith("127.") else address
+
+
+# ---- movie cards ----------------------------------------------------------------
+
+def paired_box(plex, app):
+    started = app.post("/tv/pair", json={"name": "Movie Remote", "kind": "remote"}).json
+    plex.app_pairings.approve(started["pair_id"])
+    return {"Authorization": f"Bearer {plex.app_pairings.poll(started['pair_id'])['secret']}"}
+
+
+def test_card_ids_are_normalized():
+    assert normalize_uid("04:f3:21:b8:49:02:89") == "04-F3-21-B8-49-02-89"
+    assert normalize_uid("04f321b8") == "04-F3-21-B8"
+    assert normalize_uid("04-F3-2") is None and normalize_uid("") is None and normalize_uid("zz-zz-zz-zz") is None
+
+
+def test_bulk_scan_links_cards_in_order(tmp_path):
+    cards = Cards(str(tmp_path / "cards.json"))
+    assert cards.scanned("04-00-00-01") is None  # no scan going
+    with pytest.raises(ValueError):
+        cards.start_scan([])
+    movies = [{"key": "tmdb-1", "title": "One"}, {"key": "tmdb-2", "title": "Two"}, {"key": "tmdb-3", "title": "Three"}]
+    scan = cards.start_scan(movies)
+    assert (scan["index"], scan["total"], scan["current"]["title"], scan["next"]["title"]) == (0, 3, "One", "Two")
+
+    assert "Linked: One" in cards.scanned("04-00-00-01")["message"]
+    # the same card read again doesn't go on to the next movie
+    assert "Use the next card" in cards.scanned("04:00:00:01")["message"]
+    assert cards.scan()["current"]["title"] == "Two"
+    cards.move(1)  # skip Two
+    assert cards.scan()["current"]["title"] == "Three"
+    cards.move(-1)
+    cards.move(1)
+    # a card linked before moves to the new movie, and says so
+    message = cards.scanned("04-00-00-01")["message"]
+    assert "Linked: Three" in message and "(was One)" in message
+    assert cards.movie("04-00-00-01")["key"] == "tmdb-3"
+    done = cards.scan()
+    assert done["done"] and done["linked"] == 2 and done["current"] is None
+    assert "All the cards are linked" in cards.scanned("04-00-00-02")["message"]
+
+    # saved, and read back
+    cards.link("04-00-00-02", "tmdb-1", "One")
+    again = Cards(str(tmp_path / "cards.json"))
+    assert again.movie("04-00-00-02")["title"] == "One" and again.by_movie() == {"tmdb-3": ["04-00-00-01"],
+                                                                                   "tmdb-1": ["04-00-00-02"]}
+    assert again.link("04-00-00-02", "tmdb-2", "Two") == "One"
+    assert again.remove("04-00-00-02") and not again.remove("04-00-00-02")
+    cards.stop_scan()
+    assert cards.scan() is None
+
+
+def test_movie_remote_plays_linked_cards_and_links_them_in_a_scan(plex):
+    app = create_app(CONFIG, plex).test_client()
+    box = paired_box(plex, app)
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    elsewhere = {"environ_base": {"REMOTE_ADDR": "192.0.2.50"}}
+
+    # a blank card that isn't linked: the box is told, and the panel offers to link it
+    r = app.post("/remote/tap", json={"uid": "04-AA-BB-CC-DD-EE-FF", "url": ""}, headers=box)
+    assert r.status_code == 404 and "isn't linked" in r.json["message"]
+    assert app.get("/panel/api/cards").json["unknown"]["uid"] == "04-AA-BB-CC-DD-EE-FF"
+    assert app.post("/panel/api/cards/link", json={"uid": "04-AA-BB-CC-DD-EE-FF", "key": "tmdb-603"},
+                    **elsewhere).status_code == 403
+    linked = app.post("/panel/api/cards/link", json={"uid": "04-AA-BB-CC-DD-EE-FF", "key": "tmdb-603"}, **panel).json
+    assert linked["cards"][0]["title"] == "The Matrix" and linked["unknown"] is None
+    assert app.get("/panel/api/movies").json["movies"][0]["cards"] == ["04-AA-BB-CC-DD-EE-FF"]
+
+    # now it plays, with no URL written on it
+    with mock.patch.object(plex, "play") as play:
+        tapped = app.post("/remote/tap", json={"uid": "04-AA-BB-CC-DD-EE-FF"}, headers=box)
+        assert tapped.status_code == 202 and tapped.json["title"] == "The Matrix"
+        for _ in range(50):
+            if play.called:
+                break
+            time.sleep(0.02)
+        play.assert_called_with("tmdb-603", None, False)
+
+    # during a scan, cards are linked instead of played
+    assert app.post("/panel/api/cards/scan", json={"movies": [{"key": "tmdb-603", "title": "The Matrix"}]},
+                    **elsewhere).status_code == 403
+    scan = app.post("/panel/api/cards/scan", json={"movies": [{"key": "tmdb-603", "title": "The Matrix"},
+                                                              {"key": "tmdb-604", "title": "Reloaded"}]}, **panel).json
+    assert scan["scan"]["current"]["title"] == "The Matrix"
+    with mock.patch.object(plex, "play") as play:
+        r = app.post("/remote/tap", json={"uid": "04-11-22-33-44-55-66", "url": ""}, headers=box)
+        assert r.json["scan"] and "Next: Reloaded" in r.json["message"]
+        assert app.post("/panel/api/cards/scan/skip", **panel).json["scan"]["done"]
+        assert app.post("/panel/api/cards/scan/back", **panel).json["scan"]["current"]["title"] == "Reloaded"
+        app.post("/remote/tap", json={"uid": "04-77-22-33-44-55-66"}, headers=box)
+        state = app.post("/panel/api/cards/scan/stop", **panel).json
+        assert state["scan"] is None and len(state["cards"]) == 3
+        assert not play.called
+    assert app.post("/panel/api/cards/04-77-22-33-44-55-66/remove", **panel).json["ok"]
+    assert app.post("/panel/api/cards/04-77-22-33-44-55-66/remove", **panel).status_code == 404
+
+    # tags with a written URL still work
+    with mock.patch.object(plex, "play"):
+        assert app.post("/remote/tap", json={"uid": "04-99-99-99", "url": "http://x/m/tmdb-603"},
+                        headers=box).status_code == 202
+
+
+def test_panel_chooses_movies_by_label_and_lists_filters(plex):
+    app = create_app(CONFIG, plex).test_client()
+    plex.section.search.return_value = [plex._movie]
+    plex.section.collections.return_value = [NS(title="Pixar", childCount=10), NS(title="noir", childCount=0)]
+    plex.section.listFilterChoices.return_value = [NS(title="Kids")]
+    assert app.get("/panel/api/movies?label=Kids").json["movies"][0]["title"] == "The Matrix"
+    plex.section.search.assert_called_once_with(label="Kids", sort="titleSort")
+    assert app.get("/panel/api/filters").json == {"collections": [{"title": "noir", "count": 0},
+                                                                  {"title": "Pixar", "count": 10}], "labels": ["Kids"]}

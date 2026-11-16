@@ -52,6 +52,43 @@ export interface Movie {
   title: string;
   year: number | null;
   url: string;
+  /** IDs of the cards linked to it */
+  cards: string[];
+}
+
+export interface Card {
+  uid: string;
+  key: string;
+  title: string;
+  linked: number;
+}
+
+export interface ScanMovie {
+  key: string;
+  title: string;
+}
+
+export interface Scan {
+  index: number;
+  total: number;
+  linked: number;
+  current: ScanMovie | null;
+  next: ScanMovie | null;
+  done: boolean;
+  last: { uid: string; title: string; key: string; moved_from: string | null; at: number } | null;
+}
+
+export interface CardsState {
+  cards: Card[];
+  scan: Scan | null;
+  /** The last card read that isn't linked to a movie */
+  unknown: { uid: string; at: number } | null;
+}
+
+export interface Filters {
+  /** count: how many movies Plex has in it */
+  collections: { title: string; count: number | null }[];
+  labels: string[];
 }
 
 export interface Movies {

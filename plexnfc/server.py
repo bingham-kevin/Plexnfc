@@ -13,7 +13,8 @@ Routes
   /plex/server         JSON: the Plex server in use (found from the sign-in when PLEX_URL isn't set)
   /tv/...               the Marquee Apple TV app: pairing, inbox, status, library, search and play
                        (/tv/expected: Marquee pairs by itself on an Apple TV paired below)
-  /panel/api/...       the control panel (/): overview, movies, pairing, Apple TVs (needs pyatv)
+  /panel/api/...       the control panel (/): overview, movies, pairing, Apple TVs (needs pyatv),
+                       and cards linked to movies by their ID (see cards.py)
   /phone/...           the Marquee Remote phone app: which player this phone's taps go to
   /ha/...              the Marquee integration for Home Assistant: players, what they're playing, controls
   /poster/<key>        poster image (proxied so your Plex token stays private)
@@ -44,6 +45,7 @@ from flask import Flask, Response, abort, jsonify, request, send_from_directory
 from . import plexauth
 from .appletv import AppleTVError
 from .config import Config
+from .cards import normalize_uid
 from .plex import Plex, PlexNFCError, app_movie, movie_key
 
 PAGE = """<!doctype html>
@@ -414,13 +416,29 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
 
     @remote_route("/remote/tap", methods=["POST"])
     def remote_tap(remote):
-        """A tag the box read: its URL, from whichever address it was written with (only the
-        /m/KEY path and the tag's own ?client= and ?resume= count). Returns at once."""
-        url = urlsplit(str((request.get_json(silent=True) or {}).get("url", "")))
-        parts = url.path.strip("/").split("/")
-        if len(parts) != 2 or parts[0] != "m" or not parts[1]:
-            return jsonify(ok=False, message="Not a movie book tag"), 400
-        key, query = parts[1], parse_qs(url.query)
+        """A card or tag the box read: its ID (``uid``) and, if it has one written on it, its
+        URL. Returns at once.
+
+        During a card scan (started in the panel), the card is linked to the next movie
+        instead of playing anything. Otherwise a card linked to a movie plays it, and a
+        written tag plays the movie in its URL, from whichever address it was written with
+        (only the /m/KEY path and the tag's own ?client= and ?resume= count).
+        """
+        body = request.get_json(silent=True) or {}
+        uid = str(body.get("uid") or "")
+        if (scanned := plex.cards.scanned(uid)) is not None:
+            return jsonify(ok=True, scan=True, message=scanned["message"])
+        query: dict = {}
+        if card := plex.cards.movie(uid):
+            key = card["key"]
+        else:
+            url = urlsplit(str(body.get("url") or ""))
+            parts = url.path.strip("/").split("/")
+            if len(parts) != 2 or parts[0] != "m" or not parts[1]:
+                plex.cards.unknown = {"uid": normalize_uid(uid), "at": time.time()} if normalize_uid(uid) else None
+                return jsonify(ok=False, message="This card isn't linked to a movie.\n"
+                                                 "Link it in the control panel, under Cards."), 404
+            key, query = parts[1], parse_qs(url.query)
         movie = plex.find_movie(key)
         player = (query.get("client") or [remote["player"]])[0]
         resume = (query.get("resume") or [""])[0].lower() in ("1", "true", "yes")
@@ -723,12 +741,65 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
 
     @panel_route("/movies")
     def panel_movies():
-        movies = [{"key": movie_key(m), "title": m.title, "year": m.year,
-                   "url": f"{config.public_base_url}/m/{movie_key(m)}"}
-                  for m in plex.movies(request.args.get("collection") or None)]
+        cards = plex.cards.by_movie()
+        movies = [{"key": (key := movie_key(m)), "title": m.title, "year": m.year,
+                   "url": f"{config.public_base_url}/m/{key}", "cards": cards.get(key, [])}
+                  for m in plex.movies(request.args.get("collection") or None, request.args.get("label") or None)]
         controls = [{"action": a, "url": f"{config.public_base_url}/{a}"}
                     for a in ("pause", "play", "stop") + (("off",) if config.ha_off_script else ())]
         return jsonify(movies=movies, controls=controls)
+
+    @panel_route("/filters")
+    def panel_filters():
+        """Collections and labels to choose movies by."""
+        return jsonify(plex.movie_filters())
+
+    # ---- movie cards (see cards.py) ----
+
+    def cards_state():
+        unknown = plex.cards.unknown
+        if unknown and (time.time() - unknown["at"] > 600 or plex.cards.movie(unknown["uid"])):
+            unknown = plex.cards.unknown = None
+        return {"cards": plex.cards.all(), "scan": plex.cards.scan(), "unknown": unknown}
+
+    @panel_route("/cards")
+    def panel_cards():
+        """Every linked card, the scan in progress, and the last card read that isn't linked."""
+        return jsonify(cards_state())
+
+    @panel_route("/cards/scan", methods=["POST"])
+    def panel_scan_start():
+        """Start linking cards: the next cards read go to these movies, in order."""
+        try:
+            plex.cards.start_scan(panel_body().get("movies") or [])
+        except ValueError as e:
+            return jsonify(ok=False, message=str(e)), 400
+        return jsonify(ok=True, **cards_state())
+
+    @panel_route("/cards/scan/<any(skip, back, stop):action>", methods=["POST"])
+    def panel_scan_step(action):
+        if action == "stop":
+            plex.cards.stop_scan()
+        else:
+            plex.cards.move(1 if action == "skip" else -1)
+        return jsonify(ok=True, **cards_state())
+
+    @panel_route("/cards/link", methods=["POST"])
+    def panel_card_link():
+        """Link one card (by its ID, such as the last unknown card read) to a movie."""
+        body = panel_body()
+        movie = plex.find_movie(str(body.get("key", "")))
+        try:
+            plex.cards.link(str(body.get("uid", "")), body["key"], movie.title)
+        except ValueError as e:
+            return jsonify(ok=False, message=str(e)), 400
+        return jsonify(ok=True, **cards_state())
+
+    @panel_route("/cards/<uid>/remove", methods=["POST"])
+    def panel_card_remove(uid):
+        if not plex.cards.remove(uid):
+            return jsonify(ok=False, message="That card isn't linked"), 404
+        return jsonify(ok=True, **cards_state())
 
     @panel_route("/play", methods=["POST"])
     def panel_play():

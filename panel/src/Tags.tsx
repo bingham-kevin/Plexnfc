@@ -10,7 +10,7 @@ import {
 } from "@tanstack/react-table";
 import { useMemo, useState } from "react";
 import { posterURL, type Movie, type Overview } from "./api";
-import { useAction, useMovies, usePlayers } from "./hooks";
+import { useAction, useCardAction, useMovies, usePlayers } from "./hooks";
 import { useToast } from "./toast";
 
 const column = createColumnHelper<Movie>();
@@ -31,6 +31,8 @@ export function Tags({ overview }: { overview: Overview }) {
   const [player, setPlayer] = useState("");
   const players = usePlayers();
   const toast = useToast();
+  // One movie's card: a scan of just that movie, on the Cards tab
+  const linkCard = useCardAction<Movie>(() => "cards/scan", (m) => ({ movies: [{ key: m.key, title: m.title }] }));
   const play = useAction<Movie>(() => "play", (m) => ({ key: m.key, player: player || null }),
                                 (m) => `Starting ${m.title}`);
 
@@ -72,13 +74,20 @@ export function Tags({ overview }: { overview: Overview }) {
           <button onClick={() => copy(row.original.url)}>Copy</button>
           {canWriteTags && <button onClick={() => write(row.original.url)}>Write tag</button>}
           {overview.can_manage && (
+            <button disabled={linkCard.isPending} title={row.original.cards.length
+                      ? `Has card ${row.original.cards.join(", ")}` : "Link a blank card with a Movie Remote"}
+                    onClick={() => linkCard.mutate(row.original, { onSuccess: () => { location.hash = "cards"; } })}>
+              {row.original.cards.length ? "✓ Card" : "Link card"}
+            </button>
+          )}
+          {overview.can_manage && (
             <button className="primary" disabled={play.isPending} onClick={() => play.mutate(row.original)}
                     title="Start it, as tapping the tag would">▶ Try</button>
           )}
         </div>
       ),
     }),
-  ], [overview.can_manage, play.isPending, player]);
+  ], [overview.can_manage, play.isPending, linkCard.isPending, player]);
 
   const table = useReactTable({
     data: movies.data?.movies ?? [],

@@ -80,6 +80,18 @@ For each movie in `out/tags.csv`:
 
 If you serve plexnfc over HTTPS, Chrome on Android gets a **Write tag** button on `/tags`, which makes this step much faster.
 
+### Or link blank cards, for the Movie Remote
+
+With a [Movie Remote](esphome/README.md), nothing has to be written on the cards. Every NFC card has a fixed ID, and Marquee Server keeps a list of which ID plays which movie:
+
+1. In the control panel, open **Cards** and choose the movies: a Plex **collection**, a **label**, or **Pick movies** by hand. Leave **Skip movies that already have a card** on to fill in only the ones that are missing.
+2. Tap **Scan cards**. The first movie comes up; hold a blank card on the Movie Remote. The card is linked, and the next movie comes up. **Skip** and **Back** move through the list.
+3. Stick each card onto its movie's page as you go.
+
+To link one card, use **Link card** next to the movie under **Tags**. If the Movie Remote reads a card that isn't linked, the **Cards** page offers to link it. While a scan is going, cards held on a Movie Remote are linked instead of played.
+
+Phones can't read these cards on their own, since there's no address on them. For phones, write the tag URLs as above; a written tag works on the Movie Remote too.
+
 Put the stickers on the **back** of the page, or between pages in a page protector, so they don't show. One sheet of paper between the phone and the tag is fine. Don't stack tags directly on top of each other on facing pages; offset them, or give every other page a blank backing.
 
 ## Optional: Home Assistant

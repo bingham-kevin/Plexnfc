@@ -1,6 +1,6 @@
 # Movie Remote (ESP32 touchscreen + NFC reader)
 
-A small box that sits next to the TV. Hold a page of the movie book to it and the movie starts on your Marquee player. The screen shows the poster of what's playing, its progress, and touch buttons: back 30 s, play/pause, forward 30 s and stop.
+A small box that sits next to the TV. Hold a page of the movie book to it and the movie starts on your Marquee player. The pages can carry blank NFC cards linked to their movies in the control panel, or tags written with the movie's address. The screen shows the poster of what's playing, its progress, and touch buttons: back 30 s, play/pause, forward 30 s and stop.
 
 The box pairs with Marquee Server the way Marquee does. Until you approve it, it can't start or control anything, and if you remove it in the control panel it goes back to asking to pair.
 
@@ -71,7 +71,7 @@ The setup page is in `components/movie_portal`. It takes over from ESPHome's bui
 - **Touch is off target (Hosyond)**: run `esphome logs movie-remote.yaml`, tap the four corners, and copy the raw x/y values from the log into `calibration`. The CrowPanel's capacitive touch needs no calibration.
 - **CrowPanel screen flickers or shifts**: the build uses its own copy of ESPHome's screen driver (`components/mipi_rgb`), set up as Elecrow's driver is (16-line bounce buffers, 64-byte DMA bursts), with a 32 KB instruction cache so Wi-Fi isn't slowed by the screen's memory traffic. With ESPHome's stock driver, part of the picture slips down while the screen redraws. After updating ESPHome, copy its new `mipi_rgb` into `components/` and make the same change.
 - **Tags aren't read**: check the PN532's I2C switches and its four wires, and that the I2C scan at start finds a device at `0x24`. If the reader stops answering after you rewire it, unplug the box's USB for a few seconds.
-- **"Not a movie book tag"**: the tag's URL must contain `/m/` and a movie, as the book's tags do. Tags written for any address work: the box sends only the movie.
+- **"This card isn't linked to a movie"**: link it on the control panel's **Cards** page, which offers the card the box just read. Tags written with a movie's URL (containing `/m/`) need no linking; tags written for any address work, since the box sends only the movie.
 
 ## Building it into a stand
 
@@ -82,7 +82,7 @@ Don't leave the book lying flat on the reader. With many tags stacked in range, 
 ## How it works
 
 - **Pairing:** the box asks for a code with `POST /tv/pair` (`kind: remote`), then checks `/tv/pair/<id>` until you approve it. It keeps the secret it's given in flash and sends it with every request.
-- **Tags:** when it reads a tag, it sends the tag's URL to `POST /remote/tap`. Marquee Server plays the movie on the box's player and answers at once. Meanwhile the screen shows "Starting…" with the poster.
+- **Cards and tags:** when it reads a card, it sends the card's ID, and the URL written on it if any, to `POST /remote/tap`. Marquee Server plays the movie linked to that card (or the one in the URL) on the box's player and answers at once. Meanwhile the screen shows "Starting…" with the poster. During a card scan from the control panel's **Cards** page, the card is linked to the next movie instead, and the screen shows which movie it was linked to and which comes next.
 - **The screen:** every 2 seconds the box asks `/remote/now` what its player is playing.
 - **Posters:** they come from `/poster/<key>?w=…&h=…` (240×360 on the CrowPanel, 96×144 on the Hosyond), resized and re-encoded as baseline JPEGs that the ESP32 can decode.
 - **The buttons:** they call `POST /remote/control` with `toggle`, `seek` or `stop`.

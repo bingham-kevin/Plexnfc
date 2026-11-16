@@ -111,7 +111,26 @@ marquee_link:
             lv_obj_remove_flag(id(poster_img), LV_OBJ_FLAG_HIDDEN);
           }
         } else if (tag == "tap") {
-          id(marquee).request("now", "GET", "/remote/now");
+          if (status == 202) {
+            id(marquee).request("now", "GET", "/remote/now");  // it's starting
+            return;
+          }
+          // Anything else is a message for the screen: a card linked during a scan, or a
+          // card that isn't linked to a movie
+          std::string message = status < 0 ? "Can't reach Marquee Server" : "";
+          bool scan = false;
+          if (status > 0) {
+            json::parse_json(body, [&message, &scan](JsonObject root) -> bool {
+              message = root["message"] | "";
+              scan = root["scan"] | false;
+              return true;
+            });
+          }
+          if (message.empty()) message = "That card didn't work";
+          id(now_state) = "notice";
+          id(now_message) = message;
+          id(hold_until) = millis() + (scan ? 4000 : 6000);  // until the screen goes back
+          id(render).execute();
         } else if (tag == "unpair") {
           id(factory_reset_btn).press();
         }
@@ -307,13 +326,15 @@ script:
             if (!id(backlight).current_values.is_on()) id(backlight).turn_on().perform();
           };
           const std::string &s = id(now_state);
-          bool waiting = s == "idle" || s == "offline" || s == "connecting" || s == "pairing" || s == "joining";
+          bool waiting = s == "idle" || s == "offline" || s == "connecting" || s == "pairing" || s == "joining" ||
+                         s == "notice";
 
           if (waiting) {
             for (lv_obj_t *obj : {id(poster_img), id(title_lbl), id(info_lbl), id(progress), id(time_lbl), id(controls)})
               show(obj, false);
             std::string text;
             if (s == "connecting") text = "Connecting...";
+            else if (s == "notice") text = id(now_message);
             else if (s == "joining") text = "Joining " + id(wifi_choice) + "...";
             else if (s == "offline") text = "Can't reach Marquee Server\n${marquee_url}";
             else if (s == "pairing") text = "Pair with Marquee\n\nApprove this code in\nthe control panel";
@@ -538,6 +559,8 @@ pn532_i2c:
   on_tag:
     then:
       - lambda: |-
+          // Cards are linked to movies by their ID in Marquee Server; tags written with a
+          // movie's address also work
           id(tag_url) = "";
           if (!tag.has_ndef_message()) return;
           for (auto &record : tag.get_ndef_message()->get_records()) {
@@ -549,13 +572,14 @@ pn532_i2c:
           }
       - if:
           condition:
-            lambda: 'return !id(tag_url).empty() && !id(secret).state.empty();'
+            lambda: 'return !id(secret).state.empty();'
           then:
             - light.turn_on: backlight
             - lambda: |-
-                ESP_LOGI("tag", "Read %s", id(tag_url).c_str());
+                ESP_LOGI("tag", "Read card %s %s", x.c_str(), id(tag_url).c_str());
                 id(hold_until) = 0;
                 id(marquee).request("tap", "POST", "/remote/tap",
-                                 "{\"url\": " + marquee_link::MarqueeLink::quote(id(tag_url)) + "}", false);
+                                 "{\"uid\": " + marquee_link::MarqueeLink::quote(x) +
+                                 ", \"url\": " + marquee_link::MarqueeLink::quote(id(tag_url)) + "}", false);
           else:
-            - logger.log: "Not a movie book tag, or the box isn't paired yet"
+            - logger.log: "The box isn't paired yet"
