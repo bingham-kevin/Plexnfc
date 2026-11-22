@@ -9,6 +9,7 @@ from plexapi.exceptions import NotFound
 from plexnfc.cards import Cards, normalize_uid
 from plexnfc.config import Config
 from plexnfc.plex import Plex, PlexNFCError, movie_key
+from plexnfc.sources import Library
 from plexnfc.server import create_app
 
 CONFIG = Config("http://plex:32400", "tok", "Movies", "Living Room", "http://nfc.local:8080", True)
@@ -31,8 +32,11 @@ def plex(tmp_path):
     server.client.side_effect = lambda n: client if n == "Living Room" else (_ for _ in ()).throw(NotFound())
     server.myPlexAccount.return_value.resource.side_effect = NotFound()
     server.clients.return_value = [client]
-    p = Plex(CONFIG, server=server)
+    from dataclasses import replace
+    # A copy: signing out (set_token) changes the config, which mustn't reach other tests
+    p = Plex(replace(CONFIG), server=server)
     p.cards = Cards(str(tmp_path / "movie_cards.json"))
+    p.library = Library(p, str(tmp_path))
     p._movie, p._client = movie, client
     return p
 
@@ -321,7 +325,7 @@ def test_control_panel_is_served_with_relative_addresses(plex):
     # the tag list, and trying a tag from the panel
     movies = app.get("/panel/api/movies").json
     assert movies["movies"] == [{"key": "tmdb-603", "title": "The Matrix", "year": 1999,
-                                 "url": "http://nfc.local:8080/m/tmdb-603", "cards": []}]
+                                 "url": "http://nfc.local:8080/m/tmdb-603", "cards": [], "source": "Plex", "sources": ["Plex"]}]
     assert [c["action"] for c in movies["controls"]] == ["pause", "play", "stop"]
     assert app.post("/panel/api/play", json={"key": "tmdb-603"}, environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
     with mock.patch("plexnfc.server.threading.Thread") as thread:
@@ -1476,7 +1480,8 @@ def test_panel_chooses_movies_by_label_and_lists_filters(plex):
     assert app.get("/panel/api/movies?label=Kids").json["movies"][0]["title"] == "The Matrix"
     plex.section.search.assert_called_once_with(label="Kids", sort="titleSort")
     assert app.get("/panel/api/filters").json == {"collections": [{"title": "noir", "count": 0},
-                                                                  {"title": "Pixar", "count": 10}], "labels": ["Kids"]}
+                                                                  {"title": "Pixar", "count": 10}], "labels": ["Kids"],
+                                                    "sources": []}
 
 
 def test_box_text():

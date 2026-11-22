@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { posterURL, type CardsState, type Movie, type Overview, type Scan } from "./api";
 import { useCardAction, useCards, useFilters, useMovies } from "./hooks";
 
-type Source = "collection" | "label" | "manual";
+type Source = "collection" | "label" | "source" | "manual";
 
 /** Blank NFC cards linked to movies by their ID: nothing is written on the cards. Choose the
  * movies, start a scan, and hold each movie's card on a Movie Remote in turn. */
@@ -30,15 +30,19 @@ function ScanSetup({ canManage }: { canManage: boolean }) {
   const [source, setSource] = useState<Source>("collection");
   const [collection, setCollection] = useState("");
   const [label, setLabel] = useState("");
+  const [from, setFrom] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [skipLinked, setSkipLinked] = useState(true);
   const filters = useFilters();
-  const movies = useMovies(source === "collection" ? collection : "", source === "label" ? label : "");
+  const movies = useMovies(source === "collection" ? collection : "", source === "label" ? label : "",
+                           source === "source" ? from : "");
   const start = useCardAction<Movie[]>(() => "cards/scan",
-                                       (list) => ({ movies: list.map((m) => ({ key: m.key, title: m.title })) }));
+                                       (list) => ({ movies: list.map((m) => ({ key: m.key, title: m.title, year: m.year })) }));
 
-  const chosenFilter = source === "collection" ? collection : source === "label" ? label : "manual";
+  const chosenFilter = { collection, label, source: from, manual: "manual" }[source];
+  const choices = (["collection", "label", "source", "manual"] as const)
+    .filter((s) => s !== "source" || !!filters.data?.sources.length);
   const all = movies.data?.movies ?? [];
   const queue = useMemo(() => {
     if (!chosenFilter) return [];
@@ -64,10 +68,10 @@ function ScanSetup({ canManage }: { canManage: boolean }) {
 
       <div className="toolbar">
         <div className="segmented" role="radiogroup" aria-label="Choose movies by">
-          {(["collection", "label", "manual"] as const).map((s) => (
+          {choices.map((s) => (
             <button key={s} role="radio" aria-checked={source === s} className={source === s ? "on" : ""}
                     onClick={() => setSource(s)}>
-              {{ collection: "Collection", label: "Label", manual: "Pick movies" }[s]}
+              {{ collection: "Collection", label: "Label", source: "Source", manual: "Pick movies" }[s]}
             </button>
           ))}
         </div>
@@ -87,13 +91,20 @@ function ScanSetup({ canManage }: { canManage: boolean }) {
             {filters.data?.labels.map((l) => <option key={l} value={l}>{l}</option>)}
           </select>
         )}
+        {source === "source" && (
+          <select value={from} onChange={(e) => setFrom(e.target.value)} aria-label="Source">
+            <option value="">Choose a source</option>
+            {filters.data?.sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        )}
         <label className="row">
           <input type="checkbox" checked={skipLinked} onChange={(e) => setSkipLinked(e.target.checked)} />
           Skip movies that already have a card
         </label>
       </div>
-      {source !== "manual" && filters.data && !filters.data[source === "label" ? "labels" : "collections"].length && (
-        <p className="muted">Your Plex library has no {source === "label" ? "labels" : "collections"}.</p>
+      {(source === "collection" || source === "label") && filters.data
+        && !filters.data[source === "label" ? "labels" : "collections"].length && (
+        <p className="muted">Your library has no {source === "label" ? "labels" : "collections"}.</p>
       )}
 
       {source === "manual" && (

@@ -7,6 +7,8 @@ export interface PlayerStatus {
   state: "playing" | "paused";
   title?: string;
   key?: string;
+  /** The source it's playing from ("Plex", or a Jellyfin server's or folder's name), if this server started it */
+  source?: string | null;
   position?: number;
   duration?: number;
 }
@@ -54,6 +56,10 @@ export interface Movie {
   url: string;
   /** IDs of the cards linked to it */
   cards: string[];
+  /** Where it comes from: "Plex", or Jellyfin servers' or folders' names, joined */
+  source: string;
+  /** Every source that has it, in the order they're used */
+  sources: string[];
 }
 
 export interface Card {
@@ -66,6 +72,7 @@ export interface Card {
 export interface ScanMovie {
   key: string;
   title: string;
+  year?: number | null;
 }
 
 export interface Scan {
@@ -86,9 +93,42 @@ export interface CardsState {
 }
 
 export interface Filters {
-  /** count: how many movies Plex has in it */
+  /** count: how many movies it holds */
   collections: { title: string; count: number | null }[];
   labels: string[];
+  /** The places movies come from, when there's more than one ("plex", or a source's ID) */
+  sources: { id: string; name: string }[];
+}
+
+export interface Source {
+  id: string;
+  kind: "jellyfin" | "folder";
+  name: string;
+  /** Why its movies couldn't be read last time, if they couldn't */
+  error: string | null;
+  /** How many movies it has, once read */
+  count: number | null;
+  url?: string;
+  library?: string;
+  /** The Jellyfin user signed in as, if not an API key */
+  user?: string | null;
+  path?: string;
+}
+
+export interface PlexSource {
+  id: "plex";
+  kind: "plex";
+  enabled: boolean;
+  signed_in: boolean;
+  library: string;
+}
+
+export interface Sources {
+  plex: PlexSource;
+  sources: Source[];
+  /** Source IDs ("plex" for Plex) in the order movies play from them */
+  order: string[];
+  ordered: (PlexSource | Source)[];
 }
 
 export interface Movies {

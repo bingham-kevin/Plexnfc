@@ -26,13 +26,14 @@ export function Tags({ overview }: { overview: Overview }) {
   const [collection, setCollection] = useState("");
   const [typed, setTyped] = useState("");
   const movies = useMovies(collection);
+  const manySources = new Set(movies.data?.movies.map((m) => m.source)).size > 1;
   const [filter, setFilter] = useState("");
   const [sorting, setSorting] = useState<SortingState>([{ id: "title", desc: false }]);
   const [player, setPlayer] = useState("");
   const players = usePlayers();
   const toast = useToast();
   // One movie's card: a scan of just that movie, on the Cards tab
-  const linkCard = useCardAction<Movie>(() => "cards/scan", (m) => ({ movies: [{ key: m.key, title: m.title }] }));
+  const linkCard = useCardAction<Movie>(() => "cards/scan", (m) => ({ movies: [{ key: m.key, title: m.title, year: m.year }] }));
   const play = useAction<Movie>(() => "play", (m) => ({ key: m.key, player: player || null }),
                                 (m) => `Starting ${m.title}`);
 
@@ -61,6 +62,7 @@ export function Tags({ overview }: { overview: Overview }) {
     }),
     column.accessor("title", { header: "Title", cell: (c) => <b>{c.getValue()}</b> }),
     column.accessor("year", { header: "Year", cell: (c) => c.getValue() ?? "—", sortUndefined: "last" }),
+    ...(manySources ? [column.accessor("source", { header: "Source", cell: (c) => c.getValue() })] : []),
     column.accessor("url", {
       header: "Tag address",
       enableSorting: false,
@@ -87,7 +89,7 @@ export function Tags({ overview }: { overview: Overview }) {
         </div>
       ),
     }),
-  ], [overview.can_manage, play.isPending, linkCard.isPending, player]);
+  ], [overview.can_manage, play.isPending, linkCard.isPending, player, manySources]);
 
   const table = useReactTable({
     data: movies.data?.movies ?? [],
@@ -97,7 +99,7 @@ export function Tags({ overview }: { overview: Overview }) {
     onSortingChange: setSorting,
     globalFilterFn: (row, _id, value: string) => {
       const m = row.original;
-      return `${m.title} ${m.year ?? ""} ${m.key}`.toLowerCase().includes(value.toLowerCase());
+      return `${m.title} ${m.year ?? ""} ${m.key} ${m.source}`.toLowerCase().includes(value.toLowerCase());
     },
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -119,8 +121,8 @@ export function Tags({ overview }: { overview: Overview }) {
         <input type="search" placeholder="Search titles" value={filter} onChange={(e) => setFilter(e.target.value)}
                aria-label="Search titles" />
         <form className="row" onSubmit={(e) => { e.preventDefault(); setCollection(typed.trim()); }}>
-          <input placeholder="Plex collection (all movies)" value={typed} onChange={(e) => setTyped(e.target.value)}
-                 aria-label="Plex collection" />
+          <input placeholder="Collection (all movies)" value={typed} onChange={(e) => setTyped(e.target.value)}
+                 aria-label="Collection" />
           <button>Show</button>
         </form>
         {overview.can_manage && (

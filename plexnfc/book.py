@@ -26,6 +26,7 @@ import requests
 
 from .config import Config
 from .plex import Plex, movie_key
+from .sources import SourceMovie
 
 # The look follows the Marquee app: a vintage movie theater, in print. Colors are
 # ink-friendly on white paper; print with "Background graphics" on.
@@ -290,6 +291,9 @@ def build(plex: Plex, base_url: str, layout: str, title: str, collection: str | 
 
     def embed(movie):
         print(f"[{next(count)}/{len(movies)}] {movie.title}")
+        if isinstance(movie, SourceMovie):  # Jellyfin or a folder: its poster, or a placeholder
+            data, mime = plex.library.poster(movie, 1200, 1800)
+            return f"data:{mime};base64,{base64.b64encode(data).decode()}"
         return data_uri(plex.poster_url(movie, 1200, 1800))
 
     html = render_html(plex, base_url, movies, layout, title, qr, page_size, poster_src=embed)
@@ -302,8 +306,8 @@ def build(plex: Plex, base_url: str, layout: str, title: str, collection: str | 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build a printable NFC movie poster book from Plex")
-    parser.add_argument("--collection", help="only include movies in this Plex collection")
+    parser = argparse.ArgumentParser(description="Build a printable NFC movie poster book from Plex, Jellyfin and movie folders")
+    parser.add_argument("--collection", help="only include movies in this collection")
     parser.add_argument("--layout", choices=LAYOUTS, default="full", help="full = 1 per page, grid = 4 per page")
     parser.add_argument("--title", default="Movie Night")
     parser.add_argument("--page-size", default="letter", choices=PAPER, type=str.lower, help="paper size")

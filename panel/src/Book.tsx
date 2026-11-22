@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Overview } from "./api";
+import { useFilters } from "./hooks";
 
 /** The printable movie book. It opens in a new tab at the tag address, since Home Assistant's
  * sidebar won't serve a page opened outside it. */
@@ -9,7 +10,9 @@ export function Book({ overview }: { overview: Overview }) {
   const [layout, setLayout] = useState("full");
   const [paper, setPaper] = useState("letter");
   const [qr, setQr] = useState(true);
-  const query = new URLSearchParams({ title, collection, layout, page_size: paper, qr: qr ? "1" : "0" });
+  const [source, setSource] = useState("");
+  const filters = useFilters();
+  const query = new URLSearchParams({ title, collection, source, layout, page_size: paper, qr: qr ? "1" : "0" });
   const url = `${overview.tag_address}/book?${query}`;
 
   return (
@@ -18,8 +21,19 @@ export function Book({ overview }: { overview: Overview }) {
       <div className="book">
         <form className="fields" onSubmit={(e) => { e.preventDefault(); open(url, "_blank"); }}>
           <label>Title <input value={title} onChange={(e) => setTitle(e.target.value)} /></label>
-          <label>Plex collection <input value={collection} placeholder="All movies"
-                                        onChange={(e) => setCollection(e.target.value)} /></label>
+          <label>Collection <input value={collection} placeholder="All movies" list="book-collections"
+                                   onChange={(e) => setCollection(e.target.value)} /></label>
+          <datalist id="book-collections">
+            {filters.data?.collections.map((c) => <option key={c.title} value={c.title} />)}
+          </datalist>
+          {!!filters.data?.sources.length && (
+            <label>From
+              <select value={source} onChange={(e) => setSource(e.target.value)}>
+                <option value="">Every source</option>
+                {filters.data.sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </label>
+          )}
           <label>Layout
             <select value={layout} onChange={(e) => setLayout(e.target.value)}>
               <option value="full">1 poster per page</option>

@@ -5,6 +5,7 @@ import { Cards } from "./Cards";
 import { Devices, PairingRequests } from "./Devices";
 import { useAction, useOverview } from "./hooks";
 import { NowPlaying } from "./NowPlaying";
+import { Sources } from "./Sources";
 import { Tags } from "./Tags";
 
 const TABS = [
@@ -13,6 +14,7 @@ const TABS = [
   { id: "tags", label: "Tags" },
   { id: "cards", label: "Cards" },
   { id: "book", label: "Book" },
+  { id: "sources", label: "Sources" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -84,6 +86,7 @@ export default function App() {
           {tab === "tags" && <Tags overview={data} />}
           {tab === "cards" && <Cards overview={data} />}
           {tab === "book" && <Book overview={data} />}
+          {tab === "sources" && <Sources overview={data} />}
         </main>
       )}
     </div>
@@ -107,7 +110,7 @@ function Status() {
     <section className="card">
       <h2>Server</h2>
       <dl className="facts">
-        <dt>Plex</dt>
+        <dt>Plex <a className="muted" href="#sources" title="Plex, Jellyfin and folders">· sources</a></dt>
         <dd>
           {data.plex.signed_in ? (
             <>

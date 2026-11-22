@@ -17,6 +17,10 @@ ingress: true
 # Bonjour (so the Marquee apps find plexnfc) needs the home network itself
 host_network: true
 ingress_port: 8080
+# Folder sources: Home Assistant's media (including network storage added for media) and share
+map:
+  - media:ro
+  - share:ro
 panel_icon: mdi:filmstrip-box-multiple
 panel_title: Movie Book
 ports:

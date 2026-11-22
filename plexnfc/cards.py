@@ -69,14 +69,16 @@ class Cards:
                 out.setdefault(card["key"], []).append(uid)
         return out
 
-    def link(self, uid: str, key: str, title: str) -> str | None:
-        """Make the card play this movie. Returns the title it played before, if another."""
+    def link(self, uid: str, key: str, title: str, year: int | None = None) -> str | None:
+        """Make the card play this movie. Returns the title it played before, if another.
+        The title and year find the movie again if its key changes (in another source)."""
         uid = normalize_uid(uid)
         if uid is None:
             raise ValueError("That isn't a card ID")
         with self._lock:
             before = self._cards.get(uid)
-            self._cards[uid] = {"key": key, "title": title, "linked": int(time.time())}
+            self._cards[uid] = {"key": key, "title": title, "linked": int(time.time()),
+                                **({"year": int(year)} if year else {})}
             self._save()
         return before["title"] if before and before["key"] != key else None
 
@@ -91,7 +93,8 @@ class Cards:
 
     def start_scan(self, movies: list[dict]) -> dict:
         """Link the next cards read to these movies (``{"key", "title"}``), in order."""
-        movies = [{"key": str(m["key"]), "title": str(m.get("title") or m["key"])} for m in movies if m.get("key")]
+        movies = [{"key": str(m["key"]), "title": str(m.get("title") or m["key"]),
+                   **({"year": m["year"]} if isinstance(m.get("year"), int) else {})} for m in movies if m.get("key")]
         if not movies:
             raise ValueError("Choose at least one movie")
         with self._lock:
@@ -146,7 +149,7 @@ class Cards:
             if last and last.get("uid") == uid and last.get("result") == "linked":
                 return {"message": f"That card is {last['title']}.\nUse the next card.", "result": "repeat"}
             movie = s["movies"][s["index"]]
-        moved_from = self.link(uid, movie["key"], movie["title"])
+        moved_from = self.link(uid, movie["key"], movie["title"], movie.get("year"))
         with self._lock:
             if self._scan is not s:
                 return None  # stopped meanwhile; the card is linked all the same
