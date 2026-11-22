@@ -31,6 +31,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import io
+import json
 import logging
 import os
 import socket
@@ -47,6 +48,7 @@ from .appletv import AppleTVError
 from .config import Config
 from .cards import normalize_uid
 from .plex import Plex, PlexNFCError, app_movie, movie_key
+from .screen_text import box_json
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -403,12 +405,20 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                 if remote is None:
                     return jsonify(ok=False, message="This Movie Remote isn't paired"), 401
                 try:
-                    return fn(remote=remote, **kwargs)
+                    result = fn(remote=remote, **kwargs)
                 except PlexNFCError as e:
-                    return jsonify(ok=False, message=str(e)), 404
+                    result = jsonify(ok=False, message=str(e)), 404
+                return for_screen(result)
             wrapped.__name__ = fn.__name__
             return app.route(rule, **options)(wrapped)
         return decorator
+
+    def for_screen(result):
+        """A remote route's answer, with its text in characters the box's fonts have."""
+        response = app.make_response(result)
+        if response.is_json:
+            response.set_data(json.dumps(box_json(response.get_json()), separators=(",", ":")))
+        return response
 
     def player_label(player: str | None) -> str:
         player = player or plex.default_player() or ""
