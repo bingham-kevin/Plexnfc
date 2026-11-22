@@ -18,8 +18,8 @@ substitutions:
   poster_w: "240"
   poster_h: "360"
   wifi_name_width: "520"
-  # How loud the beeps are, 0-100%
-  sound_volume: 50%
+  # How loud the beeps are at first, 0-100 (then set on the settings screen)
+  sound_volume: "50"
 
 esphome:
   name: ${name}
@@ -68,6 +68,8 @@ esphome:
             ESP_LOGI("board", "Drawing buffer: 15 lines in internal RAM");
     - priority: -100
       then:
+        # The volume and mute chosen last time
+        - script.execute: apply_volume
         - script.execute: connect_box
 
 esp32:
@@ -219,6 +221,37 @@ lvgl:
             on_click:
               - script.execute: show_settings
 
+        # Mute: tap to mute or unmute; hold for a volume slider over the screen
+        - button:
+            id: mute_btn
+            align: TOP_RIGHT
+            x: -12
+            y: 8
+            width: 48
+            height: 48
+            radius: 24
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  id: mute_icon
+                  align: CENTER
+                  text_font: montserrat_24
+                  text_color: 0x9A9A9A
+                  text: "\uF028"
+            on_short_click:
+              - lambda: |-
+                  id(sound_muted) = !id(sound_muted);
+                  if (!id(sound_muted) && id(sound_volume) == 0) id(sound_volume) = 50;
+              - script.execute: apply_volume
+              - if:
+                  condition:
+                    lambda: 'return !id(sound_muted);'
+                  then:
+                    - script.execute: volume_sample
+            on_long_press:
+              - lvgl.widget.show: volume_popup
+              - script.execute: volume_popup_timer
+
         - label:
             id: idle_lbl
             align: CENTER
@@ -360,6 +393,56 @@ lvgl:
                     - script.execute: { id: send_control, action: stop, by: 0 }
 
     # Details on the left, brightness and actions on the right
+
+        # The volume slider shown by holding the mute button, over everything else
+        - obj:
+            id: volume_popup
+            align: TOP_RIGHT
+            x: -12
+            y: 64
+            width: 380
+            height: 72
+            radius: 16
+            bg_color: 0x262626
+            border_width: 1
+            border_color: 0x3A3A3A
+            shadow_width: 24
+            shadow_color: 0x000000
+            shadow_opa: 60%
+            pad_all: 0
+            scrollable: false
+            hidden: true
+            widgets:
+              - label:
+                  id: popup_icon
+                  align: LEFT_MID
+                  x: 18
+                  text_font: montserrat_24
+                  text_color: 0xE5A00D
+                  text: "\uF028"
+              - slider:
+                  id: volume_popup_slider
+                  align: LEFT_MID
+                  x: 66
+                  width: 280
+                  height: 14
+                  min_value: 0
+                  max_value: 100
+                  value: ${sound_volume}
+                  bg_color: 0x444444
+                  indicator:
+                    bg_color: 0xE5A00D
+                  knob:
+                    bg_color: 0xFFFFFF
+                    pad_all: 8
+                  on_value:
+                    - lambda: 'id(sound_volume) = x; id(sound_muted) = false;'
+                    - script.execute: apply_volume
+                    - script.execute: volume_popup_timer
+                  on_release:
+                    - script.execute: volume_sample
+                    - script.execute: volume_popup_timer
+
     - id: settings_page
       bg_color: 0x101010
       widgets:
@@ -420,10 +503,38 @@ lvgl:
                   id: backlight
                   brightness: !lambda 'return x / 100.0f;'
                   transition_length: 0s
+        - label:
+            align: TOP_LEFT
+            x: 450
+            y: 166
+            text_color: 0x9E9E9E
+            text: "Volume"
+        - slider:
+            id: volume_slider
+            align: TOP_LEFT
+            x: 460
+            y: 210
+            width: 290
+            height: 14
+            min_value: 0
+            max_value: 100
+            value: ${sound_volume}
+            bg_color: 0x333333
+            indicator:
+              bg_color: 0xE5A00D
+            knob:
+              bg_color: 0xFFFFFF
+              pad_all: 8
+            on_value:
+              - lambda: 'id(sound_volume) = x; id(sound_muted) = false;'
+              - script.execute: apply_volume
+            # A beep at the new volume
+            on_release:
+              - script.execute: volume_sample
         - button:
             align: TOP_LEFT
             x: 450
-            y: 200
+            y: 262
             width: 310
             height: 64
             radius: 14
@@ -436,7 +547,7 @@ lvgl:
         - button:
             align: TOP_LEFT
             x: 450
-            y: 284
+            y: 346
             width: 310
             height: 64
             radius: 14
@@ -640,21 +751,66 @@ speaker:
 rtttl:
   id: tones
   speaker: speaker_out
-  gain: ${sound_volume}
+  gain: ${sound_volume}%
+
+# The volume set on the settings screen, kept across restarts
+globals:
+  - id: sound_volume
+    type: int
+    restore_value: true
+    initial_value: ${sound_volume}
+  # Muted with the button at the top right; the volume is kept for unmuting
+  - id: sound_muted
+    type: bool
+    restore_value: true
+    initial_value: "false"
 
 # Sounds for taps and card scans (see common/movie-remote.yaml)
 script:
+  # Use the volume and mute, and show them on both sliders and the mute button
+  - id: apply_volume
+    then:
+      - lambda: |-
+          int level = id(sound_volume);
+          bool silent = id(sound_muted) || level == 0;
+          id(tones).set_gain(silent ? 0.0f : level / 100.0f);
+          for (lv_obj_t *slider : {id(volume_slider), id(volume_popup_slider)}) {
+            if (lv_slider_get_value(slider) != level) lv_slider_set_value(slider, level, LV_ANIM_OFF);
+          }
+          const char *icon = silent ? LV_SYMBOL_MUTE : level < 50 ? LV_SYMBOL_VOLUME_MID : LV_SYMBOL_VOLUME_MAX;
+          for (lv_obj_t *label : {id(mute_icon), id(popup_icon)}) {
+            if (strcmp(lv_label_get_text(label), icon) != 0) lv_label_set_text(label, icon);
+          }
+          lv_obj_set_style_text_color(id(mute_icon), silent ? lv_color_hex(0xFF8A80) : lv_color_hex(0x9A9A9A), 0);
+
+  # A beep at the new volume, after a slider is let go or sound is unmuted
+  - id: volume_sample
+    then:
+      - lambda: 'if (!id(sound_muted) && id(sound_volume) > 0) id(feedback)->execute(std::string("play"));'
+
+  # The hovering volume slider goes away a few seconds after it was last touched
+  - id: volume_popup_timer
+    mode: restart
+    then:
+      - delay: 4s
+      - lvgl.widget.hide: volume_popup
+
   - id: feedback
     mode: restart
     parameters:
       kind: string
     then:
-      - lambda: |-
-          uint8_t amp_on = 248;  // the helper chip's "turn the speaker on"
-          id(board_i2c)->write(0x30, &amp_on, 1);
-      - rtttl.play:
-          rtttl: !lambda |-
-            if (kind == "linked") return std::string("linked:d=16,o=6,b=180:c,e,g,2c7");  // rising: linked
-            if (kind == "play") return std::string("play:d=16,o=6,b=180:g,4c7");           // starting a movie
-            if (kind == "notice") return std::string("notice:d=16,o=6,b=180:e,p,e");       // already linked, or done
-            return std::string("error:d=8,o=5,b=160:e,4c");                                // a problem
+      - if:
+          # Muted, or the volume all the way down: no sound
+          condition:
+            lambda: 'return !id(sound_muted) && id(sound_volume) > 0;'
+          then:
+            - lambda: |-
+                uint8_t amp_on = 248;  // the helper chip's "turn the speaker on"
+                id(board_i2c)->write(0x30, &amp_on, 1);
+            - rtttl.play:
+                rtttl: !lambda |-
+                  if (kind == "linked") return std::string("linked:d=16,o=6,b=180:c,e,g,2c7");  // rising: linked
+                  if (kind == "play") return std::string("play:d=16,o=6,b=180:g,4c7");           // starting a movie
+                  if (kind == "notice") return std::string("notice:d=16,o=6,b=180:e,p,e");       // already linked, or done
+                  return std::string("error:d=8,o=5,b=160:e,4c");                                // a problem

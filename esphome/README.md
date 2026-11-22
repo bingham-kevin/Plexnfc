@@ -31,7 +31,7 @@ The PN532 goes on the board's I2C connector:
 
 On the CrowPanel, the reader shares the bus with the touch chip (0x5D), the clock (0x51) and the board's helper chip (0x30). The PN532 answers at 0x24, so they don't clash. The helper chip runs the backlight and the touch chip's reset, and the firmware wakes it at start-up.
 
-**A speaker (CrowPanel, optional):** plug a small 4–8 Ω speaker into the **SPK** connector, and the box beeps when a card plays a movie, rises when a scan links a card, double-beeps for a card that's already linked, and gives a low tone when something goes wrong. The speaker shares its pins (IO4/5/6) with the microSD slot through the board's DIP switch: if it stays silent, unplug the box and flip the switch to the audio position. Set the loudness with `sound_volume` at the top of `movie-remote-crowpanel.yaml`.
+**A speaker (CrowPanel, optional):** plug a small 4–8 Ω speaker into the **SPK** connector, and the box beeps when a card plays a movie, rises when a scan links a card, double-beeps for a card that's already linked, and gives a low tone when something goes wrong. The speaker shares its pins (IO4/5/6) with the microSD slot through the board's DIP switch: if it stays silent, unplug the box and flip the switch to the audio position. Tap the speaker button at the top right of the screen to mute or unmute; hold it for a volume slider over the screen, which goes away a few seconds after you let go. The **Volume** slider on the settings screen does the same (all the way down is silent); `sound_volume` at the top of `movie-remote-crowpanel.yaml` is where it starts.
 
 The CrowPanel's USB serial chip is a CH340K. Recent macOS has no driver for it: install WCH's CH34xVCPDriver (from wch-ic.com) and approve it in System Settings before flashing over USB.
 
@@ -61,7 +61,7 @@ No Wi-Fi network is written into the firmware. If the box doesn't know one, it o
 Tap the gear at the top left of the screen for:
 
 - **Network details:** the name the box is paired as, the server, the Wi-Fi network and its signal, the IP and MAC addresses, and the firmware version.
-- **Brightness.**
+- **Brightness**, and on the CrowPanel, **Volume**: the box beeps at the new volume when you let go.
 - **Change Wi-Fi:** lists the networks the box can see. Tap one, type its password on the on-screen keyboard and press the check key. The box joins it and keeps it. If the password is wrong, the box falls back to the Movie Remote hotspot after a minute.
 - **Reset to defaults:** the box tells Marquee Server to forget it, wipes its Wi-Fi and its pairing, and restarts into setup.
 
