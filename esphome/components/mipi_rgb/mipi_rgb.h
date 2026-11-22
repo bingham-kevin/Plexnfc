@@ -26,10 +26,7 @@ class MipiRgb : public display::Display {
   MipiRgb(int width, int height) : width_(width), height_(height) {}
   void setup() override;
 #ifdef USE_ESP32_VARIANT_ESP32S3
-  void loop() override {
-    if (this->handle_ != nullptr)
-      esp_lcd_rgb_panel_restart(this->handle_);
-  }
+  void loop() override;
 #endif
   void update() override;
   void fill(Color color) override;
@@ -100,6 +97,8 @@ class MipiRgb : public display::Display {
   uint16_t y_high_{0};
 
   esp_lcd_panel_handle_t handle_{};
+  uint32_t resyncs_logged_{0};
+  uint32_t resync_log_at_{0};
 };
 
 #ifdef USE_SPI

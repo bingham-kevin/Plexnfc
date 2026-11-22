@@ -31,7 +31,7 @@ The PN532 goes on the board's I2C connector:
 
 On the CrowPanel, the reader shares the bus with the touch chip (0x5D), the clock (0x51) and the board's helper chip (0x30). The PN532 answers at 0x24, so they don't clash. The helper chip runs the backlight and the touch chip's reset, and the firmware wakes it at start-up.
 
-**A speaker (CrowPanel, optional):** plug a small 4–8 Ω speaker into the **SPK** connector, and the box beeps when a card plays a movie, rises when a scan links a card, double-beeps for a card that's already linked, and gives a low tone when something goes wrong. The speaker shares its pins (IO4/5/6) with the microSD slot through the board's DIP switch: if it stays silent, unplug the box and flip the switch to the audio position. Set the loudness with `sound_volume` at the top of `movie-remote-crowpanel.yaml`.
+**A speaker (CrowPanel, optional):** plug a small 4–8 Ω speaker into the **SPK** connector, and the box beeps when a card plays a movie, rises when a scan links a card, double-beeps for a card that's already linked, and gives a low tone when something goes wrong. The speaker shares its pins (IO4/5/6) with the microSD slot through the board's DIP switch: if it stays silent, unplug the box and flip the switch to the audio position. Tap the speaker button at the top right of the screen to mute or unmute; hold it for a volume slider over the screen, which goes away a few seconds after you let go. The **Volume** slider on the settings screen does the same (all the way down is silent); `sound_volume` at the top of `movie-remote-crowpanel.yaml` is where it starts.
 
 The CrowPanel's USB serial chip is a CH340K. Recent macOS has no driver for it: install WCH's CH34xVCPDriver (from wch-ic.com) and approve it in System Settings before flashing over USB.
 
@@ -61,7 +61,7 @@ No Wi-Fi network is written into the firmware. If the box doesn't know one, it o
 Tap the gear at the top left of the screen for:
 
 - **Network details:** the name the box is paired as, the server, the Wi-Fi network and its signal, the IP and MAC addresses, and the firmware version.
-- **Brightness.**
+- **Brightness**, and on the CrowPanel, **Volume**: the box beeps at the new volume when you let go.
 - **Change Wi-Fi:** lists the networks the box can see. Tap one, type its password on the on-screen keyboard and press the check key. The box joins it and keeps it. If the password is wrong, the box falls back to the Movie Remote hotspot after a minute.
 - **Reset to defaults:** the box tells Marquee Server to forget it, wipes its Wi-Fi and its pairing, and restarts into setup.
 
@@ -71,7 +71,7 @@ The setup page is in `components/movie_portal`. It takes over from ESPHome's bui
 
 - **Colours are inverted**: set `invert_colors: true` under `display`.
 - **Touch is off target (Hosyond)**: run `esphome logs movie-remote.yaml`, tap the four corners, and copy the raw x/y values from the log into `calibration`. The CrowPanel's capacitive touch needs no calibration.
-- **CrowPanel screen flickers or shifts**: the build uses its own copy of ESPHome's screen driver (`components/mipi_rgb`), set up as Elecrow's driver is (16-line bounce buffers, 64-byte DMA bursts), with a 32 KB instruction cache so Wi-Fi isn't slowed by the screen's memory traffic. With ESPHome's stock driver, part of the picture slips down while the screen redraws. After updating ESPHome, copy its new `mipi_rgb` into `components/` and make the same change.
+- **CrowPanel screen flickers or shifts**: the build uses its own copy of ESPHome's screen driver (`components/mipi_rgb`), set up as Elecrow's driver is (16-line bounce buffers, 64-byte DMA bursts), with a 32 KB instruction cache so Wi-Fi isn't slowed by the screen's memory traffic. With ESPHome's stock driver, part of the picture slips down while the screen redraws. If the screen ever misses a refresh (for example while the box writes its settings to flash), the driver notices at the start of the next frame and puts the picture back in place (`bounce_resync.cpp`), so it doesn't stay shifted. After updating ESPHome, copy its new `mipi_rgb` into `components/` and make the same change.
 - **Tags aren't read**: check the PN532's I2C switches and its four wires, and that the I2C scan at start finds a device at `0x24`. If the reader stops answering after you rewire it, unplug the box's USB for a few seconds.
 - **"This card isn't linked to a movie"**: link it on the control panel's **Cards** page, which offers the card the box just read. Tags written with a movie's URL (containing `/m/`) need no linking; tags written for any address work, since the box sends only the movie.
 

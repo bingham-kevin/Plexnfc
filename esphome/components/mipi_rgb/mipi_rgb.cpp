@@ -1,5 +1,6 @@
 #if defined(USE_ESP32_VARIANT_ESP32S3) || defined(USE_ESP32_VARIANT_ESP32P4) || defined(USE_ESP32_VARIANT_ESP32S31)
 #include "mipi_rgb.h"
+#include "bounce_resync.h"
 #include "esphome/core/gpio.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
@@ -129,6 +130,24 @@ void MipiRgb::setup() {
   this->common_setup_();
 }
 
+#ifdef USE_ESP32_VARIANT_ESP32S3
+void MipiRgb::loop() {
+  if (this->handle_ != nullptr)
+    esp_lcd_rgb_panel_restart(this->handle_);
+  // Report frames the bounce buffers had to be put back in step, at most every 10 s
+  uint32_t now = millis();
+  if (now - this->resync_log_at_ >= 10000) {
+    this->resync_log_at_ = now;
+    uint32_t count = bounce_resync_count();
+    if (count != this->resyncs_logged_) {
+      ESP_LOGW(TAG, "Screen refresh fell behind and was put back in step (%u times since start)",
+               static_cast<unsigned>(count));
+      this->resyncs_logged_ = count;
+    }
+  }
+}
+#endif
+
 void MipiRgb::common_setup_() {
   esp_lcd_rgb_panel_config_t config{};
   config.flags.fb_in_psram = 1;
@@ -175,6 +194,11 @@ void MipiRgb::common_setup_() {
     err = esp_lcd_panel_reset(this->handle_);
   if (err == ESP_OK)
     err = esp_lcd_panel_init(this->handle_);
+#ifdef USE_ESP32_VARIANT_ESP32S3
+  // Movie Remote: put the bounce buffers back in step if an interrupt is lost (see bounce_resync.h)
+  if (err == ESP_OK)
+    bounce_resync_install(this->handle_, this->width_, this->height_, config.bounce_buffer_size_px);
+#endif
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "lcd setup failed: %s", esp_err_to_name(err));
     this->mark_failed(LOG_STR("lcd setup failed"));

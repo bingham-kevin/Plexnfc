@@ -1032,6 +1032,11 @@ def test_movie_remote_pairs_then_plays_on_its_player(plex):
     now = app.get("/remote/now", headers=box).json
     assert (now["state"], now["title"], now["player"], now["name"]) == ("playing", "The Matrix", "Den", "Den Remote")
 
+    # titles the box's fonts can't draw are made plain on the server: 8½ isn't "8☐"
+    app.post("/tv/status", json={"state": "playing", "key": "plex-1", "title": "8½", "position": 5,
+                                 "duration": 8160}, headers=den)
+    assert app.get("/remote/now", headers=box).json["title"] == "8 1/2"
+
     # the buttons control Den
     assert app.post("/remote/control", json={"action": "toggle"}, headers=box).json["ok"]
     assert app.get("/tv/inbox", headers=den).json["action"] == "pause"
@@ -1472,3 +1477,19 @@ def test_panel_chooses_movies_by_label_and_lists_filters(plex):
     plex.section.search.assert_called_once_with(label="Kids", sort="titleSort")
     assert app.get("/panel/api/filters").json == {"collections": [{"title": "noir", "count": 0},
                                                                   {"title": "Pixar", "count": 10}], "labels": ["Kids"]}
+
+
+def test_box_text():
+    from plexnfc.screen_text import box_json, box_text
+    assert box_text("8½") == "8 1/2"
+    assert box_text("½ Nelson") == "1/2 Nelson"
+    assert box_text("Amélie") == "Amelie"
+    assert box_text("Alien³") == "Alien3"
+    assert box_text("Mission: Impossible – Fallout") == "Mission: Impossible - Fallout"
+    assert box_text("Schindler’s List") == "Schindler's List"
+    assert box_text("“Wall·E”…") == '"Wall-E"...'
+    assert box_text("Æon Flux") == "AEon Flux"
+    assert box_text("Léon:\nThe Professional") == "Leon:\nThe Professional"
+    assert box_text("七人の侍 Seven Samurai") == "Seven Samurai"
+    assert box_text("Plain title") == "Plain title"
+    assert box_json({"title": "8½", "n": 3, "l": ["É"]}) == {"title": "8 1/2", "n": 3, "l": ["E"]}
