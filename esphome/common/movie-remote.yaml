@@ -112,20 +112,26 @@ marquee_link:
           }
         } else if (tag == "tap") {
           if (status == 202) {
+            id(feedback)->execute(std::string("play"));
             id(marquee).request("now", "GET", "/remote/now");  // it's starting
             return;
           }
           // Anything else is a message for the screen: a card linked during a scan, or a
           // card that isn't linked to a movie
           std::string message = status < 0 ? "Can't reach Marquee Server" : "";
+          std::string result;
           bool scan = false;
           if (status > 0) {
-            json::parse_json(body, [&message, &scan](JsonObject root) -> bool {
+            json::parse_json(body, [&message, &scan, &result](JsonObject root) -> bool {
               message = root["message"] | "";
               scan = root["scan"] | false;
+              result = root["result"] | "";
               return true;
             });
           }
+          // A sound for it, on a board with a speaker: linked, already linked or done, or a problem
+          id(feedback)->execute(std::string(!scan ? "error" : result == "linked" ? "linked"
+                                            : result == "unreadable" ? "error" : "notice"));
           if (message.empty()) message = "That card didn't work";
           id(now_state) = "notice";
           id(now_message) = message;

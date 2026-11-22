@@ -18,6 +18,8 @@ substitutions:
   poster_w: "240"
   poster_h: "360"
   wifi_name_width: "520"
+  # How loud the beeps are, 0-100%
+  sound_volume: 50%
 
 esphome:
   name: ${name}
@@ -617,3 +619,42 @@ lvgl:
                   text: "Reset"
             on_click:
               - script.execute: reset_box
+
+# The speaker, on the SPK connector: an NS4168 amplifier fed over I2S on IO4/5/6. Those
+# pins are shared with the microSD slot through the board's switches, so set the DIP
+# switch for I2S audio (see the README). The helper chip turns the amplifier on.
+i2s_audio:
+  - id: i2s_out
+    i2s_lrclk_pin: GPIO6
+    i2s_bclk_pin: GPIO5
+
+speaker:
+  - platform: i2s_audio
+    id: speaker_out
+    i2s_audio_id: i2s_out
+    dac_type: external
+    i2s_dout_pin: GPIO4
+    channel: mono
+    sample_rate: 16000
+
+rtttl:
+  id: tones
+  speaker: speaker_out
+  gain: ${sound_volume}
+
+# Sounds for taps and card scans (see common/movie-remote.yaml)
+script:
+  - id: feedback
+    mode: restart
+    parameters:
+      kind: string
+    then:
+      - lambda: |-
+          uint8_t amp_on = 248;  // the helper chip's "turn the speaker on"
+          id(board_i2c)->write(0x30, &amp_on, 1);
+      - rtttl.play:
+          rtttl: !lambda |-
+            if (kind == "linked") return std::string("linked:d=16,o=6,b=180:c,e,g,2c7");  // rising: linked
+            if (kind == "play") return std::string("play:d=16,o=6,b=180:g,4c7");           // starting a movie
+            if (kind == "notice") return std::string("notice:d=16,o=6,b=180:e,p,e");       // already linked, or done
+            return std::string("error:d=8,o=5,b=160:e,4c");                                // a problem

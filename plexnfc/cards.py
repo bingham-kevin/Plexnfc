@@ -126,7 +126,9 @@ class Cards:
     def scanned(self, uid: str) -> dict | None:
         """A card read during a scan: link it to the current movie and move on.
 
-        Returns what to show on the box (``{"message"}``), or None if no scan is going.
+        Returns what to show on the box (``{"message", "result"}``), or None if no scan is
+        going. ``result`` is ``linked``, ``repeat`` (the card just linked, read again),
+        ``done`` (every movie has its card) or ``unreadable``.
         """
         uid = normalize_uid(uid)
         with self._lock:
@@ -134,14 +136,15 @@ class Cards:
             if s is None:
                 return None
             if s["index"] >= len(s["movies"]):
-                return {"message": "All the cards are linked.\nStop the scan in the control panel."}
+                return {"message": "All the cards are linked.\nStop the scan in the control panel.",
+                        "result": "done"}
             last = s["last"]
             if uid is None:
-                return {"message": "Couldn't read that card's ID.\nTry it again."}
+                return {"message": "Couldn't read that card's ID.\nTry it again.", "result": "unreadable"}
             # The card that was just linked, read again (it was held there): don't link it to
             # the next movie as well
             if last and last.get("uid") == uid and last.get("result") == "linked":
-                return {"message": f"That card is {last['title']}.\nUse the next card."}
+                return {"message": f"That card is {last['title']}.\nUse the next card.", "result": "repeat"}
             movie = s["movies"][s["index"]]
         moved_from = self.link(uid, movie["key"], movie["title"])
         with self._lock:
@@ -156,4 +159,4 @@ class Cards:
         if moved_from:
             message += f"\n(was {moved_from})"
         message += f"\n\nNext: {upcoming}" if upcoming else "\n\nThat's the last one."
-        return {"message": message}
+        return {"message": message, "result": "linked"}

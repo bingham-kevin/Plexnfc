@@ -1384,9 +1384,11 @@ def test_bulk_scan_links_cards_in_order(tmp_path):
     scan = cards.start_scan(movies)
     assert (scan["index"], scan["total"], scan["current"]["title"], scan["next"]["title"]) == (0, 3, "One", "Two")
 
-    assert "Linked: One" in cards.scanned("04-00-00-01")["message"]
+    first = cards.scanned("04-00-00-01")
+    assert "Linked: One" in first["message"] and first["result"] == "linked"
     # the same card read again doesn't go on to the next movie
-    assert "Use the next card" in cards.scanned("04:00:00:01")["message"]
+    again = cards.scanned("04:00:00:01")
+    assert "Use the next card" in again["message"] and again["result"] == "repeat"
     assert cards.scan()["current"]["title"] == "Two"
     cards.move(1)  # skip Two
     assert cards.scan()["current"]["title"] == "Three"
@@ -1398,7 +1400,7 @@ def test_bulk_scan_links_cards_in_order(tmp_path):
     assert cards.movie("04-00-00-01")["key"] == "tmdb-3"
     done = cards.scan()
     assert done["done"] and done["linked"] == 2 and done["current"] is None
-    assert "All the cards are linked" in cards.scanned("04-00-00-02")["message"]
+    assert cards.scanned("04-00-00-02")["result"] == "done"
 
     # saved, and read back
     cards.link("04-00-00-02", "tmdb-1", "One")
@@ -1445,7 +1447,7 @@ def test_movie_remote_plays_linked_cards_and_links_them_in_a_scan(plex):
     assert scan["scan"]["current"]["title"] == "The Matrix"
     with mock.patch.object(plex, "play") as play:
         r = app.post("/remote/tap", json={"uid": "04-11-22-33-44-55-66", "url": ""}, headers=box)
-        assert r.json["scan"] and "Next: Reloaded" in r.json["message"]
+        assert r.json["scan"] and "Next: Reloaded" in r.json["message"] and r.json["result"] == "linked"
         assert app.post("/panel/api/cards/scan/skip", **panel).json["scan"]["done"]
         assert app.post("/panel/api/cards/scan/back", **panel).json["scan"]["current"]["title"] == "Reloaded"
         app.post("/remote/tap", json={"uid": "04-77-22-33-44-55-66"}, headers=box)

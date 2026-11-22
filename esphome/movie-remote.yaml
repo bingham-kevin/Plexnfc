@@ -575,3 +575,15 @@ lvgl:
                   text: "Reset"
             on_click:
               - script.execute: reset_box
+
+# Sounds for taps and card scans (see common/movie-remote.yaml). This board has no
+# speaker, so they're silent.
+script:
+  - id: feedback
+    parameters:
+      kind: string
+    then:
+      - logger.log:
+          format: "Sound: %s"
+          args: ["kind.c_str()"]
+          level: VERBOSE

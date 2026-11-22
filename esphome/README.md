@@ -31,6 +31,8 @@ The PN532 goes on the board's I2C connector:
 
 On the CrowPanel, the reader shares the bus with the touch chip (0x5D), the clock (0x51) and the board's helper chip (0x30). The PN532 answers at 0x24, so they don't clash. The helper chip runs the backlight and the touch chip's reset, and the firmware wakes it at start-up.
 
+**A speaker (CrowPanel, optional):** plug a small 4–8 Ω speaker into the **SPK** connector, and the box beeps when a card plays a movie, rises when a scan links a card, double-beeps for a card that's already linked, and gives a low tone when something goes wrong. The speaker shares its pins (IO4/5/6) with the microSD slot through the board's DIP switch: if it stays silent, unplug the box and flip the switch to the audio position. Set the loudness with `sound_volume` at the top of `movie-remote-crowpanel.yaml`.
+
 The CrowPanel's USB serial chip is a CH340K. Recent macOS has no driver for it: install WCH's CH34xVCPDriver (from wch-ic.com) and approve it in System Settings before flashing over USB.
 
 ## Flashing

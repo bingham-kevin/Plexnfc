@@ -427,7 +427,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         body = request.get_json(silent=True) or {}
         uid = str(body.get("uid") or "")
         if (scanned := plex.cards.scanned(uid)) is not None:
-            return jsonify(ok=True, scan=True, message=scanned["message"])
+            return jsonify(ok=True, scan=True, message=scanned["message"], result=scanned["result"])
         query: dict = {}
         if card := plex.cards.movie(uid):
             key = card["key"]
