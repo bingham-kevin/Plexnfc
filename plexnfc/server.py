@@ -19,6 +19,8 @@ Routes
   /ha/...              the Marquee integration for Home Assistant: players, what they're playing, controls
   /poster/<key>        poster image (proxied so your Plex token stays private)
                        ?w=200&h=300 returns a resized baseline JPEG (for the ESP32 screen)
+  /files/<key>/<token>/...  a folder source's movie file, or ffmpeg's HLS stream of it, for
+                       Marquee (the address is signed for that movie; see filestream.py)
 
 For the ESP32 remote (see esphome/):
   /m/<key>?async=1     start playback in the background and return immediately
@@ -41,7 +43,7 @@ from html import escape
 from urllib.parse import parse_qs, urlsplit
 
 import requests
-from flask import Flask, Response, abort, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
 
 from . import plexauth
 from .appletv import AppleTVError
@@ -49,6 +51,8 @@ from .config import Config
 from .cards import normalize_uid
 from .plex import Plex, PlexNFCError, app_movie, movie_key
 from .screen_text import box_json
+from .filestream import DIRECT_TYPES
+from .sources import SourceError, SourceMovie
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -564,7 +568,13 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         except PlexNFCError:
             abort(404)
         w, h = request.args.get("w", type=int), request.args.get("h", type=int)
-        if w and h and 16 <= w <= 2000 and 16 <= h <= 3000:
+        sized = bool(w and h and 16 <= w <= 2000 and 16 <= h <= 3000)
+        if isinstance(movie, SourceMovie):  # Jellyfin or a folder: its poster, or a placeholder
+            data, mime = plex.library.poster(movie, w if sized else None, h if sized else None)
+            if sized:
+                data, mime = resize_jpeg(data, w, h), "image/jpeg"
+            return Response(data, mimetype=mime, headers={"Cache-Control": "max-age=86400"})
+        if sized:
             r = requests.get(plex.poster_url(movie, w, h), timeout=15)
             return Response(resize_jpeg(r.content, w, h), mimetype="image/jpeg",
                             headers={"Cache-Control": "max-age=86400"})
@@ -572,10 +582,30 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         return Response(r.content, mimetype=r.headers.get("Content-Type", "image/jpeg"),
                         headers={"Cache-Control": "max-age=86400"})
 
+    @app.get("/files/<key>/<token>/movie<ext>")
+    def movie_file(key, token, ext):
+        """A folder movie's file, for Marquee (AVPlayer asks for it in ranges)."""
+        movie = plex.library.file_movie(key, token)
+        if movie is None or ext.lower() not in DIRECT_TYPES:
+            abort(404)
+        return send_file(movie.ref, mimetype=DIRECT_TYPES[ext.lower()], conditional=True, max_age=0)
+
+    @app.get("/files/<key>/<token>/hls/<stream_id>/<name>")
+    def movie_stream(key, token, stream_id, name):
+        """ffmpeg's HLS stream of a folder movie Marquee can't play as it is (MKV, AVI...)."""
+        if plex.library.file_movie(key, token) is None:
+            abort(404)
+        found = plex.library.files.hls_file(key, stream_id, name)
+        if found is None:
+            abort(404)
+        data, mime = found
+        return Response(data, mimetype=mime, headers={"Cache-Control": "no-cache" if name.endswith(".m3u8")
+                                                      else "max-age=3600"})
+
     @app.get("/tags")
     def tags():
         rows = []
-        for movie in plex.movies(request.args.get("collection")):
+        for movie in plex.movies(request.args.get("collection") or None):
             url = f"{config.public_base_url}/m/{movie_key(movie)}"
             rows.append(
                 f"<tr><td>{escape(movie.title)} ({movie.year or '?'})</td>"
@@ -605,7 +635,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         if layout not in LAYOUTS:
             abort(400)
         try:
-            movies = list(plex.movies(request.args.get("collection") or None))
+            movies = list(plex.movies(request.args.get("collection") or None, request.args.get("label") or None,
+                                      request.args.get("source") or None))
         except Exception as e:
             return page("Book", f'<h1 class="err">Couldn\'t load movies</h1><p>{escape(str(e))}</p>', 500)
         html = render_html(
@@ -753,8 +784,10 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     def panel_movies():
         cards = plex.cards.by_movie()
         movies = [{"key": (key := movie_key(m)), "title": m.title, "year": m.year,
-                   "url": f"{config.public_base_url}/m/{key}", "cards": cards.get(key, [])}
-                  for m in plex.movies(request.args.get("collection") or None, request.args.get("label") or None)]
+                   "url": f"{config.public_base_url}/m/{key}", "cards": cards.get(key, []),
+                   "source": m.source.name if isinstance(m, SourceMovie) else "Plex"}
+                  for m in plex.movies(request.args.get("collection") or None, request.args.get("label") or None,
+                                       request.args.get("source") or None)]
         controls = [{"action": a, "url": f"{config.public_base_url}/{a}"}
                     for a in ("pause", "play", "stop") + (("off",) if config.ha_off_script else ())]
         return jsonify(movies=movies, controls=controls)
@@ -763,6 +796,60 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     def panel_filters():
         """Collections and labels to choose movies by."""
         return jsonify(plex.movie_filters())
+
+    # ---- where movies come from: Plex, Jellyfin servers and folders (see sources.py) ----
+
+    @panel_route("/sources")
+    def panel_sources():
+        return jsonify(plex.library.public())
+
+    @panel_route("/sources", methods=["POST"])
+    def panel_source_add():
+        """Add a Jellyfin server (address, and an API key or a user name and password, which is
+        only passed on to Jellyfin to sign in) or a folder (its path on this server)."""
+        from .jellyfin import JellyfinError, sign_in
+
+        body = panel_body()
+        kind = body.get("kind")
+        settings = {"name": body.get("name") or None}
+        try:
+            if kind == "folder":
+                settings["path"] = str(body.get("path") or "")
+            elif kind == "jellyfin":
+                url = str(body.get("url") or "").strip().rstrip("/")
+                settings.update(url=url, library=str(body.get("library") or ""))
+                if body.get("username"):
+                    settings.update(sign_in(url, str(body["username"]), str(body.get("password") or "")))
+                else:
+                    settings["token"] = str(body.get("api_key") or "")
+            source = plex.library.add(kind, **settings)
+        except (SourceError, JellyfinError) as e:
+            return jsonify(ok=False, message=str(e)), 400
+        return jsonify(ok=True, source=source.public(), **plex.library.public())
+
+    @panel_route("/sources/<source_id>/refresh", methods=["POST"])
+    def panel_source_refresh(source_id):
+        """Read a source's movies again now (after adding files, say)."""
+        source = plex.library.source(source_id)
+        if source is None:
+            return jsonify(ok=False, message="That source isn't there"), 404
+        try:
+            count = len(source.movies(fresh=True))
+        except SourceError as e:
+            return jsonify(ok=False, message=str(e)), 400
+        return jsonify(ok=True, count=count, **plex.library.public())
+
+    @panel_route("/sources/<source_id>/remove", methods=["POST"])
+    def panel_source_remove(source_id):
+        if not plex.library.remove(source_id):
+            return jsonify(ok=False, message="That source isn't there"), 404
+        return jsonify(ok=True, **plex.library.public())
+
+    @panel_route("/sources/plex", methods=["POST"])
+    def panel_source_plex():
+        """Use Plex's movies or not (when there are other sources to use instead)."""
+        plex.library.set_plex(bool(panel_body().get("enabled")))
+        return jsonify(ok=True, **plex.library.public())
 
     # ---- movie cards (see cards.py) ----
 

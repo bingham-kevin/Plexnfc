@@ -54,6 +54,8 @@ export interface Movie {
   url: string;
   /** IDs of the cards linked to it */
   cards: string[];
+  /** Where it comes from: "Plex", or a Jellyfin server's or folder's name */
+  source: string;
 }
 
 export interface Card {
@@ -86,9 +88,31 @@ export interface CardsState {
 }
 
 export interface Filters {
-  /** count: how many movies Plex has in it */
+  /** count: how many movies it holds */
   collections: { title: string; count: number | null }[];
   labels: string[];
+  /** The places movies come from, when there's more than one ("plex", or a source's ID) */
+  sources: { id: string; name: string }[];
+}
+
+export interface Source {
+  id: string;
+  kind: "jellyfin" | "folder";
+  name: string;
+  /** Why its movies couldn't be read last time, if they couldn't */
+  error: string | null;
+  /** How many movies it has, once read */
+  count: number | null;
+  url?: string;
+  library?: string;
+  /** The Jellyfin user signed in as, if not an API key */
+  user?: string | null;
+  path?: string;
+}
+
+export interface Sources {
+  plex: { enabled: boolean; signed_in: boolean; library: string };
+  sources: Source[];
 }
 
 export interface Movies {

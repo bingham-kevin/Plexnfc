@@ -18,6 +18,15 @@ Tap an NFC-tagged movie poster with your phone (or hold it to the Movie Remote) 
 
 You don't need a token for any of this. The app talks to Home Assistant directly. The repository's `docs/home-assistant.md` has example scripts for Apple TV, Shield, LG and other TVs.
 
+## Movies from Jellyfin or a folder
+
+Plex is optional. On the panel's **Sources** tab you can add Jellyfin servers and folders of movie files, alongside Plex or instead of it (**Leave out** stops using Plex's movies):
+
+- **Add a Jellyfin server**: its address, then sign in with a Jellyfin user, or paste an API key from Jellyfin's **Dashboard → API Keys**. The password is only passed on to Jellyfin; the app keeps the sign-in Jellyfin returns.
+- **Add a folder**: this app can read Home Assistant's `/media` and `/share` folders. To use a NAS, add its share under **Settings → System → Storage → Add network storage** with the usage **Media**, then add `/media/<its name>` here. Name movies `Alien (1979)/Alien (1979).mkv` (or put a `movie.nfo` beside them) and add a `poster.jpg` to each movie's folder, or let the cover art inside the file be used.
+
+Jellyfin and folder movies have their own tag addresses (`/m/jf-…`, `/m/file-…`) and appear in the tag list, the card scan and the book. They play in the Marquee app; Jellyfin movies also play on Swiftfin. Folder movies in MKV or AVI files are repackaged for Apple TV with ffmpeg as they play. See the README's *Movie sources* section for how movies are named and keyed.
+
 ## Optional: play on Jellyfin (Swiftfin on Apple TV)
 
 Plex for Apple TV can't be started from another device, but Swiftfin, the Jellyfin app, can. If your movies are also in Jellyfin, taps can play there instead, while Plex still makes the book:
@@ -51,9 +60,9 @@ The **Get-ready script** only runs for the default player, so a tap for another 
 
 In the **Movie Book** sidebar panel:
 
-- **Open printable book**: choose a title, a Plex collection and a layout. The book opens in a new tab from the **Tag base URL**, so do this on your home network. Wait for all the posters to load, then print at 100% scale with background graphics turned on. The book sets its own margins. A whole library makes a very large book, so a Plex collection is recommended.
+- **Open printable book**: choose a title, a collection (and, with several sources, which source) and a layout. The book opens in a new tab from the **Tag base URL**, so do this on your home network. Wait for all the posters to load, then print at 100% scale with background graphics turned on. The book sets its own margins. A whole library makes a very large book, so a collection is recommended.
 - **Tag URLs** / **tags.csv**: the URL to write onto each sticker with the NFC Tools app.
-- **Cards**: for the Movie Remote, link blank NFC cards to movies by their ID instead of writing them. Choose a collection, a label or some movies, tap **Scan cards**, and hold each movie's card on a Movie Remote when it comes up.
+- **Cards**: for the Movie Remote, link blank NFC cards to movies by their ID instead of writing them. Choose a collection, a label, a source or some movies, tap **Scan cards**, and hold each movie's card on a Movie Remote when it comes up.
 
 ## Movie Remote
 

@@ -24,6 +24,7 @@ from .appletv import AppleTVError, AppleTVs
 from .cards import Cards
 from .homeassistant import HomeAssistant, HomeAssistantError
 from .jellyfin import TICKS_PER_SECOND, Jellyfin, JellyfinError, tag_key
+from .sources import FolderSource, JellyfinSource, Library, SourceMovie
 from .tvapp import AppInbox, AppPairings, jellyfin_hls_url, plex_hls_url
 
 log = logging.getLogger(__name__)
@@ -38,6 +39,8 @@ class PlexNFCError(Exception):
 
 def movie_key(movie) -> str:
     """Return the stable key to write on a tag for this movie."""
+    if isinstance(movie, SourceMovie):  # Jellyfin or a folder: made when it was read
+        return movie.key
     guids = {g.id.split("://", 1)[0]: g.id.split("://", 1)[1] for g in getattr(movie, "guids", [])}
     for source in GUID_SOURCES:
         if source in guids:
@@ -73,9 +76,21 @@ class Plex:
                                                             "apple_tvs.json"))
         # Cards linked to movies by their ID, for the Movie Remote
         self.cards = Cards(os.path.join(os.path.dirname(config.auth_file) or ".", "movie_cards.json"))
+        # Jellyfin servers and folders added in the control panel, alongside Plex
+        self.library = Library(self, os.path.dirname(config.auth_file) or ".")
         self.jellyfin = jellyfin
         if self.jellyfin is None and config.jellyfin_url and config.jellyfin_api_key:
             self.jellyfin = Jellyfin(config.jellyfin_url, config.jellyfin_api_key)
+        self._jellyfin_keys: dict[str, str] = {}  # Jellyfin item ID -> the key it was started with
+
+    @property
+    def jellyfin(self) -> Jellyfin | None:
+        """The Jellyfin server for Jellyfin players: JELLYFIN_URL's, else the first Jellyfin source's."""
+        return self._jellyfin or self.library.jellyfin_client()
+
+    @jellyfin.setter
+    def jellyfin(self, value: Jellyfin | None) -> None:
+        self._jellyfin = value
 
     @property
     def server(self) -> PlexServer:
@@ -134,6 +149,16 @@ class Plex:
     # ---- lookup -------------------------------------------------------------
 
     def find_movie(self, key: str):
+        """The movie for a key: from Plex, or (``jf-…``, ``file-…``) a Jellyfin server or a folder."""
+        if self.library.source_for_key(key):
+            movie = self.library.find(key)
+            if movie is None:
+                kind = "Jellyfin server" if key.startswith("jf-") else "movie folder"
+                raise PlexNFCError(f"No movie in any {kind} matches {key}")
+            return movie
+        return self.find_plex_movie(key)
+
+    def find_plex_movie(self, key: str):
         m = KEY_RE.match(key)
         if not m:
             raise PlexNFCError(f"'{key}' isn't a valid movie key")
@@ -145,15 +170,23 @@ class Plex:
         except NotFound:
             raise PlexNFCError(f"No movie in '{self.config.library}' matches {key}") from None
 
-    def movies(self, collection: str | None = None, label: str | None = None):
+    def movies(self, collection: str | None = None, label: str | None = None, source: str | None = None):
+        """Every movie from Plex and the other sources, or those in a collection, with a label,
+        or from one source."""
+        return self.library.movies(collection, label, source)
+
+    def movie_filters(self) -> dict:
+        return self.library.filters()
+
+    def plex_movies(self, collection: str | None = None, label: str | None = None):
         if collection:
             return self.section.collection(collection).items()
         if label:
             return self.section.search(label=label, sort="titleSort")
         return self.section.all(sort="titleSort")
 
-    def movie_filters(self) -> dict:
-        """The library's collections (with how many movies each holds) and labels, to choose
+    def plex_filters(self) -> dict:
+        """The Plex library's collections (with how many movies each holds) and labels, to choose
         movies by."""
         def listed(get):
             try:
@@ -330,9 +363,17 @@ class Plex:
             self._play_in_app(name, key, movie, resume)
             self.prepare_tv(client_name)
             return movie, SimpleNamespace(title=name)
+        jellyfin_name = self._jellyfin_player(client_name)
+        if isinstance(movie, SourceMovie) and not jellyfin_name:
+            raise PlexNFCError(f"{movie.title} comes from {movie.source.name}, which plays on Marquee"
+                               f"{' and Jellyfin players' if isinstance(movie.source, JellyfinSource) else ''}, "
+                               f"not on {client_name or self.default_player() or 'this player'}")
+        if isinstance(movie, SourceMovie) and isinstance(movie.source, FolderSource):
+            raise PlexNFCError(f"{movie.title} is a file in {movie.source.name}, which plays on Marquee, "
+                               f"not on Jellyfin players")
         ha_error = self.prepare_tv(client_name)
-        if name := self._jellyfin_player(client_name):
-            return self._play_via_jellyfin(name, key, movie, resume, ha_error)
+        if jellyfin_name:
+            return self._play_via_jellyfin(jellyfin_name, key, movie, resume, ha_error)
         if entity := self._ha_entity(client_name):
             log.info("Playing %s (%s) on %s via Home Assistant", movie.title, key, entity)
             return self._play_via_ha(entity, movie, resume, ha_error)
@@ -387,11 +428,10 @@ class Plex:
         movie = movie or self.find_movie(key)
         resume = self.config.resume if resume is None else resume
         start = int((movie.viewOffset or 0) / 1000) if resume and getattr(movie, "viewOffset", 0) else 0
-        if self.jellyfin and self.config.app_stream == "jellyfin":
-            try:
-                item = self.jellyfin.find_movie(movie.title, movie.year, key)
-            except JellyfinError as e:
-                raise PlexNFCError(str(e)) from None
+        if isinstance(movie, SourceMovie):  # from Jellyfin, or a file Marquee Server sends itself
+            url = self.library.stream(movie, start, name)
+        elif self.jellyfin and self.config.app_stream == "jellyfin":
+            item = self._jellyfin_item(key, movie)
             url = jellyfin_hls_url(self.config.jellyfin_url, self.config.jellyfin_api_key, item["Id"], start, name)
         else:
             url = plex_hls_url(self.plex_url, self.config.plex_token, movie.ratingKey, start, name)
@@ -418,25 +458,56 @@ class Plex:
     # ---- library for the Marquee app ------------------------------------------------
 
     def app_library(self, row_size: int = 24, collections: int = 6) -> list[dict]:
-        """Poster rows for the app's home screen: recently added, then a few collections."""
-        rows = [{"title": "Recently Added",
-                 "items": [app_movie(m) for m in self.section.recentlyAdded(maxresults=row_size)]}]
-        try:
-            for collection in self.section.collections()[:collections]:
-                items = [app_movie(m) for m in collection.items()[:row_size]]
-                if items:
-                    rows.append({"title": collection.title, "items": items})
-        except Exception as e:  # collections are a nice-to-have
-            log.debug("Couldn't list collections: %s", e)
+        """Poster rows for the app's home screen: recently added, then a few collections,
+        then the newest movies from each Jellyfin server and folder."""
+        rows = []
+        if self.library.plex_in_use or not self.library.sources:
+            rows.append({"title": "Recently Added",
+                         "items": [app_movie(m) for m in self.section.recentlyAdded(maxresults=row_size)]})
+            try:
+                for collection in self.section.collections()[:collections]:
+                    items = [app_movie(m) for m in collection.items()[:row_size]]
+                    if items:
+                        rows.append({"title": collection.title, "items": items})
+            except Exception as e:  # collections are a nice-to-have
+                log.debug("Couldn't list collections: %s", e)
+        for source in self.library.sources:
+            try:
+                newest = sorted(source.movies(), key=lambda m: m.added, reverse=True)[:row_size]
+            except Exception as e:  # noqa: BLE001 - one source being away shouldn't empty the screen
+                log.warning("Couldn't list %s for Marquee: %s", source.name, e)
+                continue
+            if newest:
+                rows.append({"title": f"New in {source.name}", "items": [app_movie(m) for m in newest]})
         return rows
 
     def app_movies(self, start: int = 0, size: int = 60) -> dict:
         """One page of the whole library, sorted by title."""
-        items = self.section.search(sort="titleSort", container_start=start, container_size=size, maxresults=size)
-        return {"start": start, "items": [app_movie(m) for m in items], "total": self.section.totalSize}
+        if not self.library.sources:
+            items = self.section.search(sort="titleSort", container_start=start, container_size=size,
+                                        maxresults=size)
+            return {"start": start, "items": [app_movie(m) for m in items], "total": self.section.totalSize}
+        from .sources import sort_title
+        # Marquee asks a page at a time: read every source once for the pages that follow
+        cached = getattr(self, "_app_movies_cache", None)
+        if start == 0 or not cached or time.monotonic() - cached[0] > 120:
+            cached = self._app_movies_cache = (time.monotonic(),
+                                               sorted(self.movies(), key=lambda m: sort_title(m.title)))
+        movies = cached[1]
+        return {"start": start, "items": [app_movie(m) for m in movies[start:start + size]], "total": len(movies)}
 
     def app_search(self, query: str, size: int = 40) -> list[dict]:
-        return [app_movie(m) for m in self.section.search(title=query, maxresults=size)] if query.strip() else []
+        if not query.strip():
+            return []
+        found = []
+        if self.library.plex_in_use or not self.library.sources:
+            found = [app_movie(m) for m in self.section.search(title=query, maxresults=size)]
+        for source in self.library.sources:
+            try:
+                found += [app_movie(m) for m in source.movies() if query.casefold() in m.title.casefold()]
+            except Exception as e:  # noqa: BLE001
+                log.debug("Couldn't search %s: %s", source.name, e)
+        return found[:size]
 
     def _app_now(self, name: str) -> dict:
         status = self.app_inbox.status(name)
@@ -456,7 +527,8 @@ class Plex:
         else:
             name = self.config.jellyfin_player or None
         if name and self.jellyfin is None:
-            raise PlexNFCError("Set JELLYFIN_URL and JELLYFIN_API_KEY to play on a Jellyfin player")
+            raise PlexNFCError("Add a Jellyfin server in the control panel (or set JELLYFIN_URL and "
+                               "JELLYFIN_API_KEY) to play on a Jellyfin player")
         return name
 
     def _jellyfin_session(self, name: str, wait: float = 0) -> dict:
@@ -475,11 +547,20 @@ class Plex:
         hint = f" Players found: {', '.join(available)}." if available else ""
         raise PlexNFCError(f"Couldn't find a Jellyfin player named '{name}'. Is the app open?{hint}")
 
-    def _play_via_jellyfin(self, name: str, key: str, movie, resume: bool, ha_error: str | None):
+    def _jellyfin_item(self, key: str, movie) -> dict:
+        """The item on the Jellyfin players' server for a movie: itself, for a movie from that
+        server; else found by title, year and ID (for a Plex movie, or one from another server)."""
+        if isinstance(movie, SourceMovie) and movie.source.url == self.jellyfin.url:
+            return {"Id": movie.ref, "Name": movie.title}
+        inner = key.removeprefix("jf-") if isinstance(movie, SourceMovie) else key
         try:
-            item = self.jellyfin.find_movie(movie.title, movie.year, key)
+            return self.jellyfin.find_movie(movie.title, movie.year, inner)
         except JellyfinError as e:
             raise PlexNFCError(str(e)) from None
+
+    def _play_via_jellyfin(self, name: str, key: str, movie, resume: bool, ha_error: str | None):
+        item = self._jellyfin_item(key, movie)
+        self._jellyfin_keys[item["Id"]] = key
         wait = self.config.player_wait if self._ready_script(f"jellyfin:{name}") else 0
         try:
             session = self._jellyfin_session(name, wait)
@@ -542,7 +623,8 @@ class Plex:
         if not item:
             return {"state": "idle"}
         state = session.get("PlayState") or {}
-        key = tag_key(item) or f"jf-{item['Id']}"
+        # The key it was started with (Plex's tmdb-603, or a Jellyfin source's jf-tmdb-603)
+        key = self._jellyfin_keys.get(item["Id"]) or tag_key(item) or f"jf-{item['Id']}"
         return {
             "state": "paused" if state.get("IsPaused") else "playing",
             "title": item.get("Name"),

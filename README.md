@@ -100,6 +100,27 @@ plexnfc can run a Home Assistant script before every movie. The script can turn 
 
 The **Marquee** integration (`custom_components/marquee`, installable with HACS) works the other way round. Each Marquee player becomes a media player in Home Assistant, with *Movie started*, *paused*, *resumed* and *stopped* triggers for automations, such as dimming the lights. See [the integration's section](docs/home-assistant.md#the-marquee-integration-automations-that-follow-the-movie).
 
+## Movie sources: Plex, Jellyfin and folders
+
+Movies can come from Plex, from Jellyfin servers, and from folders of movie files, all at once. Add Jellyfin servers and folders on the control panel's **Sources** tab; they're saved in `sources.json`, next to the Plex sign-in. Their movies show up in the tag list, the card scan, the book and Marquee's library alongside Plex's, and the **Sources** tab can leave Plex out if you don't use it.
+
+- **Jellyfin**: the server's address, then sign in with a Jellyfin user (the password goes to Jellyfin and isn't kept; Marquee Server keeps the sign-in token Jellyfin hands back) or paste an API key from Jellyfin's **Dashboard → API Keys**. Optionally name one library; otherwise every movie library is used. Collections and tags come from Jellyfin.
+- **Folder**: a path on the machine Marquee Server runs on, read with the folders inside it. For a network share (SMB or NFS), mount it first and give the mount's path: `/Volumes/Movies` on a Mac, `/media/...` or `/share/...` in the Home Assistant app (add the share under **Settings → System → Storage**). Movies are named from their files or folders, `Alien (1979)/Alien (1979).mkv` or `Alien.1979.1080p.mkv`; a Kodi/Jellyfin-style `movie.nfo` (or `<file name>.nfo`) beside a movie gives its title, year, plot, collection (`<set>`) and tags. Trailers, extras folders and second parts (`cd2`) are skipped. Posters come from `poster.jpg`/`folder.jpg`/`cover.jpg` in the movie's own folder, `<file name>-poster.jpg`, or the cover art inside the file; a movie with none gets a plain card with its title. On a Mac, macOS asks once whether Marquee Server may read a folder in Documents, Desktop or Downloads, or on a network volume.
+
+Every movie keeps its own key, so tags and cards from different sources never clash, and Plex keys are unchanged:
+
+| Source | Key | Stays the same while… |
+| --- | --- | --- |
+| Plex | `tmdb-603` (or `imdb-…`, `tvdb-…`, `rk-…`) | the movie is matched in Plex |
+| Jellyfin | `jf-tmdb-603`, else `jf-<Jellyfin item ID>` | the movie has a TMDB/IMDb/TVDB ID, or isn't re-added |
+| Folder | `file-tmdb-603` (from a `movie.nfo` or `{tmdb-603}` in the name), else `file-<hash>` | the file keeps its name and place inside the folder (the folder itself can move) |
+
+Where they play:
+
+- **Marquee** plays movies from every source. Jellyfin movies stream from Jellyfin. Folder movies stream from Marquee Server itself, at an address signed for that movie: MP4, M4V and MOV files as they are; other files (MKV, AVI…) need **ffmpeg** on the server (`brew install ffmpeg` on a Mac; the Docker image and Home Assistant app include it), which repackages them for Apple TV as they play, converting only what Apple TV can't play. While a repackaged movie is starting, you can only skip ahead as far as ffmpeg has got.
+- **Jellyfin players** (Swiftfin) play Jellyfin movies. With no `JELLYFIN_URL` set, the first Jellyfin source's players are used.
+- **Plex players** and Home Assistant's Plex integration play Plex movies only.
+
 ## Optional: play on Jellyfin
 
 Plex for Apple TV can't be remote-started, but Swiftfin (Jellyfin's Apple TV app) can. With `JELLYFIN_URL`, `JELLYFIN_API_KEY` and `JELLYFIN_PLAYER` set, taps, controls and `/now` go to that Jellyfin app instead of the Plex player. Plex still makes the book and the tag list, so the movies need to be in both libraries. `?client=jellyfin:NAME` picks a Jellyfin player for one tag.
@@ -119,7 +140,7 @@ Plex for Apple TV can't be remote-started, but Swiftfin (Jellyfin's Apple TV app
 | `/now`, `/toggle`, `/seek?by=30` | Used by the Movie Remote: what's playing (JSON), play/pause, skip |
 | `/off` | Run your Home Assistant "off" script (needs `HA_OFF_SCRIPT`) |
 
-Tags store the movie's TMDB/IMDb ID rather than Plex's internal ID, so they keep working if you rebuild your library or move servers.
+Tags store the movie's TMDB/IMDb ID rather than Plex's internal ID, so they keep working if you rebuild your library or move servers. Jellyfin and folder movies have keys of their own (`jf-…`, `file-…`); see [Movie sources](#movie-sources-plex-jellyfin-and-folders).
 
 ## Troubleshooting
 
