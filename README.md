@@ -117,7 +117,7 @@ Every movie keeps its own key, so tags and cards from different sources never cl
 
 Where they play:
 
-- **Marquee** plays movies from every source. Jellyfin movies stream from Jellyfin. Folder movies stream from Marquee Server itself, at an address signed for that movie: MP4, M4V and MOV files as they are; other files (MKV, AVI…) need **ffmpeg** on the server (`brew install ffmpeg` on a Mac; the Docker image and Home Assistant app include it), which repackages them for Apple TV as they play, converting only what Apple TV can't play. While a repackaged movie is starting, you can only skip ahead as far as ffmpeg has got.
+- **Marquee** plays movies from every source. Jellyfin movies stream from Jellyfin. Folder movies stream from Marquee Server itself, at an address signed for that movie: MP4, M4V and MOV files as they are; other files (MKV, AVI…) need **ffmpeg** on the server (`brew install ffmpeg` on a Mac; the Docker image and the Home Assistant app don't include it, so there use MP4, M4V or MOV files), which repackages them for Apple TV as they play, converting only what Apple TV can't play. While a repackaged movie is starting, you can only skip ahead as far as ffmpeg has got.
 - **Jellyfin players** (Swiftfin) play Jellyfin movies. With no `JELLYFIN_URL` set, the first Jellyfin source's players are used.
 - **Plex players** and Home Assistant's Plex integration play Plex movies only.
 
