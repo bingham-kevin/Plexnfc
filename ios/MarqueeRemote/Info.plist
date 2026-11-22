@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- plexnfc is usually plain http on the home network -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!-- Only Apple's built-in HTTPS; no other encryption (App Store export compliance) -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<!-- plexnfc announces itself with Bonjour, so the server can be picked from a list -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_moviebook._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Marquee Remote connects to your Movie Book server on your home network to choose where your taps play.</string>
+</dict>
+</plist>

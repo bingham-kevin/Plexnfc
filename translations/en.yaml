@@ -16,7 +16,7 @@ configuration:
     description: Written onto every tag, so use this machine's fixed IP, e.g. http://192.168.1.20:8080
   resume:
     name: Resume
-    description: Continue partly watched movies instead of starting over
+    description: Continue partly watched movies chosen in Marquee instead of starting over. Tags always start from the beginning.
   ha_script:
     name: Get-ready script
     description: Optional script to run before playing (TV on, HDMI input, open Plex), e.g. script.movie_night
@@ -47,5 +47,8 @@ configuration:
   app_stream:
     name: Marquee stream
     description: Where the app's video comes from. Blank or plex uses Plex, which converts what the Apple TV can't play. jellyfin uses Jellyfin (needs the Jellyfin settings).
+  player_scripts:
+    name: Get-ready scripts for other players
+    description: "Optional, for rooms other than the default player's, e.g. app:Living Room = script.living_room_movie; Den TV = script.den_roku. The get-ready script above only runs for the default player."
 network:
   8080/tcp: Tag URLs (phones and the Movie Remote connect here)

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Movie Remote Wi-Fi</title>
+<style>
+:root {
+  --bg: #0f1012; --card: #181a1e; --card2: #22252b; --line: #2e323a;
+  --text: #eceef2; --muted: #9aa1ad; --gold: #e5a00d; --on-gold: #1a1406; --bad: #ff8a80;
+}
+@media (prefers-color-scheme: light) {
+  :root { --bg: #f4f5f7; --card: #fff; --card2: #eef0f3; --line: #dde1e7; --text: #15171b; --muted: #5d6573;
+          --gold: #c98a00; --on-gold: #fff; --bad: #c62828; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 16px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; -webkit-text-size-adjust: 100%; }
+main { max-width: 440px; margin: 0 auto; padding: max(20px, env(safe-area-inset-top)) 16px 40px; }
+header { display: flex; align-items: center; gap: 12px; margin: 4px 0 20px; }
+.logo { width: 44px; height: 44px; border-radius: 11px; background: var(--gold); color: var(--on-gold);
+        display: grid; place-items: center; flex: none; }
+h1 { font-size: 1.3rem; margin: 0; }
+header p, .muted { color: var(--muted); margin: 0; font-size: 0.9rem; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.head { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px 8px; }
+.head h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0; }
+button { font: inherit; cursor: pointer; border: 0; background: none; color: inherit; }
+.link { color: var(--gold); font-weight: 600; font-size: 0.95rem; padding: 4px 0; }
+.net { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 16px; text-align: left;
+       border-top: 1px solid var(--line); min-height: 56px; }
+.net:first-of-type { border-top: 0; }
+.net .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.net svg { flex: none; color: var(--muted); }
+.net.on { background: var(--card2); }
+form { padding: 4px 16px 16px; background: var(--card2); display: grid; gap: 10px; }
+label { font-size: 0.85rem; color: var(--muted); display: grid; gap: 6px; }
+.pw { display: flex; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.pw:focus-within { border-color: var(--gold); }
+input { flex: 1; min-width: 0; font: inherit; color: var(--text); background: transparent; border: 0;
+        padding: 12px; outline: none; }
+.pw button { color: var(--muted); padding: 0 12px; font-size: 0.85rem; }
+.primary { background: var(--gold); color: var(--on-gold); font-weight: 700; border-radius: 10px; padding: 13px;
+           font-size: 1rem; }
+.primary:disabled { opacity: 0.5; }
+.empty { padding: 22px 16px; color: var(--muted); display: flex; gap: 10px; align-items: center; }
+.spin { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--gold);
+        animation: s 0.8s linear infinite; flex: none; }
+@keyframes s { to { transform: rotate(360deg); } }
+.done { text-align: center; padding: 36px 20px; }
+.done .logo { margin: 0 auto 16px; width: 56px; height: 56px; border-radius: 50%; }
+.done h2 { margin: 0 0 8px; font-size: 1.2rem; }
+footer { margin-top: 18px; text-align: center; font-size: 0.8rem; color: var(--muted); }
+.err { color: var(--bad); font-size: 0.9rem; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="logo" aria-hidden="true">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/>
+        <path d="M7 4v16M17 4v16M2 9h5M2 15h5M17 9h5M17 15h5"/></svg>
+    </div>
+    <div>
+      <h1>Set up Movie Remote</h1>
+      <p>Choose the Wi-Fi network your Marquee Server is on.</p>
+    </div>
+  </header>
+
+  <section class="card" id="picker">
+    <div class="head">
+      <h2>Networks</h2>
+      <button class="link" id="rescan" type="button">Refresh</button>
+    </div>
+    <div id="list"><div class="empty"><span class="spin"></span>Looking for networks…</div></div>
+    <button class="net" id="other" type="button">
+      <span class="name">Other network…</span>
+    </button>
+  </section>
+
+  <section class="card done" id="done" hidden>
+    <div class="logo"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+    <h2>Joining <span id="joined"></span></h2>
+    <p class="muted">The box leaves this hotspot and joins your network. When it's connected, its screen shows
+      a pairing code to approve in Marquee's control panel.</p>
+    <p class="muted" style="margin-top:12px">If the screen goes back to setup, the password was wrong: join the
+      Movie Remote hotspot again.</p>
+  </section>
+
+  <footer id="about"></footer>
+</main>
+
+<template id="join">
+  <form>
+    <label id="ssidrow" hidden>Network name <span class="pw"><input name="ssid" autocomplete="off"
+           autocapitalize="off" spellcheck="false" required></span></label>
+    <label>Password <span class="pw"><input name="psk" type="password" autocomplete="current-password"
+           autocapitalize="off" spellcheck="false"><button type="button" class="show">Show</button></span></label>
+    <p class="err" hidden></p>
+    <button class="primary">Join</button>
+  </form>
+</template>
+
+<script>
+const list = document.getElementById("list");
+let open = null;   // the network whose form is open
+let seen = false;
+
+function bars(rssi) {
+  const n = rssi >= -55 ? 4 : rssi >= -67 ? 3 : rssi >= -78 ? 2 : 1;
+  let s = '<svg width="20" height="16" viewBox="0 0 20 16" aria-label="Signal ' + n + ' of 4">';
+  for (let i = 0; i < 4; i++) {
+    const h = 4 + i * 4;
+    s += '<rect x="' + (i * 5) + '" y="' + (16 - h) + '" width="3.5" height="' + h + '" rx="1" fill="currentColor"'
+       + (i < n ? '' : ' opacity="0.25"') + '/>';
+  }
+  return s + '</svg>';
+}
+const lock = '<svg width="14" height="16" viewBox="0 0 14 16" aria-label="Needs a password"><rect x="1" y="7" ' +
+  'width="12" height="9" rx="2" fill="currentColor"/><path d="M4 7V5a3 3 0 0 1 6 0v2" stroke="currentColor" ' +
+  'stroke-width="2" fill="none"/></svg>';
+
+function form(ssid, needsPassword) {
+  const f = document.getElementById("join").content.firstElementChild.cloneNode(true);
+  const name = f.elements.ssid, psk = f.elements.psk;
+  if (ssid === null) f.querySelector("#ssidrow").hidden = false; else name.value = ssid;
+  if (!needsPassword) psk.closest("label").hidden = true;
+  f.querySelector(".show").onclick = (e) => {
+    psk.type = psk.type === "password" ? "text" : "password";
+    e.target.textContent = psk.type === "password" ? "Show" : "Hide";
+  };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const button = f.querySelector(".primary"), err = f.querySelector(".err");
+    if (needsPassword && psk.value.length > 0 && psk.value.length < 8) {
+      err.textContent = "Wi-Fi passwords are at least 8 characters."; err.hidden = false; return;
+    }
+    button.disabled = true; button.textContent = "Joining…"; err.hidden = true;
+    try {
+      const q = new URLSearchParams({ ssid: name.value, psk: needsPassword ? psk.value : "" });
+      const r = await fetch("/wifisave?" + q, { cache: "no-store" });
+      if (!r.ok) throw new Error();
+      document.getElementById("joined").textContent = name.value;
+      document.getElementById("picker").hidden = true;
+      document.getElementById("done").hidden = false;
+    } catch {
+      err.textContent = "The box didn't answer. Check you're still on its hotspot, then try again.";
+      err.hidden = false; button.disabled = false; button.textContent = "Join";
+    }
+  };
+  setTimeout(() => (ssid === null ? name : psk).focus(), 50);
+  return f;
+}
+
+function toggle(row, ssid, needsPassword) {
+  const wasOpen = open === row;
+  document.querySelectorAll("#picker form").forEach((f) => f.remove());
+  document.querySelectorAll(".net.on").forEach((n) => n.classList.remove("on"));
+  open = null;
+  if (wasOpen) return;
+  open = row;
+  row.classList.add("on");
+  row.after(form(ssid, needsPassword));
+}
+
+async function scan() {
+  try {
+    const r = await fetch("/config.json", { cache: "no-store" });
+    const data = await r.json();
+    document.getElementById("about").textContent = data.name + " · " + data.mac;
+    const best = new Map();
+    for (const ap of data.aps) {
+      if (!ap.ssid) continue;
+      const known = best.get(ap.ssid);
+      if (!known || ap.rssi > known.rssi) best.set(ap.ssid, ap);
+    }
+    const aps = [...best.values()].sort((a, b) => b.rssi - a.rssi);
+    if (!aps.length) {
+      if (!seen) setTimeout(scan, 3000);
+      return;
+    }
+    seen = true;
+    if (open) return;  // don't move the list under someone's finger
+    list.textContent = "";
+    for (const ap of aps) {
+      const row = document.createElement("button");
+      row.type = "button"; row.className = "net";
+      row.innerHTML = '<span class="name"></span>' + (ap.lock ? lock : "") + bars(ap.rssi);
+      row.querySelector(".name").textContent = ap.ssid;
+      row.onclick = () => toggle(row, ap.ssid, !!ap.lock);
+      list.append(row);
+    }
+  } catch {
+    setTimeout(scan, 3000);
+  }
+}
+
+document.getElementById("rescan").onclick = () => {
+  if (open) toggle(open);
+  list.innerHTML = '<div class="empty"><span class="spin"></span>Looking for networks…</div>';
+  seen = false; scan();
+};
+document.getElementById("other").onclick = (e) => toggle(e.currentTarget, null, true);
+scan();
+</script>
+</body>
+</html>

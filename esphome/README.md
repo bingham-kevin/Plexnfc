@@ -1,88 +1,90 @@
-# Movie Remote (ESP32 + touchscreen + NFC)
+# Movie Remote (ESP32 touchscreen + NFC reader)
 
-A small box that sits next to the TV. Hold a page of the poster book to it and the movie starts. The screen shows the poster of what's playing, its progress, and touch controls:
+A small box that sits next to the TV. Hold a page of the movie book to it and the movie starts on your Marquee player. The pages can carry blank NFC cards linked to their movies in the control panel, or tags written with the movie's address. The screen shows the poster of what's playing, its progress, and touch buttons: back 30 s, play/pause, forward 30 s and stop.
 
-```
-┌──────────────────────┐
-│    ┌────────────┐    │
-│    │            │    │
-│    │   poster   │    │
-│    │  200x300   │    │
-│    │            │    │
-│    └────────────┘    │
-│      The Matrix      │
-│ Playing on Living Rm │
-│ ━━━━━━━━──────────── │
-│  0:41:12 / 2:16:00   │
-│  ⏪  ( ⏯ )  ⏩  ⏹  ⏻  │
-└──────────────────────┘
-```
+The box pairs with Marquee Server the way Marquee does. Until you approve it, it can't start or control anything, and if you remove it in the control panel it goes back to asking to pair.
 
-The buttons are: back 30 s, play/pause, forward 30 s, stop, and TV off. TV off needs `HA_OFF_SCRIPT`.
+## Parts
 
-The box only talks to plexnfc, so it works however you've set up playback: plexnfc playing directly, or through Home Assistant on an Apple TV. Phones keep working alongside it.
+Two screens are supported. Each has its own file; the logic they share is in `common/movie-remote.yaml`.
 
-## Parts (about $35–45)
+| Screen | File | Notes |
+| --- | --- | --- |
+| **Elecrow CrowPanel Advance 5.0** (DIS02050A v1.2/v1.3, 800×480 IPS, capacitive touch) | `movie-remote-crowpanel.yaml` | An ESP32-S3 with 8 MB PSRAM: a large poster and smooth screens. |
+| **Hosyond ESP32-32E E32R40T** (4", ST7796, 320×480, resistive touch) | `movie-remote.yaml` | An ESP32 with no PSRAM, so the poster is small (96×144). |
 
-| Part | Notes |
-| --- | --- |
-| **ESP32-S3-DevKitC-1 N16R8** (or a clone with 8 MB PSRAM) | The PSRAM holds the poster image and screen buffer. Don't use a plain ESP32 without PSRAM. |
-| **3.5" SPI TFT, ST7796S, 320×480, with resistive touch (XPT2046)** | A 2:3 portrait screen, the same shape as a movie poster. Common as "3.5 inch SPI module ST7796". |
-| **PN532 NFC module** (the red "V3" board, or the small blue one) | Set it to **I2C** mode with its switches or jumpers, following the table printed on the board. |
-| Jumper wires, USB-C cable and 5 V USB power | |
+You also need:
+
+- A **PN532 NFC module** (the red "V3" board, or the small blue one). Set it to **I2C** with its switches or jumpers, following the table printed on the board, and power-cycle it after.
+- Jumper wires, and 5 V USB power.
 
 ## Wiring
 
-| ESP32-S3 pin | Goes to |
-| --- | --- |
-| 3V3 | screen VCC, screen LED*, PN532 VCC |
-| GND | screen GND, PN532 GND |
-| GPIO12 | screen SCK **and** touch T_CLK |
-| GPIO11 | screen SDI (MOSI) **and** touch T_DIN |
-| GPIO13 | touch T_DO (MISO). Leave the screen's SDO (MISO) unconnected. |
-| GPIO10 | screen CS |
-| GPIO9 | screen DC / RS |
-| GPIO14 | screen RESET |
-| GPIO21 | screen LED (backlight, dimmable)* |
-| GPIO15 | touch T_CS |
-| GPIO16 | touch T_IRQ |
-| GPIO4 | PN532 SDA |
-| GPIO5 | PN532 SCL |
+The PN532 goes on the board's I2C connector:
 
-\*Connect the screen's LED pin to GPIO21, not to 3V3, so the backlight can turn off when nothing is playing. Most modules have a transistor on LED. If yours is very dim, power the module's VCC from 5V instead.
+| PN532 pin | CrowPanel **I2C-OUT** | Hosyond I2C header |
+| --- | --- | --- |
+| VCC | 3V3 | 3.3V |
+| GND | GND | GND |
+| SDA | IO15 | IO32 |
+| SCL | IO16 | IO25 |
 
-On many of these screens the display's MISO line doesn't release the bus, which stops touch from working. That's why the screen's SDO is left unconnected.
+On the CrowPanel, the reader shares the bus with the touch chip (0x5D), the clock (0x51) and the board's helper chip (0x30). The PN532 answers at 0x24, so they don't clash. The helper chip runs the backlight and the touch chip's reset, and the firmware wakes it at start-up.
 
-These pins avoid the ones the S3 uses for its PSRAM, flash, USB and boot mode (GPIO 0, 3, 19, 20, 26–37, 45 and 46).
+**A speaker (CrowPanel, optional):** plug a small 4–8 Ω speaker into the **SPK** connector, and the box beeps when a card plays a movie, rises when a scan links a card, double-beeps for a card that's already linked, and gives a low tone when something goes wrong. The speaker shares its pins (IO4/5/6) with the microSD slot through the board's DIP switch: if it stays silent, unplug the box and flip the switch to the audio position. Set the loudness with `sound_volume` at the top of `movie-remote-crowpanel.yaml`.
+
+The CrowPanel's USB serial chip is a CH340K. Recent macOS has no driver for it: install WCH's CH34xVCPDriver (from wch-ic.com) and approve it in System Settings before flashing over USB.
 
 ## Flashing
 
 ```bash
 pip install esphome
 cd esphome
-cp secrets.yaml.example secrets.yaml      # fill in your Wi-Fi
-# edit plexnfc_url at the top of movie-remote.yaml to match PUBLIC_BASE_URL
-esphome run movie-remote.yaml             # first time over USB; later updates go over Wi-Fi
+cp secrets.yaml.example secrets.yaml      # set ota_password to something random
+esphome run movie-remote-crowpanel.yaml   # or movie-remote.yaml for the Hosyond board
 ```
 
-You can also paste the YAML into the ESPHome add-on in Home Assistant. The box then shows up in Home Assistant too, with a backlight control and its logs.
+The first time is over USB; later updates go over Wi-Fi.
+
+No Wi-Fi network is written into the firmware. If the box doesn't know one, it offers a **Movie Remote** Wi-Fi hotspot. Join it on your phone and a setup page opens: tap your network, type its password and tap **Join**. You can also set Wi-Fi over USB at [web.esphome.io](https://web.esphome.io).
+
+`marquee_url` at the top of the file is Marquee Server's address, `http://marquee.local:8080` by default.
+
+## Pairing
+
+1. The box shows **Pair with Marquee** and a six-digit code.
+2. Open the control panel on the Mac (or in Home Assistant), check the code matches, name the box, and approve it.
+3. In **Devices**, choose the player the box controls. With "The default player", it uses the Marquee player chosen in Marquee Server's settings.
+
+## Settings on the screen
+
+Tap the gear at the top left of the screen for:
+
+- **Network details:** the name the box is paired as, the server, the Wi-Fi network and its signal, the IP and MAC addresses, and the firmware version.
+- **Brightness.**
+- **Change Wi-Fi:** lists the networks the box can see. Tap one, type its password on the on-screen keyboard and press the check key. The box joins it and keeps it. If the password is wrong, the box falls back to the Movie Remote hotspot after a minute.
+- **Reset to defaults:** the box tells Marquee Server to forget it, wipes its Wi-Fi and its pairing, and restarts into setup.
+
+The setup page is in `components/movie_portal`. It takes over from ESPHome's built-in captive portal page, and still uses the captive portal to scan for networks and join one.
 
 ## First-run tuning
 
-- **Colours are wrong (blue looks orange)**: change `color_order` to `rgb`. **Colours look inverted**: set `invert_colors: true`.
-- **Touch is off target or mirrored**: run `esphome logs movie-remote.yaml`, tap the four corners, and copy the raw x/y values from the log into `calibration`. If an axis is backwards, swap its min and max, or add `transform: { mirror_x: true }` under the touchscreen.
-- **Tags aren't read**: check the PN532's I2C switches, and that `i2c` finds the device at address `0x24` in the log at boot.
-- **"Not a plexnfc tag" in the log**: the URL on the tag must start with `plexnfc_url`. Use the same address as `PUBLIC_BASE_URL`.
+- **Colours are inverted**: set `invert_colors: true` under `display`.
+- **Touch is off target (Hosyond)**: run `esphome logs movie-remote.yaml`, tap the four corners, and copy the raw x/y values from the log into `calibration`. The CrowPanel's capacitive touch needs no calibration.
+- **CrowPanel screen flickers or shifts**: the build uses its own copy of ESPHome's screen driver (`components/mipi_rgb`), set up as Elecrow's driver is (16-line bounce buffers, 64-byte DMA bursts), with a 32 KB instruction cache so Wi-Fi isn't slowed by the screen's memory traffic. With ESPHome's stock driver, part of the picture slips down while the screen redraws. After updating ESPHome, copy its new `mipi_rgb` into `components/` and make the same change.
+- **Tags aren't read**: check the PN532's I2C switches and its four wires, and that the I2C scan at start finds a device at `0x24`. If the reader stops answering after you rewire it, unplug the box's USB for a few seconds.
+- **"This card isn't linked to a movie"**: link it on the control panel's **Cards** page, which offers the card the box just read. Tags written with a movie's URL (containing `/m/`) need no linking; tags written for any address work, since the box sends only the movie.
 
 ## Building it into a stand
 
-The PN532 reads about 3–5 cm through paper. Mount it face-up under a flat pad, like a small lectern or the lid of the box, and hold the page's NFC circle on the pad. Put the screen on the front.
+The PN532 reads about 3–5 cm through paper. Mount it face-up under a flat pad, and hold the page's NFC circle on the pad.
 
-Keep the book from lying flat on the reader. With many tags stacked in range, it may pick up the wrong page.
+Don't leave the book lying flat on the reader. With many tags stacked in range, it may pick up the wrong page.
 
 ## How it works
 
-- When it reads a tag, the box calls the tag's own URL with `?async=1`. plexnfc replies at once and starts the movie in the background. The screen shows "Starting…" with the poster, even while Home Assistant is still waking the TV.
-- Every 2 seconds the box asks plexnfc's `/now` what's playing. The answer comes from the Plex server's list of active streams for `PLEX_CLIENT`. In Home Assistant mode, keep `PLEX_CLIENT` set to the Plex name of the Apple TV so the box can find its stream.
-- Posters come from `/poster/<key>?w=200&h=300`. plexnfc resizes them and re-encodes them as baseline JPEGs, the format the ESP32's decoder can read.
-- The buttons call `/seek?by=±30`, `/toggle`, `/stop` and `/off`.
+- **Pairing:** the box asks for a code with `POST /tv/pair` (`kind: remote`), then checks `/tv/pair/<id>` until you approve it. It keeps the secret it's given in flash and sends it with every request.
+- **Cards and tags:** when it reads a card, it sends the card's ID, and the URL written on it if any, to `POST /remote/tap`. Marquee Server plays the movie linked to that card (or the one in the URL) on the box's player and answers at once. Meanwhile the screen shows "Starting…" with the poster. During a card scan from the control panel's **Cards** page, the card is linked to the next movie instead, and the screen shows which movie it was linked to and which comes next.
+- **The screen:** every 2 seconds the box asks `/remote/now` what its player is playing.
+- **Posters:** they come from `/poster/<key>?w=…&h=…` (240×360 on the CrowPanel, 96×144 on the Hosyond), resized and re-encoded as baseline JPEGs that the ESP32 can decode.
+- **The buttons:** they call `POST /remote/control` with `toggle`, `seek` or `stop`.

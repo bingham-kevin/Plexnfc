@@ -1,18 +1,29 @@
-# Movie Remote: an NFC reader with a touchscreen for the plexnfc poster book.
+# Movie Remote: an NFC reader with a touchscreen for Marquee.
 #
-# Hold a page's NFC sticker to the reader and the movie starts. The screen shows
-# the poster of what's playing, a progress bar, and touch controls.
+# Hold a page of the movie book to the reader and the movie starts on your Marquee
+# player. The screen shows the poster of what's playing, a progress bar, and touch
+# controls. The box pairs with Marquee Server like Marquee does: it shows a code,
+# you approve it in the control panel, and nothing works until you do.
 #
-# Hardware and wiring: see esphome/README.md
+# The logic is in common/movie-remote.yaml; this file is the board.
+# Hardware: the Hosyond ESP32-32E E32R40T (4" ST7796, 320x480, XPT2046 touch) with a
+# PN532 reader in I2C mode on its I2C header. See esphome/README.md.
 # Flash with:  esphome run movie-remote.yaml
 
 substitutions:
   name: movie-remote
   friendly_name: Movie Remote
-  # Same address as PUBLIC_BASE_URL in plexnfc's .env (no trailing slash)
-  plexnfc_url: http://192.168.1.20:8080
+  # Marquee Server's address (no trailing slash)
+  marquee_url: http://marquee.local:8080
+  # The PN532 on the I2C header: SDA and SCL
+  nfc_sda: GPIO32
+  nfc_scl: GPIO25
   # Turn the screen off after this long with nothing playing
   screen_timeout: 5min
+  # The poster's size: 28 KB, as this ESP32 has no PSRAM
+  poster_w: "96"
+  poster_h: "144"
+  wifi_name_width: "210"
 
 esphome:
   name: ${name}
@@ -20,294 +31,121 @@ esphome:
   on_boot:
     priority: -100
     then:
-      - script.execute: refresh
+      - script.execute: connect_box
 
 esp32:
-  board: esp32-s3-devkitc-1
-  flash_size: 16MB
+  board: esp32dev
   framework:
     type: esp-idf
+    advanced:
+      sram1_as_iram: true
 
-psram:
-  mode: octal
-  speed: 80MHz
+packages:
+  remote: !include common/movie-remote.yaml
 
-logger:
-
-api:
-
-ota:
-  - platform: esphome
-
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  ap: {}
-
-captive_portal:
-
-http_request:
-  timeout: 5s
-  verify_ssl: false
-
-# ---- state from plexnfc's /now -----------------------------------------------
-
-globals:
-  - id: tag_url
-    type: std::string
-  - id: now_state
-    type: std::string
-    initial_value: '"idle"'
-  - id: now_title
-    type: std::string
-  - id: now_key
-    type: std::string
-  - id: now_poster
-    type: std::string
-  - id: now_player
-    type: std::string
-  - id: now_message
-    type: std::string
-  - id: now_position
-    type: int
-    initial_value: '0'
-  - id: now_duration
-    type: int
-    initial_value: '0'
-  - id: shown_key
-    type: std::string
-
-interval:
-  - interval: 2s
-    then:
-      - script.execute: refresh
-
-script:
-  # Ask plexnfc what's playing.
-  - id: refresh
-    mode: single
-    then:
-      - http_request.get:
-          url: ${plexnfc_url}/now
-          capture_response: true
-          max_response_buffer_size: 2048
-          on_response:
-            then:
-              - lambda: |-
-                  if (response->status_code != 200) {
-                    id(now_state) = "offline";
-                    return;
-                  }
-                  json::parse_json(body, [](JsonObject root) -> bool {
-                    id(now_state) = root["state"] | "idle";
-                    id(now_title) = root["title"] | "";
-                    id(now_key) = root["key"] | "";
-                    id(now_poster) = root["poster"] | "";
-                    id(now_player) = root["player"] | "";
-                    id(now_message) = root["message"] | "";
-                    id(now_position) = root["position"] | 0;
-                    id(now_duration) = root["duration"] | 0;
-                    return true;
-                  });
-              - script.execute: render
-          on_error:
-            - lambda: 'id(now_state) = "offline";'
-            - script.execute: render
-
-  # Update the screen from the globals.
-  - id: render
-    mode: queued
-    then:
-      - if:
-          condition:
-            lambda: 'return id(now_state) == "idle" || id(now_state) == "offline";'
-          then:
-            - lvgl.widget.hide: [poster_img, title_lbl, info_lbl, progress, time_lbl, controls]
-            - lvgl.label.update:
-                id: idle_lbl
-                text: !lambda |-
-                  return id(now_state) == "offline"
-                    ? std::string("Can't reach plexnfc\n${plexnfc_url}")
-                    : std::string("Tap a poster\nto start a movie");
-            - lvgl.widget.show: idle_lbl
-            - lambda: 'id(shown_key) = "";'
-            - if:
-                condition:
-                  not:
-                    script.is_running: screen_timer
-                then:
-                  - script.execute: screen_timer
-          else:
-            - script.stop: screen_timer
-            - light.turn_on: backlight
-            - lvgl.widget.hide: idle_lbl
-            - lvgl.widget.show: [title_lbl, info_lbl, progress, time_lbl, controls]
-            - lvgl.label.update:
-                id: title_lbl
-                text: !lambda 'return id(now_title);'
-            - lvgl.label.update:
-                id: info_lbl
-                text: !lambda |-
-                  const std::string &s = id(now_state);
-                  if (s == "starting") return std::string("Starting on ") + id(now_player) + "...";
-                  if (s == "error") return id(now_message);
-                  if (s == "paused") return std::string("Paused on ") + id(now_player);
-                  if (s == "buffering") return std::string("Buffering...");
-                  return std::string("Playing on ") + id(now_player);
-            - lvgl.bar.update:
-                id: progress
-                value: !lambda |-
-                  return id(now_duration) > 0 ? id(now_position) * 1000 / id(now_duration) : 0;
-            - lvgl.label.update:
-                id: time_lbl
-                text: !lambda |-
-                  auto fmt = [](int t) {
-                    char buf[12];
-                    snprintf(buf, sizeof(buf), "%d:%02d:%02d", t / 3600, (t / 60) % 60, t % 60);
-                    return std::string(buf);
-                  };
-                  if (id(now_duration) <= 0) return std::string("");
-                  return fmt(id(now_position)) + " / " + fmt(id(now_duration));
-            - lvgl.label.update:
-                id: play_icon
-                # pause symbol while playing, play symbol otherwise
-                text: !lambda |-
-                  return id(now_state) == "playing" ? std::string("") : std::string("");
-            # New movie: fetch its poster, sized exactly for the screen.
-            - if:
-                condition:
-                  lambda: 'return !id(now_key).empty() && id(now_key) != id(shown_key);'
-                then:
-                  - lambda: 'id(shown_key) = id(now_key);'
-                  - lvgl.widget.hide: poster_img
-                  - online_image.set_url:
-                      id: poster
-                      url: !lambda 'return std::string("${plexnfc_url}") + id(now_poster) + "?w=200&h=300";'
-
-  - id: screen_timer
-    mode: single
-    then:
-      - delay: ${screen_timeout}
-      - light.turn_off: backlight
-
-  # Run a plexnfc control endpoint, then refresh the screen straight away.
-  - id: send
-    mode: queued
-    parameters:
-      path: string
-    then:
-      - http_request.get:
-          url: !lambda 'return std::string("${plexnfc_url}") + path;'
-      - script.execute: refresh
-
-# ---- NFC reader ----------------------------------------------------------------
-
+# The PN532 on the I2C header
 i2c:
-  sda: GPIO4
-  scl: GPIO5
-  frequency: 400kHz
+  sda: ${nfc_sda}
+  scl: ${nfc_scl}
+  scan: true
+  frequency: 100kHz
 
-pn532_i2c:
-  id: nfc_reader
-  update_interval: 500ms
-  on_tag:
-    then:
-      - lambda: |-
-          id(tag_url) = "";
-          if (!tag.has_ndef_message()) return;
-          for (auto &record : tag.get_ndef_message()->get_records()) {
-            std::string payload = record->get_payload();
-            if (payload.rfind("${plexnfc_url}/", 0) == 0) {
-              id(tag_url) = payload;
-              break;
-            }
-          }
-      - if:
-          condition:
-            lambda: 'return !id(tag_url).empty();'
-          then:
-            - light.turn_on: backlight
-            # async=1: plexnfc answers at once and starts the movie in the
-            # background, so the screen can show "Starting..." meanwhile.
-            - http_request.get:
-                url: !lambda |-
-                  const std::string &u = id(tag_url);
-                  return u + (u.find('?') == std::string::npos ? "?" : "&") + "async=1";
-            - script.execute: refresh
-          else:
-            - logger.log: "Not a plexnfc tag (its URL doesn't start with ${plexnfc_url})"
+# ---- screen and touch --------------------------------------------------------------
 
-# ---- screen ----------------------------------------------------------------------
-
+# The display and the touch controller share one SPI bus
 spi:
-  - id: spi_bus
-    clk_pin: GPIO12
-    mosi_pin: GPIO11
-    miso_pin: GPIO13
+  - id: lcd
+    clk_pin: GPIO14
+    mosi_pin: GPIO13
+    miso_pin: GPIO12
 
 output:
   - platform: ledc
-    pin: GPIO21
+    pin: GPIO27
     id: backlight_pwm
+    frequency: 1000Hz
+  # The board's RGB LED, kept off
+  - platform: ledc
+    id: led_red
+    pin: GPIO22
+    inverted: true
+  - platform: ledc
+    id: led_green
+    pin: GPIO16
+    inverted: true
+  - platform: ledc
+    id: led_blue
+    pin: GPIO17
+    inverted: true
 
 light:
   - platform: monochromatic
     id: backlight
     name: Backlight
     output: backlight_pwm
-    restore_mode: ALWAYS_ON
+    # Keeps the brightness chosen on the settings screen
+    restore_mode: RESTORE_AND_ON
     default_transition_length: 300ms
+  - platform: rgb
+    id: led
+    red: led_red
+    green: led_green
+    blue: led_blue
+    restore_mode: ALWAYS_OFF
 
 display:
-  - platform: ili9xxx
+  - platform: mipi_spi
     id: screen
     model: ST7796
-    spi_id: spi_bus
-    cs_pin: GPIO10
-    dc_pin: GPIO9
-    reset_pin: GPIO14
+    spi_id: lcd
     data_rate: 40MHz
+    cs_pin:
+      number: GPIO15
+      ignore_strapping_warning: true
+    dc_pin:
+      number: GPIO2
+      ignore_strapping_warning: true
+    invert_colors: false
     dimensions:
       width: 320
       height: 480
-    # If colours look wrong, flip these two
-    invert_colors: false
-    color_order: bgr
-    auto_clear_enabled: false
     update_interval: never
+    auto_clear_enabled: false
 
 touchscreen:
   - platform: xpt2046
     id: touch
-    spi_id: spi_bus
-    cs_pin: GPIO15
-    interrupt_pin: GPIO16
-    # Calibrate for your panel: see esphome/README.md
+    spi_id: lcd
+    cs_pin: GPIO33
+    update_interval: 20ms
+    threshold: 800
+    # Measured on this panel by pressing its corners
     calibration:
-      x_min: 230
-      x_max: 3860
-      y_min: 260
-      y_max: 3860
+      x_min: 360
+      x_max: 3600
+      y_min: 380
+      y_max: 3800
+    # Its touch runs bottom to top
+    transform:
+      mirror_y: true
     on_touch:
       - light.turn_on: backlight
 
-online_image:
-  - id: poster
-    url: ${plexnfc_url}/poster/none
+# A placeholder for the poster widget: the poster itself is downloaded and decoded in
+# the background by marquee_link
+image:
+  - platform: online_image
+    id: poster
+    url: ${marquee_url}/poster/none
     format: JPEG
     type: RGB565
-    resize: 200x300
+    resize: 16x16
     update_interval: never
-    on_download_finished:
-      - lvgl.image.update:
-          id: poster_img
-          src: poster
-      - lvgl.widget.show: poster_img
 
 lvgl:
   displays: [screen]
   touchscreens: [touch]
-  buffer_size: 25%
+  buffer_size: 6%
   bg_color: 0x101010
   default_font: montserrat_14
   theme:
@@ -322,66 +160,106 @@ lvgl:
     - id: main_page
       bg_color: 0x101010
       widgets:
+        - button:
+            id: gear_btn
+            align: TOP_LEFT
+            x: 10
+            y: 10
+            width: 44
+            height: 44
+            radius: 22
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text_font: montserrat_20
+                  text_color: 0x9A9A9A
+                  text: "\uF013"
+            on_click:
+              - script.execute: show_settings
+
         - label:
             id: idle_lbl
             align: CENTER
+            y: -40
+            width: 300
             text_align: CENTER
             text_font: montserrat_20
-            text_color: 0x8A8A8A
-            text: "Tap a poster\nto start a movie"
+            text_color: 0x9A9A9A
+            text: "Connecting..."
+
+        - label:
+            id: code_lbl
+            align: CENTER
+            y: 80
+            text_font: montserrat_48
+            text_color: 0xE5A00D
+            text: ""
 
         - image:
             id: poster_img
             src: poster
             align: TOP_MID
-            y: 12
+            y: 20
             hidden: true
 
-        - label:
-            id: title_lbl
+        # What's playing, stacked under the poster so a two-line title pushes the rest down
+        - obj:
             align: TOP_MID
-            y: 322
-            width: 300
-            long_mode: DOT
-            text_align: CENTER
-            text_font: montserrat_20
-            text_color: 0xFFFFFF
-            text: ""
-            hidden: true
+            y: 176
+            width: 310
+            height: 220
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            layout:
+              type: FLEX
+              flex_flow: COLUMN
+              pad_row: 8
+              flex_align_main: START
+              flex_align_cross: CENTER
+              flex_align_track: CENTER
+            widgets:
+              - label:
+                  id: title_lbl
+                  width: 300
+                  # Up to two lines, then "..."
+                  max_height: 48
+                  long_mode: DOT
+                  text_align: CENTER
+                  text_font: montserrat_20
+                  text_color: 0xFFFFFF
+                  text: ""
+                  hidden: true
 
-        - label:
-            id: info_lbl
-            align: TOP_MID
-            y: 350
-            width: 300
-            long_mode: DOT
-            text_align: CENTER
-            text_color: 0x9E9E9E
-            text: ""
-            hidden: true
+              - label:
+                  id: info_lbl
+                  width: 300
+                  long_mode: DOT
+                  text_align: CENTER
+                  text_color: 0x9E9E9E
+                  text: ""
+                  hidden: true
 
-        - bar:
-            id: progress
-            align: TOP_MID
-            y: 376
-            width: 280
-            height: 6
-            min_value: 0
-            max_value: 1000
-            value: 0
-            bg_color: 0x333333
-            indicator:
-              bg_color: 0xE5A00D
-            hidden: true
+              - bar:
+                  id: progress
+                  width: 280
+                  height: 6
+                  min_value: 0
+                  max_value: 1000
+                  value: 0
+                  bg_color: 0x333333
+                  indicator:
+                    bg_color: 0xE5A00D
+                  hidden: true
 
-        - label:
-            id: time_lbl
-            align: TOP_MID
-            y: 388
-            text_font: montserrat_12
-            text_color: 0x9E9E9E
-            text: ""
-            hidden: true
+              - label:
+                  id: time_lbl
+                  text_font: montserrat_12
+                  text_color: 0x9E9E9E
+                  text: ""
+                  hidden: true
 
         - obj:
             id: controls
@@ -401,18 +279,16 @@ lvgl:
               flex_align_track: CENTER
             widgets:
               - button:
-                  id: back_btn
-                  width: 54
+                  width: 58
                   height: 54
                   widgets:
                     - label:
                         align: CENTER
-                        text_font: montserrat_20
-                        text: ""   # back 30s
+                        text_font: montserrat_18
+                        text: "-30"
                   on_click:
-                    - script.execute: { id: send, path: "/seek?by=-30" }
+                    - script.execute: { id: send_control, action: seek, by: -30 }
               - button:
-                  id: play_btn
                   width: 62
                   height: 62
                   radius: 31
@@ -422,39 +298,292 @@ lvgl:
                         id: play_icon
                         align: CENTER
                         text_font: montserrat_24
-                        text: ""
+                        text: "\uF04C"
                   on_click:
-                    - script.execute: { id: send, path: "/toggle" }
+                    - script.execute: { id: send_control, action: toggle, by: 0 }
               - button:
-                  id: fwd_btn
-                  width: 54
+                  width: 58
+                  height: 54
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text_font: montserrat_18
+                        text: "+30"
+                  on_click:
+                    - script.execute: { id: send_control, action: seek, by: 30 }
+              - button:
+                  width: 58
                   height: 54
                   widgets:
                     - label:
                         align: CENTER
                         text_font: montserrat_20
-                        text: ""   # forward 30s
+                        text: "\uF04D"
                   on_click:
-                    - script.execute: { id: send, path: "/seek?by=30" }
-              - button:
-                  id: stop_btn
-                  width: 54
-                  height: 54
-                  widgets:
-                    - label:
-                        align: CENTER
-                        text_font: montserrat_20
-                        text: ""
-                  on_click:
-                    - script.execute: { id: send, path: "/stop" }
-              - button:
-                  id: off_btn
-                  width: 54
-                  height: 54
-                  widgets:
-                    - label:
-                        align: CENTER
-                        text_font: montserrat_20
-                        text: ""   # TV off (needs HA_OFF_SCRIPT)
-                  on_click:
-                    - script.execute: { id: send, path: "/off" }
+                    - script.execute: { id: send_control, action: stop, by: 0 }
+
+    - id: settings_page
+      bg_color: 0x101010
+      widgets:
+        - button:
+            align: TOP_LEFT
+            x: 10
+            y: 10
+            width: 44
+            height: 44
+            radius: 22
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\uF053"
+            on_click:
+              - lvgl.page.show: main_page
+        - label:
+            align: TOP_MID
+            y: 20
+            text_font: montserrat_20
+            text_color: 0xFFFFFF
+            text: "Settings"
+        - label:
+            id: info_lbl2
+            align: TOP_LEFT
+            x: 20
+            y: 66
+            width: 280
+            text_color: 0xC8C8C8
+            text_line_space: 1
+            text: ""
+        - label:
+            align: TOP_LEFT
+            x: 20
+            y: 300
+            text_color: 0x9E9E9E
+            text: "Brightness"
+        - slider:
+            id: brightness
+            align: TOP_MID
+            y: 330
+            width: 250
+            min_value: 10
+            max_value: 100
+            value: 100
+            bg_color: 0x333333
+            indicator:
+              bg_color: 0xE5A00D
+            knob:
+              bg_color: 0xFFFFFF
+            on_value:
+              - light.turn_on:
+                  id: backlight
+                  brightness: !lambda 'return x / 100.0f;'
+                  transition_length: 0s
+        - button:
+            align: TOP_MID
+            y: 362
+            width: 280
+            height: 46
+            radius: 12
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\uF1EB   Change Wi-Fi"
+            on_click:
+              - script.execute: wifi_scan
+        - button:
+            align: TOP_MID
+            y: 418
+            width: 280
+            height: 46
+            radius: 12
+            bg_color: 0x4A1C1C
+            widgets:
+              - label:
+                  align: CENTER
+                  text_color: 0xFF8A80
+                  text: "Reset to defaults"
+            on_click:
+              - lvgl.label.update:
+                  id: reset_lbl
+                  text: "Reset Movie Remote?\n\nIt forgets its Wi-Fi network and its pairing with Marquee Server, then starts setup again from the Movie Remote hotspot."
+              - lvgl.page.show: reset_page
+
+    - id: wifi_page
+      bg_color: 0x101010
+      widgets:
+        - button:
+            align: TOP_LEFT
+            x: 10
+            y: 10
+            width: 44
+            height: 44
+            radius: 22
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\uF053"
+            on_click:
+              - script.execute: show_settings
+        - label:
+            align: TOP_MID
+            y: 20
+            text_font: montserrat_20
+            text_color: 0xFFFFFF
+            text: "Wi-Fi"
+        - button:
+            align: TOP_RIGHT
+            x: -10
+            y: 10
+            width: 44
+            height: 44
+            radius: 22
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\uF021"
+            on_click:
+              - script.execute: wifi_scan
+        - label:
+            id: wifi_status
+            align: TOP_MID
+            y: 64
+            text_color: 0x9E9E9E
+            text: ""
+        - obj:
+            id: wifi_list
+            align: TOP_MID
+            y: 92
+            width: 300
+            height: 380
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: true
+
+    - id: password_page
+      bg_color: 0x101010
+      widgets:
+        - button:
+            align: TOP_LEFT
+            x: 10
+            y: 10
+            width: 44
+            height: 44
+            radius: 22
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\uF053"
+            on_click:
+              - lvgl.page.show: wifi_page
+        - label:
+            id: pw_title
+            align: TOP_MID
+            y: 20
+            width: 200
+            long_mode: DOT
+            text_align: CENTER
+            text_font: montserrat_18
+            text_color: 0xFFFFFF
+            text: ""
+        - textarea:
+            id: pw_ta
+            align: TOP_LEFT
+            x: 10
+            y: 76
+            width: 230
+            height: 46
+            one_line: true
+            password_mode: true
+            placeholder_text: "Password"
+            max_length: 64
+        - button:
+            id: pw_show
+            align: TOP_RIGHT
+            x: -10
+            y: 76
+            width: 66
+            height: 46
+            radius: 12
+            widgets:
+              - label:
+                  id: pw_show_lbl
+                  align: CENTER
+                  text: "Show"
+            on_click:
+              - lambda: |-
+                  bool hidden = lv_textarea_get_password_mode(id(pw_ta));
+                  lv_textarea_set_password_mode(id(pw_ta), !hidden);
+                  lv_label_set_text(id(pw_show_lbl), hidden ? "Hide" : "Show");
+        - label:
+            align: TOP_MID
+            y: 136
+            width: 300
+            text_align: CENTER
+            text_color: 0x9E9E9E
+            text: "Press the check key to join"
+        - keyboard:
+            id: pw_kb
+            textarea: pw_ta
+            align: BOTTOM_MID
+            width: 320
+            height: 230
+            on_ready:
+              - script.execute: wifi_join
+            on_cancel:
+              - lvgl.page.show: wifi_page
+
+    - id: reset_page
+      bg_color: 0x101010
+      widgets:
+        - label:
+            id: reset_lbl
+            align: CENTER
+            y: -60
+            width: 280
+            text_align: CENTER
+            text_font: montserrat_18
+            text_color: 0xFFFFFF
+            text: ""
+        - button:
+            align: BOTTOM_LEFT
+            x: 20
+            y: -30
+            width: 130
+            height: 50
+            radius: 12
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "Cancel"
+            on_click:
+              - lvgl.page.show: settings_page
+        - button:
+            align: BOTTOM_RIGHT
+            x: -20
+            y: -30
+            width: 130
+            height: 50
+            radius: 12
+            bg_color: 0xC62828
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "Reset"
+            on_click:
+              - script.execute: reset_box
+
+# Sounds for taps and card scans (see common/movie-remote.yaml). This board has no
+# speaker, so they're silent.
+script:
+  - id: feedback
+    parameters:
+      kind: string
+    then:
+      - logger.log:
+          format: "Sound: %s"
+          args: ["kind.c_str()"]
+          level: VERBOSE

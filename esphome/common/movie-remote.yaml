@@ -1,0 +1,591 @@
+# The Movie Remote's logic, shared by every board: Wi-Fi and its setup page, pairing
+# with Marquee Server, what's playing, the settings screens' actions, and the PN532.
+#
+# A board's file (movie-remote.yaml, movie-remote-crowpanel.yaml) includes this and
+# adds the chip, the screen, touch, the backlight light "backlight", the online_image
+# "poster" and the LVGL pages, using the widget IDs the scripts below update. It also
+# sets these substitutions: name, friendly_name, marquee_url, screen_timeout,
+# poster_w, poster_h (the poster's size in pixels) and wifi_name_width.
+
+logger:
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# No Wi-Fi network is built in: on first start the box offers a "Movie Remote"
+# hotspot (or set it up over USB at web.esphome.io) and keeps what you choose.
+wifi:
+  # The box runs off mains power. Power saving lets the radio sleep between beacons,
+  # which made requests to Marquee Server take anywhere from 40 ms to 5 s.
+  power_save_mode: none
+  ap:
+    ssid: ${friendly_name}
+
+captive_portal:
+
+# Our own Wi-Fi setup page in place of the captive portal's (components/movie_portal)
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [movie_portal, marquee_link]
+
+movie_portal:
+
+# Requests to Marquee Server go from a background task (components/marquee_link), so
+# the screen and buttons never wait on the network. Each answer comes back here.
+marquee_link:
+  id: marquee
+  url: ${marquee_url}
+  on_response:
+    - lambda: |-
+        if (tag == "now") {
+          // A button was just pressed: keep what it showed until the player catches up
+          if (millis() < id(hold_until)) return;
+          if (status == 401) {
+            id(forget_pairing).execute();
+            return;
+          }
+          if (status != 200) {
+            // One lost request isn't "offline"; three in a row is
+            if (++id(fail_count) >= 3) {
+              id(now_state) = "offline";
+              id(render).execute();
+            }
+            return;
+          }
+          id(fail_count) = 0;
+          json::parse_json(body, [](JsonObject root) -> bool {
+            id(now_state) = root["state"] | "idle";
+            id(now_title) = root["title"] | "";
+            id(now_key) = root["key"] | "";
+            id(now_poster) = root["poster"] | "";
+            id(now_player) = root["player"] | "";
+            id(now_message) = root["message"] | "";
+            // The player reports its position every few seconds; between reports the box
+            // counts the seconds itself, so only take a position that's new
+            int reported = root["position"] | 0;
+            if (reported != id(reported_position)) {
+              id(reported_position) = reported;
+              id(now_position) = reported;
+            }
+            id(now_duration) = root["duration"] | 0;
+            id(box_name) = root["name"] | "";
+            return true;
+          });
+          id(render).execute();
+        } else if (tag == "pair") {
+          id(now_state) = "offline";
+          if (status == 200) {
+            json::parse_json(body, [](JsonObject root) -> bool {
+              id(pair_id) = root["pair_id"] | "";
+              id(pair_code) = root["code"] | "";
+              return true;
+            });
+            if (!id(pair_id).empty()) id(now_state) = "pairing";
+          }
+          id(render).execute();
+        } else if (tag == "pairpoll") {
+          if (status == 404) { id(pair_id) = ""; return; }  // the code expired: get a new one
+          if (status != 200) return;
+          std::string state, given;
+          json::parse_json(body, [&](JsonObject root) -> bool {
+            state = root["status"] | "";
+            given = root["secret"] | "";
+            return true;
+          });
+          if (state == "approved" && !given.empty()) {
+            auto call = id(secret).make_call();
+            call.set_value(given);
+            call.perform();
+            id(pair_id) = "";
+            id(now_state) = "idle";
+            id(render).execute();
+            id(marquee).request("now", "GET", "/remote/now");
+          }
+        } else if (tag == "poster") {
+          // Downloaded and decoded in the background; still the movie on screen?
+          if (status == 200 && !id(shown_key).empty()) {
+            lv_image_set_src(id(poster_img), id(marquee).image());
+            lv_obj_remove_flag(id(poster_img), LV_OBJ_FLAG_HIDDEN);
+          }
+        } else if (tag == "tap") {
+          if (status == 202) {
+            id(feedback)->execute(std::string("play"));
+            id(marquee).request("now", "GET", "/remote/now");  // it's starting
+            return;
+          }
+          // Anything else is a message for the screen: a card linked during a scan, or a
+          // card that isn't linked to a movie
+          std::string message = status < 0 ? "Can't reach Marquee Server" : "";
+          std::string result;
+          bool scan = false;
+          if (status > 0) {
+            json::parse_json(body, [&message, &scan, &result](JsonObject root) -> bool {
+              message = root["message"] | "";
+              scan = root["scan"] | false;
+              result = root["result"] | "";
+              return true;
+            });
+          }
+          // A sound for it, on a board with a speaker: linked, already linked or done, or a problem
+          id(feedback)->execute(std::string(!scan ? "error" : result == "linked" ? "linked"
+                                            : result == "unreadable" ? "error" : "notice"));
+          if (message.empty()) message = "That card didn't work";
+          id(now_state) = "notice";
+          id(now_message) = message;
+          id(hold_until) = millis() + (scan ? 4000 : 6000);  // until the screen goes back
+          id(render).execute();
+        } else if (tag == "unpair") {
+          id(factory_reset_btn).press();
+        }
+
+improv_serial:
+
+# Shown on the settings screen
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: wifi_ip
+      internal: true
+    ssid:
+      id: wifi_ssid
+      internal: true
+    mac_address:
+      id: wifi_mac
+      internal: true
+
+sensor:
+  - platform: wifi_signal
+    id: wifi_rssi
+    internal: true
+    update_interval: 10s
+
+# "Reset to defaults" on the settings screen: forgets Wi-Fi and the pairing
+button:
+  - platform: factory_reset
+    id: factory_reset_btn
+    internal: true
+
+http_request:
+  timeout: 8s
+  verify_ssl: false
+
+# The secret Marquee Server gave the box when you approved it. Kept in flash.
+text:
+  - platform: template
+    id: secret
+    name: Secret
+    internal: true
+    mode: password
+    optimistic: true
+    restore_value: true
+    max_length: 64
+    on_value:
+      - lambda: |-
+          id(auth) = x.empty() ? std::string("") : std::string("Bearer ") + x;
+          id(marquee).set_auth(id(auth));
+
+globals:
+  # "Bearer <secret>", for the Authorization header
+  - id: auth
+    type: std::string
+  - id: pair_id
+    type: std::string
+  - id: pair_code
+    type: std::string
+  - id: tag_url
+    type: std::string
+  - id: now_state
+    type: std::string
+    initial_value: '"connecting"'
+  - id: now_title
+    type: std::string
+  - id: now_key
+    type: std::string
+  - id: now_poster
+    type: std::string
+  - id: now_player
+    type: std::string
+  - id: now_message
+    type: std::string
+  - id: now_position
+    type: int
+    initial_value: '0'
+  - id: now_duration
+    type: int
+    initial_value: '0'
+  - id: shown_key
+    type: std::string
+  # The name this box is paired as, from the server
+  - id: box_name
+    type: std::string
+  # The Wi-Fi network chosen on the screen, and whether it needs a password
+  - id: wifi_choice
+    type: std::string
+  - id: wifi_choice_locked
+    type: bool
+    initial_value: 'true'
+  # The last position the server reported, and when the box last counted a second
+  - id: reported_position
+    type: int
+    initial_value: '-1'
+  # Requests to /remote/now that failed in a row
+  - id: fail_count
+    type: int
+    initial_value: '0'
+  # Until when (millis) to keep what a button press showed
+  - id: hold_until
+    type: uint32_t
+    initial_value: '0'
+
+interval:
+  # Count the seconds while playing, between the player's reports
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (id(now_state) != "playing" || id(now_duration) <= 0) return;
+          if (id(now_position) < id(now_duration)) id(now_position)++;
+          id(render).execute();
+  - interval: 2s
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(secret).state.empty();'
+          then:
+            - script.execute: refresh
+          else:
+            - script.execute: pair_poll
+
+script:
+  # Paired already: show what's playing. Otherwise ask to pair.
+  - id: connect_box
+    mode: single
+    then:
+      - wait_until:
+          condition: wifi.connected
+      - lambda: |-
+          id(auth) = id(secret).state.empty() ? std::string("") : std::string("Bearer ") + id(secret).state;
+          id(marquee).set_auth(id(auth));
+      - if:
+          condition:
+            lambda: 'return id(secret).state.empty();'
+          then:
+            - script.execute: pair_start
+          else:
+            - script.execute: refresh
+
+  # ---- pairing --------------------------------------------------------------------
+
+  - id: pair_start
+    then:
+      - lambda: |-
+          id(pair_id) = "";
+          id(now_state) = "connecting";
+          id(marquee).request("pair", "POST", "/tv/pair",
+                           "{\"name\": " + marquee_link::MarqueeLink::quote("${friendly_name}") + ", \"kind\": \"remote\"}");
+      - script.execute: render
+
+  # Waiting for the code to be approved in the control panel.
+  - id: pair_poll
+    then:
+      - lambda: |-
+          if (!wifi::global_wifi_component->is_connected()) return;
+          if (id(marquee).pending("pair") || id(marquee).pending("pairpoll")) return;
+          if (id(pair_id).empty()) id(pair_start).execute();
+          else id(marquee).request("pairpoll", "GET", "/tv/pair/" + id(pair_id));
+
+  # The server forgot the box (removed in the control panel): pair again.
+  - id: forget_pairing
+    then:
+      - lambda: |-
+          auto call = id(secret).make_call();
+          call.set_value("");
+          call.perform();
+          id(pair_id) = "";
+      - script.execute: pair_start
+
+  # ---- what's playing -------------------------------------------------------------
+
+  - id: refresh
+    then:
+      - lambda: |-
+          if (wifi::global_wifi_component->is_connected() && !id(marquee).pending("now"))
+            id(marquee).request("now", "GET", "/remote/now");
+
+  # Update the screen from the globals. Only what changed is touched: every change
+  # makes the screen redraw that area.
+  - id: render
+    then:
+      - lambda: |-
+          auto set_text = [](lv_obj_t *obj, const std::string &text) {
+            if (strcmp(lv_label_get_text(obj), text.c_str()) != 0) lv_label_set_text(obj, text.c_str());
+          };
+          auto show = [](lv_obj_t *obj, bool visible) {
+            if (visible == lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN)) {
+              if (visible) lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN);
+              else lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+            }
+          };
+          auto wake = []() {
+            if (!id(backlight).current_values.is_on()) id(backlight).turn_on().perform();
+          };
+          const std::string &s = id(now_state);
+          bool waiting = s == "idle" || s == "offline" || s == "connecting" || s == "pairing" || s == "joining" ||
+                         s == "notice";
+
+          if (waiting) {
+            for (lv_obj_t *obj : {id(poster_img), id(title_lbl), id(info_lbl), id(progress), id(time_lbl), id(controls)})
+              show(obj, false);
+            std::string text;
+            if (s == "connecting") text = "Connecting...";
+            else if (s == "notice") text = id(now_message);
+            else if (s == "joining") text = "Joining " + id(wifi_choice) + "...";
+            else if (s == "offline") text = "Can't reach Marquee Server\n${marquee_url}";
+            else if (s == "pairing") text = "Pair with Marquee\n\nApprove this code in\nthe control panel";
+            else text = "Hold a page of the\nmovie book here";
+            set_text(id(idle_lbl), text);
+            set_text(id(code_lbl), s == "pairing" ? id(pair_code) : std::string(""));
+            show(id(idle_lbl), true);
+            show(id(code_lbl), true);
+            id(shown_key) = "";
+            if (s == "pairing") {
+              id(screen_timer).stop();
+              wake();
+            } else if (!id(screen_timer).is_running()) {
+              id(screen_timer).execute();
+            }
+            return;
+          }
+
+          id(screen_timer).stop();
+          wake();
+          show(id(idle_lbl), false);
+          show(id(code_lbl), false);
+          for (lv_obj_t *obj : {id(title_lbl), id(info_lbl), id(progress), id(time_lbl), id(controls)})
+            show(obj, true);
+          set_text(id(title_lbl), id(now_title));
+          std::string info;
+          if (s == "starting") info = "Starting on " + id(now_player) + "...";
+          else if (s == "error") info = id(now_message);
+          else if (s == "paused") info = "Paused on " + id(now_player);
+          else info = "Playing on " + id(now_player);
+          set_text(id(info_lbl), info);
+          int value = id(now_duration) > 0 ? id(now_position) * 1000 / id(now_duration) : 0;
+          if (lv_bar_get_value(id(progress)) != value) lv_bar_set_value(id(progress), value, LV_ANIM_OFF);
+          auto fmt = [](int t) {
+            char buf[12];
+            snprintf(buf, sizeof buf, "%d:%02d:%02d", t / 3600, (t / 60) % 60, t % 60);
+            return std::string(buf);
+          };
+          set_text(id(time_lbl), id(now_duration) > 0 ? fmt(id(now_position)) + " / " + fmt(id(now_duration))
+                                                      : std::string(""));
+          set_text(id(play_icon), s == "playing" ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+          // A new movie: fetch its poster, sized for the screen, in the background
+          if (!id(now_poster).empty() && id(now_key) != id(shown_key)) {
+            id(shown_key) = id(now_key);
+            show(id(poster_img), false);
+            id(marquee).request_image("poster", id(now_poster) + "?w=${poster_w}&h=${poster_h}",
+                                      ${poster_w}, ${poster_h});
+          }
+
+  - id: screen_timer
+    mode: single
+    then:
+      - delay: ${screen_timeout}
+      - light.turn_off: backlight
+
+  # ---- settings screen ----------------------------------------------------------------
+
+  - id: show_settings
+    then:
+      - script.execute: update_info
+      - lvgl.slider.update:
+          id: brightness
+          value: !lambda 'return id(backlight).current_values.get_brightness() * 100;'
+      - lvgl.page.show: settings_page
+
+  - id: update_info
+    then:
+      - lvgl.label.update:
+          id: info_lbl2
+          text: !lambda |-
+            std::string paired = id(secret).state.empty() ? std::string("Not paired yet")
+                                 : (id(box_name).empty() ? std::string("Paired") : id(box_name));
+            bool online = wifi::global_wifi_component->is_connected();
+            char rssi[24] = "";
+            if (online && !std::isnan(id(wifi_rssi).state))
+              snprintf(rssi, sizeof rssi, "  (%d dBm)", (int) id(wifi_rssi).state);
+            std::string s;
+            s += "Paired as\n   " + paired + "\n";
+            s += "Server\n   ${marquee_url}\n";
+            s += "Wi-Fi\n   " + (online ? id(wifi_ssid).state + rssi : std::string("Not connected")) + "\n";
+            s += "IP address\n   " + (online ? id(wifi_ip).state : std::string("-")) + "\n";
+            s += "MAC address\n   " + get_mac_address_pretty() + "\n";
+            s += "Firmware\n   ESPHome " ESPHOME_VERSION;
+            return s;
+
+  # Look for networks, then list them on the Wi-Fi screen.
+  - id: wifi_scan
+    mode: restart
+    then:
+      - lvgl.label.update:
+          id: wifi_status
+          text: "Looking for networks..."
+      - lambda: 'lv_obj_clean(id(wifi_list));'
+      - lvgl.page.show: wifi_page
+      - lambda: 'wifi::global_wifi_component->start_scanning();'
+      - delay: 6s
+      - lambda: |-
+          lv_obj_t *list = id(wifi_list);
+          lv_obj_clean(list);
+          lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+          lv_obj_set_style_pad_row(list, 6, 0);
+          struct Net { std::string ssid; int rssi; bool locked; };
+          std::vector<Net> nets;
+          {
+            wifi::ScanResultsLock lock(wifi::global_wifi_component);
+            for (const auto &r : wifi::global_wifi_component->get_scan_result()) {
+              if (r.get_is_hidden()) continue;
+              std::string ssid(r.get_ssid().c_str());
+              if (ssid.empty()) continue;
+              auto known = std::find_if(nets.begin(), nets.end(), [&](const Net &n) { return n.ssid == ssid; });
+              if (known == nets.end()) nets.push_back({ssid, r.get_rssi(), r.get_with_auth()});
+              else if (r.get_rssi() > known->rssi) known->rssi = r.get_rssi();
+            }
+          }
+          std::sort(nets.begin(), nets.end(), [](const Net &a, const Net &b) { return a.rssi > b.rssi; });
+          for (const auto &n : nets) {
+            lv_obj_t *row = lv_button_create(list);
+            lv_obj_set_size(row, lv_pct(100), 48);
+            lv_obj_set_style_radius(row, 10, 0);
+            lv_obj_t *name = lv_label_create(row);
+            lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
+            lv_obj_set_width(name, ${wifi_name_width});
+            lv_label_set_text(name, n.ssid.c_str());
+            lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, 0);
+            lv_obj_t *icons = lv_label_create(row);
+            std::string marks = std::string(n.locked ? "\uF023  " : "") +
+                                (n.rssi >= -60 ? "\uF1EB" : n.rssi >= -75 ? "\uF1EB" : "\uF1EB");
+            lv_label_set_text(icons, marks.c_str());
+            lv_obj_set_style_text_opa(icons, n.rssi >= -60 ? LV_OPA_COVER : n.rssi >= -75 ? LV_OPA_70 : LV_OPA_40, 0);
+            lv_obj_align(icons, LV_ALIGN_RIGHT_MID, 0, 0);
+            // the network, after a 1 (needs a password) or 0, freed with the row
+            char *data = strdup(((n.locked ? "1" : "0") + n.ssid).c_str());
+            lv_obj_add_event_cb(row, [](lv_event_t *e) {
+              const char *data = (const char *) lv_event_get_user_data(e);
+              id(wifi_choice) = data + 1;
+              id(wifi_choice_locked) = data[0] == '1';
+              id(choose_network).execute();
+            }, LV_EVENT_CLICKED, data);
+            lv_obj_add_event_cb(row, [](lv_event_t *e) { free(lv_event_get_user_data(e)); }, LV_EVENT_DELETE, data);
+          }
+      - lvgl.label.update:
+          id: wifi_status
+          text: !lambda |-
+            return lv_obj_get_child_count(id(wifi_list)) == 0 ? std::string("No networks found. Tap Refresh.")
+                                                               : std::string("Tap a network to join it");
+
+  # A network was tapped: ask for its password, or join it if it's open.
+  - id: choose_network
+    then:
+      - if:
+          condition:
+            lambda: 'return id(wifi_choice_locked);'
+          then:
+            - lvgl.label.update:
+                id: pw_title
+                text: !lambda 'return std::string("Join ") + id(wifi_choice);'
+            - lvgl.textarea.update:
+                id: pw_ta
+                text: ""
+            - lvgl.page.show: password_page
+          else:
+            - script.execute: wifi_join
+
+  - id: wifi_join
+    then:
+      - lambda: |-
+          std::string password = id(wifi_choice_locked) ? lv_textarea_get_text(id(pw_ta)) : "";
+          ESP_LOGI("wifi", "Joining %s", id(wifi_choice).c_str());
+          wifi::global_wifi_component->save_wifi_sta(id(wifi_choice), password);
+          id(now_state) = "joining";
+      - lvgl.page.show: main_page
+      - script.execute: render
+      - script.execute: connect_box
+
+  # Reset to defaults: tell the server to forget this box, then wipe the Wi-Fi and the
+  # pairing and restart, back to the Movie Remote hotspot.
+  - id: reset_box
+    then:
+      - lvgl.label.update:
+          id: reset_lbl
+          text: "Resetting..."
+      - if:
+          condition:
+            lambda: 'return !id(secret).state.empty() && wifi::global_wifi_component->is_connected();'
+          then:
+            # Reset when the server answers; or anyway, if it doesn't
+            - lambda: 'id(marquee).request("unpair", "POST", "/remote/unpair", "{\"reset\": true}", false);'
+            - delay: 10s
+            - button.press: factory_reset_btn
+          else:
+            - button.press: factory_reset_btn
+
+  # A button: show the result at once, and tell the server in the background.
+  - id: send_control
+    parameters:
+      action: string
+      by: int
+    then:
+      - lambda: |-
+          if (action == "toggle") {
+            if (id(now_state) == "playing") id(now_state) = "paused";
+            else if (id(now_state) == "paused") id(now_state) = "playing";
+          } else if (action == "seek") {
+            int pos = id(now_position) + by;
+            if (pos < 0) pos = 0;
+            if (id(now_duration) > 0 && pos > id(now_duration)) pos = id(now_duration);
+            id(now_position) = pos;
+          }
+          // The player takes a moment to report the change
+          id(hold_until) = millis() + 2500;
+          std::string body = "{\"action\": \"" + action + "\"";
+          if (by != 0) body += ", \"by\": " + std::to_string(by);
+          body += "}";
+          id(marquee).request("control", "POST", "/remote/control", body, false);
+      - script.execute: render
+
+# ---- NFC reader (on the board's I2C bus) -------------------------------------------
+
+pn532_i2c:
+  id: nfc_reader
+  update_interval: 500ms
+  on_tag:
+    then:
+      - lambda: |-
+          // Cards are linked to movies by their ID in Marquee Server; tags written with a
+          // movie's address also work
+          id(tag_url) = "";
+          if (!tag.has_ndef_message()) return;
+          for (auto &record : tag.get_ndef_message()->get_records()) {
+            std::string payload = record->get_payload();
+            if (payload.find("/m/") != std::string::npos) {
+              id(tag_url) = payload;
+              break;
+            }
+          }
+      - if:
+          condition:
+            lambda: 'return !id(secret).state.empty();'
+          then:
+            - light.turn_on: backlight
+            - lambda: |-
+                ESP_LOGI("tag", "Read card %s %s", x.c_str(), id(tag_url).c_str());
+                id(hold_until) = 0;
+                id(marquee).request("tap", "POST", "/remote/tap",
+                                 "{\"uid\": " + marquee_link::MarqueeLink::quote(x) +
+                                 ", \"url\": " + marquee_link::MarqueeLink::quote(id(tag_url)) + "}", false);
+          else:
+            - logger.log: "The box isn't paired yet"

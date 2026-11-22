@@ -33,22 +33,31 @@ The movie is matched in Jellyfin by title and year and checked against the tag's
 
 `tvos/MovieBook` in the repository is a small Apple TV app that plexnfc can start movies in. Plex for Apple TV can't be started remotely, but Home Assistant can open an app, and Marquee then asks plexnfc what to play.
 
-1. Build and install it from Xcode (see `tvos/README.md`). Open it once, enter this app's **Tag base URL** address and a player name, for example `Den`.
-2. Set **Marquee player** to that name.
+1. Build and install it from Xcode (see `tvos/README.md`). Open it and choose this server from the list (it announces itself on your network), or enter this app's **Tag base URL** address, and approve the 6-digit code it shows under **Marquee Apple TVs and phones** on this panel. Type the room in the name box before you approve it, e.g. `Living Room`, since tvOS calls every Apple TV "Apple TV". To rename one later, change its name in the panel's list and choose **Rename**; phones sending taps to it follow the new name, but change **Marquee player** and any get-ready script setting that names it yourself.
+2. Set **Marquee player** to the Apple TV's name as the panel lists it.
 3. Use a get-ready script that wakes the Apple TV and opens Marquee (`media_player.select_source` with source `Marquee`).
 
 Streams come from Plex, which converts whatever the Apple TV can't play. To stream from Jellyfin instead, fill in the Jellyfin settings and set **Marquee stream** to `jellyfin`. A single tag can pick an app with `?client=app:NAME`.
+
+## Optional: choose a room on each phone (Marquee Remote)
+
+`ios/MarqueeRemote` is an iPhone and iPad app that pairs the same way: choose **Connect**, enter the **Tag base URL** address, and approve its code on this panel. It then lists every player plexnfc can see (Marquee Apple TVs, open Jellyfin apps, Plex players), and taps from that phone go to the one you pick. Other phones keep using the default player.
+
+plexnfc recognizes the phone by its Wi-Fi address, because a tapped tag opens in Safari, not in the app. Open Marquee Remote once after joining the network (or if taps go to the wrong room), and set the home network's **Private Wi-Fi Address** to **Fixed** in the phone's Wi-Fi settings rather than *Rotating*.
+
+The **Get-ready script** only runs for the default player, so a tap for another room doesn't wake the default one. Give other players their own script with **Get-ready scripts for other players**: `app:Living Room = script.living_room_movie; Den TV = script.den_roku`. Use the player IDs the panel and the app show (Marquee Apple TVs start with `app:`, Jellyfin apps with `jellyfin:`).
 
 ## Making the book and the tags
 
 In the **Movie Book** sidebar panel:
 
-- **Open printable book**: choose a title, a Plex collection and a layout. The book opens in a new tab from the **Tag base URL**, so do this on your home network. Wait for all the posters to load, then print with margins set to *None* and background graphics turned on. A whole library makes a very large book, so a Plex collection is recommended.
+- **Open printable book**: choose a title, a Plex collection and a layout. The book opens in a new tab from the **Tag base URL**, so do this on your home network. Wait for all the posters to load, then print at 100% scale with background graphics turned on. The book sets its own margins. A whole library makes a very large book, so a Plex collection is recommended.
 - **Tag URLs** / **tags.csv**: the URL to write onto each sticker with the NFC Tools app.
+- **Cards**: for the Movie Remote, link blank NFC cards to movies by their ID instead of writing them. Choose a collection, a label or some movies, tap **Scan cards**, and hold each movie's card on a Movie Remote when it comes up.
 
 ## Movie Remote
 
-The ESP32 Movie Remote firmware is in the repository's `esphome/` folder. Paste it into the **ESPHome Builder** app. Set `plexnfc_url` to the same address as **Tag base URL**.
+The ESP32 Movie Remote firmware is in the repository's `esphome/` folder. Paste it into the **ESPHome Builder** app. Set `marquee_url` to the same address as **Tag base URL**. Then approve the code the box shows in this panel.
 
 ## Network
 

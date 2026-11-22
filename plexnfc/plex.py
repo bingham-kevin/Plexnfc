@@ -9,17 +9,22 @@ items without an external ID.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from types import SimpleNamespace
 
+import requests
 from plexapi.exceptions import NotFound
+from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
 
 from .config import Config
+from .appletv import AppleTVError, AppleTVs
+from .cards import Cards
 from .homeassistant import HomeAssistant, HomeAssistantError
 from .jellyfin import TICKS_PER_SECOND, Jellyfin, JellyfinError, tag_key
-from .tvapp import AppInbox, jellyfin_hls_url, plex_hls_url
+from .tvapp import AppInbox, AppPairings, jellyfin_hls_url, plex_hls_url
 
 log = logging.getLogger(__name__)
 
@@ -40,9 +45,19 @@ def movie_key(movie) -> str:
     return f"rk-{movie.ratingKey}"
 
 
+def app_movie(movie, key: str | None = None) -> dict:
+    """What the Marquee app shows for a movie in rows, search and the player."""
+    key = key or movie_key(movie)
+    return {"key": key, "title": movie.title, "year": getattr(movie, "year", None),
+            "summary": getattr(movie, "summary", None) or "",
+            "duration": int((getattr(movie, "duration", 0) or 0) / 1000),
+            "poster": f"/poster/{key}?w=400&h=600"}
+
+
 class Plex:
     def __init__(self, config: Config, server: PlexServer | None = None,
-                 ha: HomeAssistant | None = None, jellyfin: Jellyfin | None = None):
+                 ha: HomeAssistant | None = None, jellyfin: Jellyfin | None = None,
+                 apple_tvs: AppleTVs | None = None):
         self.config = config
         self._server = server
         self._account = None
@@ -51,6 +66,13 @@ class Plex:
         if self.ha is None and config.ha_url and config.ha_token:
             self.ha = HomeAssistant(config.ha_url, config.ha_token)
         self.app_inbox = AppInbox()
+        # Saved next to the Plex sign-in, so it lasts as long as the app's /data does
+        self.app_pairings = AppPairings(os.path.join(os.path.dirname(config.auth_file) or ".",
+                                                     "marquee_devices.json"))
+        self.apple_tvs = apple_tvs or AppleTVs(os.path.join(os.path.dirname(config.auth_file) or ".",
+                                                            "apple_tvs.json"))
+        # Cards linked to movies by their ID, for the Movie Remote
+        self.cards = Cards(os.path.join(os.path.dirname(config.auth_file) or ".", "movie_cards.json"))
         self.jellyfin = jellyfin
         if self.jellyfin is None and config.jellyfin_url and config.jellyfin_api_key:
             self.jellyfin = Jellyfin(config.jellyfin_url, config.jellyfin_api_key)
@@ -60,8 +82,44 @@ class Plex:
         if self._server is None:
             if not self.config.plex_token:
                 raise PlexNFCError("Not signed in to Plex yet. Open plexnfc's page and choose Sign in with Plex.")
-            self._server = PlexServer(self.config.plex_url, self.config.plex_token)
+            if self.config.plex_url:
+                self._server = PlexServer(self.config.plex_url, self.config.plex_token)
+            else:
+                self._server = self._account_server()
         return self._server
+
+    def _account_server(self) -> PlexServer:
+        """With no PLEX_URL, the Plex server on the signed-in account: its own (or
+        PLEX_SERVER, by name), at whichever of its addresses answers."""
+        try:
+            account = MyPlexAccount(token=self.config.plex_token)
+            servers = [r for r in account.resources() if "server" in (r.provides or "")]
+        except Exception as e:  # plexapi raises several types here
+            raise PlexNFCError(f"Couldn't reach plex.tv to find your Plex server: {e}") from None
+        if name := self.config.plex_server:
+            servers = [r for r in servers if r.name.casefold() == name.casefold()]
+        if not servers:
+            raise PlexNFCError(f"Your Plex account has no server named {name}" if name
+                               else "Your Plex account has no Plex server")
+        resource = sorted(servers, key=lambda r: not r.owned)[0]
+        try:
+            # Its plain home-network address first: the Apple TV streams from the same address,
+            # and some routers won't look up plex.direct names, which point at home addresses.
+            # (Docker and remote addresses can take 30s to give up, hence the timeout.)
+            server = resource.connect(ssl=False, timeout=5, locations=["local"])
+        except Exception:
+            try:
+                server = resource.connect(timeout=5)
+            except Exception as e:
+                raise PlexNFCError(f"Couldn't connect to the Plex server {resource.name}: {e}") from None
+        log.info("Using Plex server %s at %s", resource.name, server._baseurl)
+        self._account = account
+        return server
+
+    @property
+    def plex_url(self) -> str:
+        """The Plex server's address: PLEX_URL, or the one found from the Plex account."""
+        return self.config.plex_url or self.server._baseurl.rstrip("/")
 
     def set_token(self, token: str) -> None:
         """Use a new token (after Sign in with Plex) from the next request on."""
@@ -87,10 +145,26 @@ class Plex:
         except NotFound:
             raise PlexNFCError(f"No movie in '{self.config.library}' matches {key}") from None
 
-    def movies(self, collection: str | None = None):
+    def movies(self, collection: str | None = None, label: str | None = None):
         if collection:
             return self.section.collection(collection).items()
+        if label:
+            return self.section.search(label=label, sort="titleSort")
         return self.section.all(sort="titleSort")
+
+    def movie_filters(self) -> dict:
+        """The library's collections (with how many movies each holds) and labels, to choose
+        movies by."""
+        def listed(get):
+            try:
+                return sorted(get(), key=lambda c: c.title.casefold())
+            except Exception as e:  # an empty library or an older Plex: just none to offer
+                log.debug("Couldn't list filters: %s", e)
+                return []
+        return {"collections": [{"title": c.title, "count": getattr(c, "childCount", None)}
+                                for c in listed(self.section.collections)],
+                "labels": sorted({c.title for c in listed(lambda: self.section.listFilterChoices("label"))},
+                                 key=str.casefold)}
 
     # ---- playback -----------------------------------------------------------
 
@@ -140,16 +214,69 @@ class Plex:
         hint = f" Players found: {', '.join(available)}." if available else ""
         raise PlexNFCError(f"Couldn't find a Plex player named '{name}'. Is it switched on?{hint}")
 
-    def prepare_tv(self) -> str | None:
-        """Run the Home Assistant "get the TV ready" script, if configured.
+    def default_player(self) -> str:
+        """The ID of the player taps go to when nothing else is chosen."""
+        c = self.config
+        if c.app_player:
+            return f"app:{c.app_player}"
+        if c.jellyfin_player:
+            return f"jellyfin:{c.jellyfin_player}"
+        return c.ha_player or c.client
+
+    def players(self) -> list[dict]:
+        """Every player a phone can send its taps to: paired Marquee Apple TVs, Jellyfin
+        apps that are open, and Plex players. ``id`` is what ``?client=`` takes."""
+        found = [{"id": f"app:{d['name']}", "name": d["name"], "kind": "Marquee"}
+                 for d in self.app_pairings.devices() if d["kind"] == "tv"]
+        if self.jellyfin:
+            try:
+                found += [{"id": f"jellyfin:{n}", "name": n, "kind": "Jellyfin"} for n in self.jellyfin.players()]
+            except JellyfinError as e:
+                log.debug("Couldn't list Jellyfin players: %s", e)
+        try:
+            plex_names = {c.title for c in self.server.clients()} | set(self._account_players())
+        except Exception as e:  # Plex unreachable or signed out: list the others
+            log.debug("Couldn't list Plex players: %s", e)
+            plex_names = set()
+        if self.config.client:
+            plex_names.add(self.config.client)
+        found += [{"id": n, "name": n, "kind": "Plex"} for n in sorted(plex_names, key=str.casefold)]
+        if self.config.ha_player:
+            found.append({"id": self.config.ha_player, "name": self.config.ha_player, "kind": "Home Assistant"})
+        seen = set()
+        return [p for p in found if not (p["id"].casefold() in seen or seen.add(p["id"].casefold()))]
+
+    def _ready_script(self, client_name: str | None) -> str | None:
+        """The get-ready script for this player: its own from PLAYER_SCRIPTS, else HA_SCRIPT,
+        which belongs to the default player (so a tap for another room doesn't wake this one)."""
+        if not client_name:
+            return self.config.ha_script or None
+        scripts = {k.casefold(): v for k, v in (self.config.player_scripts or {}).items()}
+        if script := scripts.get(client_name.casefold()):
+            return script
+        if client_name.casefold() == self.default_player().casefold():
+            return self.config.ha_script or None
+        return None
+
+    def prepare_tv(self, client_name: str | None = None) -> str | None:
+        """Get the TV ready: open Marquee on its paired Apple TV, or else run the
+        Home Assistant "get the TV ready" script for this player, if there is one.
 
         Returns an error message instead of raising: the TV may already be on,
-        so a Home Assistant problem shouldn't stop the movie from trying.
+        so a problem here shouldn't stop the movie from trying.
         """
-        if not (self.ha and self.config.ha_script):
+        if (name := self._app_player(client_name)) and self.apple_tvs.link_for(name):
+            try:
+                self.apple_tvs.open_marquee(name)
+            except AppleTVError as e:
+                log.warning("Couldn't open Marquee on %s: %s", name, e)
+                return str(e)
+            return None
+        script = self._ready_script(client_name)
+        if not (self.ha and script):
             return None
         try:
-            self.ha.run_script(self.config.ha_script)
+            self.ha.run_script(script)
         except HomeAssistantError as e:
             log.warning("%s", e)
             return str(e)
@@ -199,17 +326,17 @@ class Plex:
         movie = self.find_movie(key)
         resume = self.config.resume if resume is None else resume
         if name := self._app_player(client_name):
-            # Leave the movie in the inbox before the script opens the app, which picks it up
+            # Leave the movie in the inbox before the app is opened, which picks it up
             self._play_in_app(name, key, movie, resume)
-            self.prepare_tv()
+            self.prepare_tv(client_name)
             return movie, SimpleNamespace(title=name)
-        ha_error = self.prepare_tv()
+        ha_error = self.prepare_tv(client_name)
         if name := self._jellyfin_player(client_name):
             return self._play_via_jellyfin(name, key, movie, resume, ha_error)
         if entity := self._ha_entity(client_name):
             log.info("Playing %s (%s) on %s via Home Assistant", movie.title, key, entity)
             return self._play_via_ha(entity, movie, resume, ha_error)
-        wait = self.config.player_wait if self.config.ha_script else 0
+        wait = self.config.player_wait if self._ready_script(client_name) else 0
         try:
             client = self.get_client(client_name, wait=wait)
         except PlexNFCError as e:
@@ -229,10 +356,36 @@ class Plex:
     def _app_player(self, client_name: str | None) -> str | None:
         """The Marquee player to use: ``?client=app:NAME``, else APP_PLAYER."""
         if client_name:
-            return client_name.removeprefix("app:") if client_name.startswith("app:") else None
-        return self.config.app_player or None
+            name = client_name.removeprefix("app:") if client_name.startswith("app:") else None
+        else:
+            name = self.config.app_player or None
+        return self._marquee_name(name) if name else None
+
+    def _marquee_name(self, name: str) -> str:
+        """The paired Marquee's name for ``name``, which may instead be the name of the
+        Apple TV paired for it (e.g. "Den Apple TV" for the Marquee named "Den")."""
+        for device in self.app_pairings.devices():
+            if device["kind"] == "tv" and device["name"].casefold() == name.casefold():
+                return device["name"]
+        for player, link in self.apple_tvs.linked().items():
+            if link["name"].casefold() == name.casefold():
+                return player
+        return name
 
     def _play_in_app(self, name: str, key: str, movie, resume: bool) -> None:
+        # Marquee only collects movies from a server it's paired with, so don't report one as playing
+        if not any(d["kind"] == "tv" and d["name"].casefold() == name.casefold()
+                   for d in self.app_pairings.devices()):
+            raise PlexNFCError(f"Marquee on {name} isn't connected to this server. In Marquee on that device, "
+                               f"connect to {self.config.public_base_url.split('://', 1)[-1]} and approve its "
+                               f"code in the control panel, naming it {name}.")
+        log.info("Sending %s (%s) to the Marquee app on %s", movie.title, key, name)
+        self.app_inbox.send(name, "play", **self.app_play_details(name, key, movie, resume))
+
+    def app_play_details(self, name: str, key: str, movie=None, resume: bool | None = None) -> dict:
+        """A movie's stream address and details for the Marquee app on ``name``."""
+        movie = movie or self.find_movie(key)
+        resume = self.config.resume if resume is None else resume
         start = int((movie.viewOffset or 0) / 1000) if resume and getattr(movie, "viewOffset", 0) else 0
         if self.jellyfin and self.config.app_stream == "jellyfin":
             try:
@@ -241,12 +394,49 @@ class Plex:
                 raise PlexNFCError(str(e)) from None
             url = jellyfin_hls_url(self.config.jellyfin_url, self.config.jellyfin_api_key, item["Id"], start, name)
         else:
-            url = plex_hls_url(self.config.plex_url, self.config.plex_token, movie.ratingKey, start, name)
-        log.info("Sending %s (%s) to the Marquee app on %s", movie.title, key, name)
+            url = plex_hls_url(self.plex_url, self.config.plex_token, movie.ratingKey, start, name)
+            self._start_plex_session(url)
         # The app shows these in its player; the poster comes from plexnfc's own /poster
-        self.app_inbox.send(name, "play", url=url, title=movie.title, key=key, start=0,
-                            year=getattr(movie, "year", None), summary=getattr(movie, "summary", None) or "",
-                            poster=f"/poster/{key}?w=600&h=900")
+        return {"url": url, "start": 0, **app_movie(movie, key), "poster": f"/poster/{key}?w=600&h=900"}
+
+    def _start_plex_session(self, url: str) -> None:
+        """Ask Plex to decide how to stream before the app asks for the stream.
+
+        Newer Plex servers (1.43) turn the stream away with 400 Bad Request unless
+        its session has had a decision first. Older ones don't need it, so a
+        failure here only gets logged.
+        """
+        # A plain request: plexapi's own client headers would clash with the stream's
+        decision = url.replace("/start.m3u8?", "/decision?", 1)
+        try:
+            status = requests.get(decision, timeout=15).status_code
+        except requests.RequestException as e:
+            status = type(e).__name__
+        if status != 200:  # the address carries the Plex token, so it stays out of the log
+            log.warning("Plex didn't decide how to stream this (%s); trying anyway", status)
+
+    # ---- library for the Marquee app ------------------------------------------------
+
+    def app_library(self, row_size: int = 24, collections: int = 6) -> list[dict]:
+        """Poster rows for the app's home screen: recently added, then a few collections."""
+        rows = [{"title": "Recently Added",
+                 "items": [app_movie(m) for m in self.section.recentlyAdded(maxresults=row_size)]}]
+        try:
+            for collection in self.section.collections()[:collections]:
+                items = [app_movie(m) for m in collection.items()[:row_size]]
+                if items:
+                    rows.append({"title": collection.title, "items": items})
+        except Exception as e:  # collections are a nice-to-have
+            log.debug("Couldn't list collections: %s", e)
+        return rows
+
+    def app_movies(self, start: int = 0, size: int = 60) -> dict:
+        """One page of the whole library, sorted by title."""
+        items = self.section.search(sort="titleSort", container_start=start, container_size=size, maxresults=size)
+        return {"start": start, "items": [app_movie(m) for m in items], "total": self.section.totalSize}
+
+    def app_search(self, query: str, size: int = 40) -> list[dict]:
+        return [app_movie(m) for m in self.section.search(title=query, maxresults=size)] if query.strip() else []
 
     def _app_now(self, name: str) -> dict:
         status = self.app_inbox.status(name)
@@ -290,7 +480,7 @@ class Plex:
             item = self.jellyfin.find_movie(movie.title, movie.year, key)
         except JellyfinError as e:
             raise PlexNFCError(str(e)) from None
-        wait = self.config.player_wait if self.config.ha_script else 0
+        wait = self.config.player_wait if self._ready_script(f"jellyfin:{name}") else 0
         try:
             session = self._jellyfin_session(name, wait)
         except PlexNFCError as e:

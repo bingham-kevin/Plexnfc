@@ -1,0 +1,42 @@
+{
+  "config": {
+    "flow_title": "Marquee Server ({url})",
+    "step": {
+      "user": {
+        "title": "Connect to Marquee Server",
+        "description": "The address Marquee Server's tags use. On a Mac that's usually http://marquee.local:8080.",
+        "data": {"url": "Server address"}
+      },
+      "discovery_confirm": {
+        "title": "Connect to Marquee Server",
+        "description": "Connect Home Assistant to Marquee Server at {url}? You'll approve a code in its control panel next."
+      },
+      "reauth_confirm": {
+        "title": "Pair with Marquee Server again",
+        "description": "Marquee Server at {url} doesn't know this Home Assistant any more. Pair again to keep its players and triggers working."
+      },
+      "approve": {
+        "title": "Approve Home Assistant",
+        "description": "In Marquee Server, choose **Open Control Panel** and approve this code under **Marquee players and phones**:\n\n# {code}\n\nThen select **Submit**."
+      }
+    },
+    "error": {
+      "cannot_connect": "Can't reach Marquee Server at that address.",
+      "too_old": "That server needs updating before Home Assistant can connect.",
+      "not_approved": "The code hasn't been approved yet. Approve it in the control panel, then select Submit again."
+    },
+    "abort": {
+      "already_configured": "This Marquee Server is already connected.",
+      "pairing_expired": "The code expired before it was approved. Add Marquee again for a new one.",
+      "reauth_successful": "Paired again."
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "started": "Movie started",
+      "paused": "Movie paused",
+      "resumed": "Movie resumed",
+      "stopped": "Movie stopped or finished"
+    }
+  }
+}

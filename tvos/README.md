@@ -1,17 +1,18 @@
-# Marquee for Apple TV
+# Marquee for Apple TV, iPhone and iPad
 
-A small Apple TV app that plexnfc can start movies in. Plex for Apple TV can't be told to play from another device, and other apps ignore links, but Home Assistant can open an app. When Marquee opens (and every couple of seconds while it's open), it asks plexnfc what to play, then plays the stream in Apple's own player. Subtitles start off.
+An app for your home movie library, on Apple TV, iPhone and iPad (one app; the same code with a layout for each). Browse poster rows (Recently Added and your collections), every movie, and search, then play in Apple's own player with the poster, title and summary. Subtitles start off. Taps on a printed Movie Book start movies in Marquee too.
 
-## How a tap works
+Without a server, **Try the Demo Library** plays a few freely licensed films, so the app can be tried (and reviewed for the App Store) on its own. See `APP_STORE.md` for submitting and `PRIVACY.md` for the privacy policy.
 
-1. plexnfc leaves the movie's stream address in that Apple TV's inbox (`GET /tv/inbox`). The stream comes from Plex, or from Jellyfin when plexnfc's **Marquee stream** setting is `jellyfin`. Both turn MKV files into HLS, which Apple TV plays as is.
-2. The get-ready script opens Marquee.
-3. Marquee picks up the movie and plays it. It reports what's playing (`POST /tv/status`), so plexnfc's now-playing info, the Pause/Resume/Stop tags, ±30 s and the Movie Remote all work.
+## How it connects
 
-It also accepts links, for testing or other setups:
+1. Choose the Movie Book server from the list (plexnfc announces itself on the network with Bonjour as `_moviebook._tcp`), or enter its address (its **Tag base URL**, for example `192.168.1.20:8080`).
+2. Marquee shows a 6-digit code. Type the room (or, on an iPhone or iPad, whose it is) in the name box under **Marquee players and phones** in the server's control panel, then approve it. Approvals only work from the panel (Home Assistant's ingress, or Marquee Server's control panel on the Mac) or on the server's own machine, not from the open port on your network.
+3. The Apple TV gets a secret it keeps in its Keychain and sends with every request, so only Apple TVs you approved can browse or get stream addresses. Remove an Apple TV in the panel to cut it off.
 
-- `moviebook://play?url=<stream address>&title=<title>&start=<seconds>`
-- `moviebook://configure?server=192.168.1.20:8080&player=Den`
+Taps reach Marquee through the server's inbox for that Apple TV (`GET /tv/inbox`), which Marquee checks every 2 seconds while it's open; it reports what's playing (`POST /tv/status`) for now-playing and the control tags. The library comes from `/tv/library`, `/tv/movies` and `/tv/search`, and `/tv/play` returns a movie's stream: from Plex, or Jellyfin when **Marquee stream** is `jellyfin`.
+
+`moviebook://play?url=<stream address>&title=<title>` plays a stream directly, for testing.
 
 ## Install on your Apple TV
 
@@ -22,13 +23,23 @@ You need a Mac with Xcode and an Apple ID.
 3. Select the **MovieBook** target, open **Signing & Capabilities** and pick your team (a free Apple ID shows as "Personal Team").
 4. On the Apple TV, open **Settings → Remotes and Devices → Remote App and Devices** so it shows up in Xcode. In Xcode, open **Window → Devices and Simulators** and pair it.
 5. Choose the Apple TV as the run destination and press Run.
-6. On the Apple TV, enter plexnfc's address (its **Tag base URL**, for example `192.168.1.20:8080`) and a player name such as `Den`.
+6. On the Apple TV, connect to the server and approve the pairing code in its panel.
+
+For an iPhone or iPad, plug it in (or pair it in **Window → Devices and Simulators**), choose it as the run destination, and press Run. Marquee Server only opens Marquee by itself on Apple TVs.
+
+### On iPhone and iPad
+
+- **Play on** (top left) chooses where movies play: this iPhone or iPad, or another player such as an Apple TV. Posters chosen in Marquee, scanned codes and tapped tags all go there. The server keeps the choice (`/tv/players`, `/tv/player`; another player is started with `/tv/start`).
+- **Scan** (top right) reads the QR code printed next to each movie in the book with the camera.
+- **Tapping a tag** opens it in Safari, as on any iPhone. The server recognizes the iPhone or iPad by its Wi-Fi address (noted whenever Marquee opens), so the movie plays where it chose. When that's the iPhone or iPad itself, the page offers to open Marquee (Safari asks first), which then plays the movie. A tag with `?client=` still plays where the tag says.
+
+Reading tags inside the app (Core NFC) needs a paid Apple Developer account, so Marquee doesn't do it; the QR codes and Safari cover the same movies.
 
 With a free Apple ID, Apple lets the app run for 7 days before it has to be installed again from Xcode. A paid Apple Developer account makes installs last a year.
 
 ## Set up plexnfc
 
-- **Marquee player**: the player name you typed in the app, for example `Den`.
+- **Marquee player**: the Apple TV's name as the panel lists it under **Marquee Apple TVs and phones** (the name you gave it when you approved it).
 - **Get-ready script**: wake the Apple TV and open Marquee, for example:
 
   ```yaml
