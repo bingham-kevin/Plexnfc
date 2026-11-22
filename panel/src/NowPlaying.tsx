@@ -42,7 +42,10 @@ function PlayerCard({ device, canControl }: { device: Device; canControl: boolea
         {status ? (
           <>
             <p className="title">{status.title || status.key}</p>
-            <p className="muted">{status.state === "paused" ? "Paused" : "Playing"}</p>
+            <p className="muted">
+              {status.state === "paused" ? "Paused" : "Playing"}
+              {status.source && <> from <b>{status.source}</b></>}
+            </p>
             {!!status.duration && (
               <div className="progress" aria-label={`${clock(position)} of ${clock(status.duration)}`}>
                 <div style={{ width: `${Math.min(100, (position / status.duration) * 100)}%` }} />

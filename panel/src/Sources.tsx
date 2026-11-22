@@ -1,47 +1,54 @@
 import { useState } from "react";
-import type { Overview, Source } from "./api";
+import type { Overview, PlexSource, Source } from "./api";
 import { useSourceAction, useSources } from "./hooks";
 
-/** Where movies come from: Plex, Jellyfin servers and folders of movie files. */
+/** Where movies come from: Plex, Jellyfin servers and folders of movie files, in the order they're used. */
 export function Sources({ overview }: { overview: Overview }) {
   const sources = useSources();
-  const usePlex = useSourceAction<boolean>(() => "sources/plex", (enabled) => ({ enabled }),
-                                           (enabled) => (enabled ? "Using Plex's movies" : "Leaving out Plex's movies"));
+  const reorder = useSourceAction<string[]>(() => "sources/order", (order) => ({ order }), () => "Order saved");
   const data = sources.data;
   const canManage = overview.can_manage;
+  const move = (index: number, by: number) => {
+    if (!data) return;
+    const order = [...data.order];
+    [order[index], order[index + by]] = [order[index + by], order[index]];
+    reorder.mutate(order);
+  };
 
   return (
     <>
       <section className="card">
         <h2>Movie sources</h2>
-        <p className="muted">Movies can come from Plex, Jellyfin servers and folders of movie files, all at once. Each
-          movie keeps its own tag address, so tags and cards keep working whichever source a movie is in.</p>
+        <p className="muted">Movies can come from Plex, Jellyfin servers and folders of movie files, all at once. A movie
+          in several of them is one movie, with one tag address, so a tag or card plays it whichever sources have it.
+          It plays from the first source in this list that has it and that the player can play (Plex players only play
+          Plex; Jellyfin players play Jellyfin), and from the next one if that source doesn't answer.</p>
         {sources.isPending && <p className="muted">Loading…</p>}
         {sources.isError && <p className="err">{sources.error.message}</p>}
         {data && (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Source</th><th>Where</th><th>Movies</th><th /></tr></thead>
+              <thead><tr><th>#</th><th>Source</th><th>Where</th><th>Movies</th><th /></tr></thead>
               <tbody>
-                <tr>
-                  <td><b>Plex</b> <span className="muted">library {data.plex.library}</span></td>
-                  <td>
-                    {data.plex.signed_in
-                      ? <span className="pill good"><span className="dot" /> Signed in</span>
-                      : <span className="pill bad"><span className="dot" /> Not signed in</span>}
-                  </td>
-                  <td>{!data.plex.enabled ? <span className="muted">Left out</span>
-                    : data.plex.signed_in ? "Used" : <span className="muted">Once signed in</span>}</td>
-                  <td className="row end">
-                    {canManage && !data.plex.signed_in && <a className="button" href="plex/login">Sign in with Plex</a>}
-                    {canManage && (data.plex.enabled || data.sources.length > 0) && (
-                      <button disabled={usePlex.isPending} onClick={() => usePlex.mutate(!data.plex.enabled)}>
-                        {data.plex.enabled ? "Leave out" : "Use"}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-                {data.sources.map((s) => <SourceRow key={s.id} source={s} canManage={canManage} />)}
+                {data.ordered.map((s, i) => (
+                  <tr key={s.id}>
+                    <td className="order">
+                      {i + 1}
+                      {canManage && data.ordered.length > 1 && (
+                        <span className="row">
+                          <button className="link" aria-label={`Use ${s.id === "plex" ? "Plex" : (s as Source).name} sooner`}
+                                  disabled={i === 0 || reorder.isPending} onClick={() => move(i, -1)}>▲</button>
+                          <button className="link" aria-label="Use it later"
+                                  disabled={i === data.ordered.length - 1 || reorder.isPending}
+                                  onClick={() => move(i, 1)}>▼</button>
+                        </span>
+                      )}
+                    </td>
+                    {s.kind === "plex"
+                      ? <PlexRow plex={s as PlexSource} canManage={canManage} others={data.sources.length > 0} />
+                      : <SourceRow source={s as Source} canManage={canManage} />}
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -49,6 +56,31 @@ export function Sources({ overview }: { overview: Overview }) {
       </section>
       {canManage && <AddJellyfin />}
       {canManage && <AddFolder />}
+    </>
+  );
+}
+
+function PlexRow({ plex, canManage, others }: { plex: PlexSource; canManage: boolean; others: boolean }) {
+  const usePlex = useSourceAction<boolean>(() => "sources/plex", (enabled) => ({ enabled }),
+                                           (enabled) => (enabled ? "Using Plex's movies" : "Leaving out Plex's movies"));
+  return (
+    <>
+      <td><b>Plex</b> <span className="muted">library {plex.library}</span></td>
+      <td>
+        {plex.signed_in
+          ? <span className="pill good"><span className="dot" /> Signed in</span>
+          : <span className="pill bad"><span className="dot" /> Not signed in</span>}
+      </td>
+      <td>{!plex.enabled ? <span className="muted">Left out</span>
+        : plex.signed_in ? "Used" : <span className="muted">Once signed in</span>}</td>
+      <td className="row end">
+        {canManage && !plex.signed_in && <a className="button" href="plex/login">Sign in with Plex</a>}
+        {canManage && (plex.enabled || others) && (
+          <button disabled={usePlex.isPending} onClick={() => usePlex.mutate(!plex.enabled)}>
+            {plex.enabled ? "Leave out" : "Use"}
+          </button>
+        )}
+      </td>
     </>
   );
 }
@@ -61,7 +93,7 @@ function SourceRow({ source, canManage }: { source: Source; canManage: boolean }
     ? `${source.url}${source.library ? ` · ${source.library}` : ""}${source.user ? ` · signed in as ${source.user}` : ""}`
     : source.path;
   return (
-    <tr>
+    <>
       <td><b>{source.name}</b> <span className="muted">{source.kind === "jellyfin" ? "Jellyfin" : "Folder"}</span></td>
       <td>
         <code className="url">{where}</code>
@@ -77,11 +109,11 @@ function SourceRow({ source, canManage }: { source: Source; canManage: boolean }
         )}
         {canManage && (
           <button className="danger" disabled={remove.isPending}
-                  onClick={() => confirm(`Remove ${source.name}? Tags and cards for its movies stop working until it's added again.`)
+                  onClick={() => confirm(`Remove ${source.name}? Its movies stay playable from the other sources that have them.`)
                     && remove.mutate()}>Remove</button>
         )}
       </td>
-    </tr>
+    </>
   );
 }
 

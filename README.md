@@ -107,19 +107,23 @@ Movies can come from Plex, from Jellyfin servers, and from folders of movie file
 - **Jellyfin**: the server's address, then sign in with a Jellyfin user (the password goes to Jellyfin and isn't kept; Marquee Server keeps the sign-in token Jellyfin hands back) or paste an API key from Jellyfin's **Dashboard → API Keys**. Optionally name one library; otherwise every movie library is used. Collections and tags come from Jellyfin.
 - **Folder**: a path on the machine Marquee Server runs on, read with the folders inside it. For a network share (SMB or NFS), mount it first and give the mount's path: `/Volumes/Movies` on a Mac, `/media/...` or `/share/...` in the Home Assistant app (add the share under **Settings → System → Storage**). Movies are named from their files or folders, `Alien (1979)/Alien (1979).mkv` or `Alien.1979.1080p.mkv`; a Kodi/Jellyfin-style `movie.nfo` (or `<file name>.nfo`) beside a movie gives its title, year, plot, collection (`<set>`) and tags. Trailers, extras folders and second parts (`cd2`) are skipped. Posters come from `poster.jpg`/`folder.jpg`/`cover.jpg` in the movie's own folder, `<file name>-poster.jpg`, or the cover art inside the file; a movie with none gets a plain card with its title. On a Mac, macOS asks once whether Marquee Server may read a folder in Documents, Desktop or Downloads, or on a network volume.
 
-Every movie keeps its own key, so tags and cards from different sources never clash, and Plex keys are unchanged:
+A movie in several sources is one movie, with one tag address: a tag or card is linked to the movie, not to a source. Copies are matched by their TMDB/IMDb/TVDB ID, else by title and year (letters and digits only, so `Alien: Covenant` and `Alien Covenant (2017).mkv` match), unless their IDs disagree. Its key is:
 
-| Source | Key | Stays the same while… |
-| --- | --- | --- |
-| Plex | `tmdb-603` (or `imdb-…`, `tvdb-…`, `rk-…`) | the movie is matched in Plex |
-| Jellyfin | `jf-tmdb-603`, else `jf-<Jellyfin item ID>` | the movie has a TMDB/IMDb/TVDB ID, or isn't re-added |
-| Folder | `file-tmdb-603` (from a `movie.nfo` or `{tmdb-603}` in the name), else `file-<hash>` | the file keeps its name and place inside the folder (the folder itself can move) |
+| Key | When |
+| --- | --- |
+| `tmdb-603` (or `imdb-…`, `tvdb-…`) | any source knows its ID: Plex's keys are unchanged |
+| `rk-12345` | only Plex has it, without an ID |
+| `t-aliencovenant-2017` | no source knows its ID: from its title and year |
+
+A movie is found by any key it has had, and a card also remembers its movie's title and year, so a card linked while the movie was in Plex still plays it from a folder if Plex is gone or signed out. To keep tag addresses the same whatever happens to Plex, give folder movies their IDs (`{tmdb-603}` in the name, or a `movie.nfo`).
+
+**Order.** The **Sources** tab lists the sources in the order movies play from them (Plex first, unless you move it): a tap plays the first copy the player can play, and if that source doesn't answer (Plex signed out or switched off, say), the next one. **Now Playing** shows which source a Marquee movie is playing from.
 
 Where they play:
 
-- **Marquee** plays movies from every source. Jellyfin movies stream from Jellyfin. Folder movies stream from Marquee Server itself, at an address signed for that movie: MP4, M4V and MOV files as they are; other files (MKV, AVI…) need **ffmpeg** on the server (`brew install ffmpeg` on a Mac; the Docker image and the Home Assistant app don't include it, so there use MP4, M4V or MOV files), which repackages them for Apple TV as they play, converting only what Apple TV can't play. While a repackaged movie is starting, you can only skip ahead as far as ffmpeg has got.
-- **Jellyfin players** (Swiftfin) play Jellyfin movies. With no `JELLYFIN_URL` set, the first Jellyfin source's players are used.
-- **Plex players** and Home Assistant's Plex integration play Plex movies only.
+- **Marquee** plays movies from every source, from the first one in the order that has it and answers. Jellyfin movies stream from Jellyfin, passed on by Marquee Server, so they play even when Jellyfin's address only works on the server (a Tailscale name, say). Folder movies stream from Marquee Server itself, at an address signed for that movie: MP4, M4V and MOV files as they are; other files (MKV, AVI…) need **ffmpeg** on the server (`brew install ffmpeg` on a Mac; the Docker image and the Home Assistant app don't include it, so there use MP4, M4V or MOV files), which repackages them for Apple TV as they play, converting only what Apple TV can't play. While a repackaged movie is starting, you can only skip ahead as far as ffmpeg has got.
+- **Jellyfin players** (Swiftfin) play the Jellyfin server's own copy, else find a Plex copy there by title and ID. With no `JELLYFIN_URL` set, the first Jellyfin source's players are used.
+- **Plex players** and Home Assistant's Plex integration play Plex's copy, whatever the order; a movie Plex doesn't have can't play there.
 
 ## Optional: play on Jellyfin
 
@@ -140,7 +144,7 @@ Plex for Apple TV can't be remote-started, but Swiftfin (Jellyfin's Apple TV app
 | `/now`, `/toggle`, `/seek?by=30` | Used by the Movie Remote: what's playing (JSON), play/pause, skip |
 | `/off` | Run your Home Assistant "off" script (needs `HA_OFF_SCRIPT`) |
 
-Tags store the movie's TMDB/IMDb ID rather than Plex's internal ID, so they keep working if you rebuild your library or move servers. Jellyfin and folder movies have keys of their own (`jf-…`, `file-…`); see [Movie sources](#movie-sources-plex-jellyfin-and-folders).
+Tags store the movie's TMDB/IMDb ID rather than Plex's internal ID, so they keep working if you rebuild your library or move servers. Movies only in Jellyfin or a folder, with no ID, get keys from their title and year (`t-…`); see [Movie sources](#movie-sources-plex-jellyfin-and-folders).
 
 ## Troubleshooting
 

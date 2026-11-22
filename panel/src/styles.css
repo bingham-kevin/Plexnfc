@@ -190,3 +190,5 @@ td form.row, td .row.end { flex-wrap: nowrap; }
   .facts dd { margin-bottom: 10px; }
   .tags td:nth-child(4), .tags th:nth-child(4) { display: none; }
 }
+.order { white-space: nowrap; }
+.order .row { display: inline-flex; gap: 2px; margin-left: 6px; }

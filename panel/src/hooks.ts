@@ -33,7 +33,8 @@ export function useSourceAction<V>(path: (v: V) => string, body: (v: V) => objec
   return useMutation({
     mutationFn: (v: V) => post<Sources & { ok: boolean; count?: number }>(path(v), body(v)),
     onSuccess: (result, v) => {
-      client.setQueryData(["sources"], { plex: result.plex, sources: result.sources });
+      client.setQueryData(["sources"], { plex: result.plex, sources: result.sources, order: result.order,
+                                         ordered: result.ordered });
       for (const key of ["movies", "filters"]) client.invalidateQueries({ queryKey: [key] });
       const text = success?.(v, result);
       if (text) toast(text);

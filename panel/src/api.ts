@@ -7,6 +7,8 @@ export interface PlayerStatus {
   state: "playing" | "paused";
   title?: string;
   key?: string;
+  /** The source it's playing from ("Plex", or a Jellyfin server's or folder's name), if this server started it */
+  source?: string | null;
   position?: number;
   duration?: number;
 }
@@ -54,8 +56,10 @@ export interface Movie {
   url: string;
   /** IDs of the cards linked to it */
   cards: string[];
-  /** Where it comes from: "Plex", or a Jellyfin server's or folder's name */
+  /** Where it comes from: "Plex", or Jellyfin servers' or folders' names, joined */
   source: string;
+  /** Every source that has it, in the order they're used */
+  sources: string[];
 }
 
 export interface Card {
@@ -68,6 +72,7 @@ export interface Card {
 export interface ScanMovie {
   key: string;
   title: string;
+  year?: number | null;
 }
 
 export interface Scan {
@@ -110,9 +115,20 @@ export interface Source {
   path?: string;
 }
 
+export interface PlexSource {
+  id: "plex";
+  kind: "plex";
+  enabled: boolean;
+  signed_in: boolean;
+  library: string;
+}
+
 export interface Sources {
-  plex: { enabled: boolean; signed_in: boolean; library: string };
+  plex: PlexSource;
   sources: Source[];
+  /** Source IDs ("plex" for Plex) in the order movies play from them */
+  order: string[];
+  ordered: (PlexSource | Source)[];
 }
 
 export interface Movies {

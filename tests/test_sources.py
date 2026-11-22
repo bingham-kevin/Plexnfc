@@ -69,15 +69,19 @@ def test_folder_lists_movies_with_stable_keys(movies_dir):
     # trailers, extras and the second part of a split movie aren't movies
     assert sorted(movies) == ["Alien", "Arrival", "Blade Runner", "Heat", "Kill Bill"]
     assert movies["Alien"].year == 1979 and movies["Heat"].year == 1995
-    # IDs from the name or the .nfo make the key; otherwise the path inside the folder does
-    assert movies["Blade Runner"].key == "file-tmdb-78"
-    assert movies["Arrival"].key == "file-tmdb-329865"
-    assert movies["Alien"].key.startswith("file-") and len(movies["Alien"].key) == len("file-") + 12
+    # IDs from the name or the .nfo make the key; otherwise the title and year do
+    assert movies["Blade Runner"].key == "tmdb-78"
+    assert movies["Arrival"].key == "tmdb-329865"
+    assert movies["Alien"].key == "t-alien-1979"
+    # each file also has a key of its own, from its path inside the folder
+    assert movies["Alien"].source_key.startswith("file-") and len(movies["Alien"].source_key) == len("file-") + 12
     # the same files somewhere else (a share mounted elsewhere) keep their keys
     moved = movies_dir.parent / "Elsewhere"
     movies_dir.rename(moved)
     again = {m.title: m.key for m in FolderSource({"id": "f2", "kind": "folder", "path": str(moved)}).movies()}
     assert again == {t: m.key for t, m in movies.items()}
+    assert {m.title: m.source_key for m in FolderSource({"id": "f2", "kind": "folder", "path": str(moved)}).movies()} \
+        == {t: m.source_key for t, m in movies.items()}
 
 
 def test_folder_reads_nfo_details(movies_dir):
@@ -101,8 +105,8 @@ def test_folder_movies_in_panel_list_filters_and_book(plex, movies_dir):
     by_title = {m["title"]: m for m in movies}
     # Plex's movie and the folder's, each with its own key
     assert by_title["The Matrix"]["key"] == "tmdb-603" and by_title["The Matrix"]["source"] == "Plex"
-    assert by_title["Arrival"]["key"] == "file-tmdb-329865" and by_title["Arrival"]["source"] == "Movies"
-    assert by_title["Arrival"]["url"] == "http://nfc.local:8080/m/file-tmdb-329865"
+    assert by_title["Arrival"]["key"] == "tmdb-329865" and by_title["Arrival"]["source"] == "Movies"
+    assert by_title["Arrival"]["url"] == "http://nfc.local:8080/m/tmdb-329865"
     filters = app.get("/panel/api/filters").json
     assert {"title": "Villeneuve", "count": 1} in filters["collections"]
     assert "Kids" in filters["labels"]
@@ -113,7 +117,7 @@ def test_folder_movies_in_panel_list_filters_and_book(plex, movies_dir):
     plex.section.collection.return_value.items.return_value = []
     assert [m["title"] for m in app.get("/panel/api/movies?collection=Villeneuve").json["movies"]] == ["Arrival"]
     book = app.get("/book").data.decode()
-    assert "Arrival" in book and "poster/file-tmdb-329865?w=1200&amp;h=1800" in book
+    assert "Arrival" in book and "poster/tmdb-329865?w=1200&amp;h=1800" in book
     assert "Arrival" in app.get("/tags").data.decode()
 
 
@@ -163,7 +167,7 @@ def test_folder_movie_plays_in_marquee_from_this_server(plex, movies_dir):
     assert app.get(f"/m/{alien.key}").status_code == 200
     command = plex.app_inbox.next("Den", 0)
     assert command["title"] == "Alien" and command["key"] == alien.key
-    assert command["url"].startswith(f"http://nfc.local:8080/files/{alien.key}/")
+    assert command["url"].startswith(f"http://nfc.local:8080/files/{alien.source_key}/")
     assert command["url"].endswith("/movie.mp4")
     path = command["url"].removeprefix("http://nfc.local:8080")
     r = app.get(path, headers={"Range": "bytes=10-19"})
@@ -171,7 +175,8 @@ def test_folder_movie_plays_in_marquee_from_this_server(plex, movies_dir):
     # the address only works for the movie it was made for
     token = path.split("/")[3]
     assert app.get(path.replace(token, "0" * 32)).status_code == 404
-    assert app.get(f"/files/file-tmdb-78/{token}/movie.m4v").status_code == 404
+    other = next(m for m in plex.movies() if m.title == "Blade Runner").source_key
+    assert app.get(f"/files/{other}/{token}/movie.m4v").status_code == 404
 
 
 def test_mkv_is_converted_by_ffmpeg_for_marquee(plex, movies_dir, tmp_path, monkeypatch):
@@ -227,6 +232,7 @@ def test_cards_and_tags_play_folder_movies(plex, movies_dir):
     app = create_app(plex.config, plex).test_client()
     r = app.post("/panel/api/cards/link", json={"uid": "04-11-22-33", "key": "file-tmdb-78"}, environ_base=PANEL)
     assert r.status_code == 200 and r.json["cards"][0]["title"] == "Blade Runner"
+    assert r.json["cards"][0]["key"] == "tmdb-78" and r.json["cards"][0]["year"] == 1982
     p = plex.app_pairings.start("Box", "remote")
     plex.app_pairings.approve(p["pair_id"])
     box = {"Authorization": f"Bearer {plex.app_pairings.poll(p['pair_id'])['secret']}"}
@@ -235,7 +241,7 @@ def test_cards_and_tags_play_folder_movies(plex, movies_dir):
         assert r.status_code == 202 and r.json["title"] == "Blade Runner"
         r = app.post("/remote/tap", json={"uid": "04-99-99-99", "url": "http://x/m/file-tmdb-329865"}, headers=box)
         assert r.status_code == 202 and r.json["title"] == "Arrival"
-    assert [c.args[0] for c in play.call_args_list] == ["file-tmdb-78", "file-tmdb-329865"]
+    assert [c.args[0] for c in play.call_args_list] == ["tmdb-78", "file-tmdb-329865"]
     # Plex keys still work alongside
     assert plex.find_movie("tmdb-603").title == "The Matrix"
 
@@ -322,38 +328,64 @@ def jf_source_plex(plex, **settings):
 def test_jellyfin_source_lists_movies_with_its_own_keys(plex, jellyfin_server):
     jf_source_plex(plex)
     app = create_app(plex.config, plex).test_client()
-    movies = {(m["title"], m["source"]): m for m in app.get("/panel/api/movies").json["movies"]}
-    # the same movie in Plex and Jellyfin: two keys that don't clash
-    assert movies[("The Matrix", "Plex")]["key"] == "tmdb-603"
-    assert movies[("The Matrix", "Den Jellyfin")]["key"] == "jf-tmdb-603"
-    assert movies[("Home Video", "Den Jellyfin")]["key"] == "jf-" + "b" * 32
-    matrix = plex.find_movie("jf-tmdb-603")
+    movies = {m["title"]: m for m in app.get("/panel/api/movies").json["movies"]}
+    # the same movie in Plex and Jellyfin is one movie, with Plex's key
+    assert len(movies) == 2
+    assert movies["The Matrix"]["key"] == "tmdb-603" and movies["The Matrix"]["sources"] == ["Plex", "Den Jellyfin"]
+    assert movies["Home Video"]["key"] == "t-homevideo-2020"
+    found = plex.find_library_movie("jf-tmdb-603")  # the key it briefly had still finds it
+    matrix = found.copies[1]
+    assert found.key == "tmdb-603" and found.copies[0] is plex._movie
     assert matrix.summary == "Neo." and matrix.duration == 8160 * 1000 and matrix.viewOffset == 600_000
+    assert plex.find_movie("jf-" + "b" * 32).title == "Home Video"
     filters = app.get("/panel/api/filters").json
     assert {"title": "The Matrix Collection", "count": 1} in filters["collections"] and "Kids" in filters["labels"]
     plex.section.collection.return_value.items.return_value = []
     in_set = app.get("/panel/api/movies?collection=The Matrix Collection").json["movies"]
-    assert [m["key"] for m in in_set] == ["jf-tmdb-603"]
+    assert [m["key"] for m in in_set] == ["tmdb-603"]
     with_label = app.get("/panel/api/movies?label=Kids").json["movies"]
-    assert "jf-tmdb-603" in [m["key"] for m in with_label]
+    assert [m["key"] for m in with_label] == ["tmdb-603"]
 
 
 def test_jellyfin_source_posters(plex, jellyfin_server):
     jf_source_plex(plex)
-    r = create_app(plex.config, plex).test_client().get("/poster/jf-tmdb-603?w=200&h=300")
+    r = create_app(plex.config, plex).test_client().get("/poster/t-homevideo-2020?w=200&h=300")
     assert r.status_code == 200 and Image.open(io.BytesIO(r.data)).getpixel((100, 150))[1] > 150
     method, url, params, headers = jellyfin_server[-1]
-    assert url == f"http://jf:8096/Items/{'a' * 32}/Images/Primary" and params == {"maxWidth": 200, "maxHeight": 300}
+    assert url == f"http://jf:8096/Items/{'b' * 32}/Images/Primary" and params == {"maxWidth": 200, "maxHeight": 300}
     assert headers["Authorization"] == 'MediaBrowser Token="key"'
 
 
 def test_jellyfin_source_streams_to_marquee(plex, jellyfin_server):
     from test_plexnfc import app_plex
     plex = app_plex(jf_source_plex(plex))
-    create_app(plex.config, plex).test_client().get("/m/jf-tmdb-603")
+    app = create_app(plex.config, plex).test_client()
+    # Plex comes first, so the movie in both streams from Plex
+    app.get("/m/tmdb-603")
+    assert "/video/:/transcode/universal/start.m3u8?" in plex.app_inbox.next("Den", 0)["url"]
+    # put Jellyfin first, and it streams from Jellyfin
+    jf_id = plex.library.sources[0].id
+    assert app.post("/panel/api/sources/order", json={"order": [jf_id, "plex"]}, environ_base=PANEL).json["order"] \
+        == [jf_id, "plex"]
+    app.get("/m/tmdb-603")
     command = plex.app_inbox.next("Den", 0)
-    assert command["url"].startswith(f"http://jf:8096/Videos/{'a' * 32}/master.m3u8?") and "ApiKey=key" in command["url"]
-    assert command["key"] == "jf-tmdb-603" and command["poster"] == "/poster/jf-tmdb-603?w=600&h=900"
+    # through this server, which can reach Jellyfin when the Apple TV can't (a Tailscale address, say)
+    prefix = f"http://nfc.local:8080/jf/{jf_id}/"
+    assert command["url"].startswith(prefix) and f"/Videos/{'a' * 32}/master.m3u8?" in command["url"]
+    assert "ApiKey=key" in command["url"]
+    assert command["key"] == "tmdb-603" and command["poster"] == "/poster/tmdb-603?w=600&h=900"
+    # playlists and segments are passed on from Jellyfin, ranges and all
+    upstream = mock.Mock(status_code=206, headers={"Content-Type": "video/mp4", "Content-Range": "bytes 0-3/10",
+                                                   "Set-Cookie": "no"}, iter_content=lambda size: [b"abcd"])
+    with mock.patch("plexnfc.server.requests.get", return_value=upstream) as get:
+        path = command["url"].removeprefix("http://nfc.local:8080").replace("master.m3u8", "hls1/main/0.mp4")
+        r = app.get(path, headers={"Range": "bytes=0-3"})
+    assert r.status_code == 206 and r.data == b"abcd" and r.headers["Content-Range"] == "bytes 0-3/10"
+    assert "Set-Cookie" not in r.headers
+    assert get.call_args.args[0] == f"http://jf:8096/Videos/{'a' * 32}/hls1/main/0.mp4"
+    assert get.call_args.kwargs["params"]["ApiKey"] == ["key"] and get.call_args.kwargs["headers"] == {"Range": "bytes=0-3"}
+    token = path.split("/")[3]
+    assert app.get(path.replace(token, "0" * 32)).status_code == 404
 
 
 def test_jellyfin_source_plays_on_its_jellyfin_players(plex, jellyfin_server, monkeypatch):
@@ -366,10 +398,13 @@ def test_jellyfin_source_plays_on_its_jellyfin_players(plex, jellyfin_server, mo
     play = next(c for c in jellyfin_server if c[1].endswith("/Sessions/s1/Playing"))
     assert play[2]["itemIds"] == "a" * 32  # its own item, not looked up by title
     # and what's playing is reported with the key it was started with
-    assert app.get("/now?client=jellyfin:Swiftfin").json["key"] == "jf-tmdb-603"
-    # a Plex player can't play it
-    r = app.get("/m/jf-tmdb-603?client=Living Room")
-    assert r.status_code == 404 and b"Marquee and Jellyfin players" in r.data
+    now = app.get("/now?client=jellyfin:Swiftfin").json
+    assert now["key"] == "tmdb-603" and now["source"] == "Den Jellyfin"
+    # a Plex player plays Plex's copy, and can't play a movie only Jellyfin has
+    assert app.get("/m/jf-tmdb-603?client=Living Room").status_code == 200
+    plex._client.playMedia.assert_called_once()
+    r = app.get("/m/t-homevideo-2020?client=Living Room")
+    assert r.status_code == 404 and b"only in Den Jellyfin, which plays on Marquee and Jellyfin players" in r.data
 
 
 def test_jellyfin_sign_in_keeps_only_the_token(plex, jellyfin_server, tmp_path, monkeypatch):
@@ -416,7 +451,85 @@ def test_marquee_browses_every_source(plex, movies_dir, jellyfin_server):
     rows = app.get("/tv/library", headers=headers).json["rows"]
     assert [r["title"] for r in rows] == ["Recently Added", "New in Den Jellyfin", "New in Movies"]
     page = app.get("/tv/movies?start=0&size=3", headers=headers).json
-    assert page["total"] == 8 and [m["title"] for m in page["items"]] == ["Alien", "Arrival", "Blade Runner"]
+    assert page["total"] == 7 and [m["title"] for m in page["items"]] == ["Alien", "Arrival", "Blade Runner"]
     plex.section.search.return_value = []
     found = app.get("/tv/search?q=matrix", headers=headers).json["items"]
-    assert [m["key"] for m in found] == ["jf-tmdb-603"]
+    assert [m["key"] for m in found] == ["tmdb-603"]
+
+
+# ---- one movie, whichever sources have it -------------------------------------------------
+
+@pytest.fixture
+def matrix_file(movies_dir):
+    """The Matrix as a file with no ID: found to be Plex's The Matrix by its title and year."""
+    (movies_dir / "The Matrix (1999)").mkdir()
+    (movies_dir / "The Matrix (1999)" / "The.Matrix.1999.1080p.mp4").write_bytes(b"x" * 100)
+    return movies_dir
+
+
+def test_the_same_movie_in_plex_and_a_folder_is_one_movie(plex, matrix_file):
+    folder_plex(plex, matrix_file)
+    rows = create_app(plex.config, plex).test_client().get("/panel/api/movies").json["movies"]
+    matrix = [m for m in rows if m["title"] == "The Matrix"]
+    assert len(matrix) == 1 and matrix[0]["key"] == "tmdb-603" and matrix[0]["sources"] == ["Plex", "Movies"]
+    assert plex.find_library_movie("t-thematrix-1999").key == "tmdb-603"
+
+
+def test_movies_with_the_same_title_but_different_ids_stay_apart(plex, movies_dir):
+    (movies_dir / "The Matrix (1999) {tmdb-999}.mp4").write_bytes(b"x")
+    folder_plex(plex, movies_dir)
+    keys = [m["key"] for m in create_app(plex.config, plex).test_client().get("/panel/api/movies").json["movies"]
+            if m["title"] == "The Matrix"]
+    assert sorted(keys) == ["tmdb-603", "tmdb-999"]
+
+
+def test_source_order_picks_where_marquee_streams_from(plex, matrix_file):
+    from test_plexnfc import app_plex
+    plex = app_plex(folder_plex(plex, matrix_file))
+    app = create_app(plex.config, plex).test_client()
+    folder_id = plex.library.sources[0].id
+    app.get("/m/tmdb-603")
+    assert "X-Plex-Token" in plex.app_inbox.next("Den", 0)["url"]
+    assert plex.playing_source("app:Den", "tmdb-603") == "Plex"
+    plex.library.set_order([folder_id, "plex"])
+    app.get("/m/tmdb-603")
+    assert plex.app_inbox.next("Den", 0)["url"].endswith("/movie.mp4")
+    # a Plex player still plays Plex's copy, whatever comes first
+    assert app.get("/m/tmdb-603?client=Living Room").status_code == 200
+    plex._client.playMedia.assert_called_once()
+
+
+def test_a_source_that_fails_falls_back_to_the_next(plex, matrix_file, monkeypatch):
+    from test_plexnfc import app_plex
+    plex = app_plex(folder_plex(plex, matrix_file))
+    monkeypatch.setattr(type(plex), "plex_url", property(lambda self: (_ for _ in ()).throw(OSError("Plex is off"))))
+    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    assert r.status_code == 200
+    assert plex.app_inbox.next("Den", 0)["url"].endswith("/movie.mp4")
+    assert plex.playing_source("app:Den", "tmdb-603") == "Movies"
+
+
+def test_a_plex_card_plays_from_the_folder_once_plex_is_gone(plex, matrix_file):
+    from test_plexnfc import app_plex
+    plex = app_plex(plex)
+    plex.cards.link("04-11-22-33", "tmdb-603", "The Matrix")  # linked before, with no year
+    plex.config = replace(plex.config, plex_token="")  # signed out of Plex
+    folder_plex(plex, matrix_file)
+    p = plex.app_pairings.start("Box", "remote")
+    plex.app_pairings.approve(p["pair_id"])
+    box = {"Authorization": f"Bearer {plex.app_pairings.poll(p['pair_id'])['secret']}"}
+    app = create_app(plex.config, plex).test_client()
+    r = app.post("/remote/tap", json={"uid": "04-11-22-33"}, headers=box)
+    assert r.status_code == 202 and r.json["title"] == "The Matrix"
+    command = None
+    for _ in range(50):
+        if command := plex.app_inbox.next("Den", 0):
+            break
+        __import__("time").sleep(0.05)
+    assert command["url"].endswith("/movie.mp4") and command["key"] == "t-thematrix-1999"
+    # Now Playing says where it came from
+    app.post("/tv/status", headers=pair(plex, "Den"), json={"state": "playing", "key": command["key"],
+                                                            "title": "The Matrix", "position": 5, "duration": 100})
+    den = next(d for d in app.get("/panel/api/overview").json["devices"] if d["name"] == "Den")
+    assert den["status"]["source"] == "Movies"
+    assert app.get("/now").json["source"] == "Movies"

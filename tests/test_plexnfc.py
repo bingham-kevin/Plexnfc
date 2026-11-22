@@ -325,7 +325,7 @@ def test_control_panel_is_served_with_relative_addresses(plex):
     # the tag list, and trying a tag from the panel
     movies = app.get("/panel/api/movies").json
     assert movies["movies"] == [{"key": "tmdb-603", "title": "The Matrix", "year": 1999,
-                                 "url": "http://nfc.local:8080/m/tmdb-603", "cards": [], "source": "Plex"}]
+                                 "url": "http://nfc.local:8080/m/tmdb-603", "cards": [], "source": "Plex", "sources": ["Plex"]}]
     assert [c["action"] for c in movies["controls"]] == ["pause", "play", "stop"]
     assert app.post("/panel/api/play", json={"key": "tmdb-603"}, environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
     with mock.patch("plexnfc.server.threading.Thread") as thread:

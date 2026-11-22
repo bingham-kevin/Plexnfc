@@ -38,7 +38,7 @@ function ScanSetup({ canManage }: { canManage: boolean }) {
   const movies = useMovies(source === "collection" ? collection : "", source === "label" ? label : "",
                            source === "source" ? from : "");
   const start = useCardAction<Movie[]>(() => "cards/scan",
-                                       (list) => ({ movies: list.map((m) => ({ key: m.key, title: m.title })) }));
+                                       (list) => ({ movies: list.map((m) => ({ key: m.key, title: m.title, year: m.year })) }));
 
   const chosenFilter = { collection, label, source: from, manual: "manual" }[source];
   const choices = (["collection", "label", "source", "manual"] as const)

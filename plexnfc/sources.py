@@ -2,20 +2,20 @@
 
 Plex is set up as before (Sign in with Plex, PLEX_LIBRARY). Jellyfin servers and
 folders (a local path, or an SMB/NFS share mounted on the server) are added in the
-control panel and saved in ``sources.json``, next to the Plex sign-in.
+control panel and saved in ``sources.json``, next to the Plex sign-in, with the
+order to use them in.
 
-Every movie has a key, which tags (``/m/KEY``) and cards (movie_cards.json) are
-linked to, so keys stay the same as long as the movie is there, and never clash
-between kinds of source:
+A tag (``/m/KEY``) or a card (movie_cards.json) is linked to a movie, not to a source:
+the same movie in Plex, Jellyfin and a folder is one movie, with one key, and plays
+from whichever source comes first in the order that has it and can play on the
+player (see ``Library``). Its key is, in this order:
 
-  Plex      ``tmdb-603``, ``imdb-tt0133093``, ``tvdb-…``, else ``rk-<ratingKey>`` (unchanged)
-  Jellyfin  ``jf-tmdb-603`` from the movie's TMDB/IMDb/TVDB ID, else ``jf-<item ID>``
-  Folder    ``file-tmdb-603`` from a movie.nfo or ``{tmdb-603}`` in the name, else
-            ``file-<hash>`` of the file's path inside the folder (so moving or renaming
-            the file, but not the folder, changes it)
+  ``tmdb-603`` (or ``imdb-…``, ``tvdb-…``)  its ID, if any source knows it (Plex's keys, unchanged)
+  ``rk-<ratingKey>``                       a Plex movie no source has an ID for
+  ``t-<title>-<year>``                     otherwise, from its title and year: ``t-aliencovenant-2017``
 
-The same movie in two Jellyfin servers (or two folders) has the same key: whichever
-source is listed first plays it.
+A movie is found by any key it has ever had in any source: its IDs, its title and
+year, ``rk-…``, and (for a while these were the keys) ``jf-…`` and ``file-…``.
 """
 from __future__ import annotations
 
@@ -31,15 +31,15 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
 from .filestream import FileStreams, embedded_poster, placeholder_poster
-from .jellyfin import PROVIDERS, TICKS_PER_SECOND, Jellyfin, JellyfinError, tag_key
+from .jellyfin import PROVIDERS, TICKS_PER_SECOND, Jellyfin, JellyfinError
 
 log = logging.getLogger(__name__)
 
 CACHE_TTL = 300  # a source's movie list is read again after this long
 MISS_RESCAN = 30  # a key that isn't found rescans its source, but not more often than this
 
-JF_KEY_RE = re.compile(r"^jf-(?:(tmdb|imdb|tvdb)-[A-Za-z0-9]+|[0-9a-fA-F]{32})$")
-FILE_KEY_RE = re.compile(r"^file-(?:(tmdb|imdb|tvdb)-[A-Za-z0-9]+|[0-9a-f]{12})$")
+INDEX_TTL = 300  # the merged list of every source's movies is rebuilt (in the background) after this long
+LIBRARY_KEY_RE = re.compile(r"^(t-[a-z0-9]+(-\d{4})?|jf-[A-Za-z0-9-]+|file-[A-Za-z0-9-]+)$")
 
 VIDEO_TYPES = {".mp4", ".m4v", ".mov", ".mkv", ".avi", ".wmv", ".mpg", ".mpeg", ".ts", ".m2ts", ".webm",
                ".flv", ".vob", ".divx"}
@@ -74,6 +74,8 @@ class SourceMovie:
     labels: tuple = ()
     poster: str | None = None  # a folder movie's poster file
     added: float = 0
+    ids: dict = field(default_factory=dict)  # {"tmdb": "603", ...}
+    source_key: str = ""  # jf-<item ID> or file-<hash>: this copy in particular
     thumb: str = "poster"  # always something to show: its poster, or a placeholder
     ratingKey = None
     guids: tuple = field(default=())
@@ -117,7 +119,8 @@ class Source:
                     movies.sort(key=lambda m: (sort_title(m.title), m.year or 0))
                     by_key: dict[str, SourceMovie] = {}
                     for m in movies:
-                        by_key.setdefault(m.key, m)
+                        for alias in aliases(m):
+                            by_key.setdefault(alias, m)
                     self._movies, self._by_key = movies, by_key
                 self._read_at = time.monotonic()
             return list(self._movies)
@@ -199,8 +202,12 @@ class JellyfinSource(Source):
         movies = []
         for item in self._get(self._items, **params).get("Items", []):
             ticks = (item.get("UserData") or {}).get("PlaybackPositionTicks") or 0
+            ids = {k.lower(): str(v) for k, v in (item.get("ProviderIds") or {}).items()
+                   if k.lower() in PROVIDERS and v}
+            title = item.get("Name") or "?"
             movies.append(SourceMovie(
-                key=f"jf-{tag_key(item) or item['Id']}", title=item.get("Name") or "?",
+                key=movie_id(ids, title, item.get("ProductionYear")), title=title, ids=ids,
+                source_key=f"jf-{item['Id']}",
                 year=item.get("ProductionYear"), source=self, ref=item["Id"], summary=item.get("Overview") or "",
                 duration=int((item.get("RunTimeTicks") or 0) / TICKS_PER_SECOND * 1000),
                 viewOffset=int(ticks / TICKS_PER_SECOND * 1000), labels=tuple(item.get("Tags") or ()),
@@ -234,8 +241,13 @@ class JellyfinSource(Source):
             return None
 
     def stream(self, movie: SourceMovie, start: int, player: str, library: "Library") -> str:
+        """Jellyfin's HLS stream, passed on by Marquee Server (``/jf/…``): Apple TVs can't always
+        reach the address this server reaches Jellyfin at (a Tailscale name, say)."""
+        from urllib.parse import urlsplit
+
         from .tvapp import jellyfin_hls_url
-        return jellyfin_hls_url(self.url, self.settings["token"], movie.ref, start, player)
+        url = urlsplit(jellyfin_hls_url(self.url, self.settings["token"], movie.ref, start, player))
+        return f"{library.base_url}/jf/{self.id}/{library.files.token(f'jf:{self.id}')}{url.path}?{url.query}"
 
     def public(self) -> dict:
         return {**super().public(), "url": self.url, "library": self.library,
@@ -279,17 +291,14 @@ class FolderSource(Source):
         info = read_nfo(folder, stem, files, alone)
         title, year, ids = parse_name(names)
         ids = {**ids, **info.get("ids", {})}
-        source_id = next(((s, ids[s]) for s in PROVIDERS if ids.get(s)), None)
-        if source_id:
-            key = f"file-{source_id[0]}-{source_id[1]}"
-        else:
-            relative = os.path.relpath(path, self.path).replace(os.sep, "/")
-            key = f"file-{hashlib.sha1(relative.encode()).hexdigest()[:12]}"
+        relative = os.path.relpath(path, self.path).replace(os.sep, "/")
+        title, year = info.get("title") or title, info.get("year") or year
         lower = {f.lower(): f for f in files}
         candidates = [f"{stem}-poster", stem] + (["poster", "folder", "cover", "movie"] if alone else [])
         poster = next((os.path.join(folder, lower[c.lower() + ext]) for c in candidates for ext in IMAGE_TYPES
                        if c.lower() + ext in lower), None)
-        return SourceMovie(key=key, title=info.get("title") or title, year=info.get("year") or year, source=self,
+        return SourceMovie(key=movie_id(ids, title, year), title=title, year=year, source=self, ids=ids,
+                           source_key=f"file-{hashlib.sha1(relative.encode()).hexdigest()[:12]}",
                            ref=path, summary=info.get("plot", ""), duration=info.get("runtime", 0),
                            collections=tuple(info.get("sets", ())), labels=tuple(info.get("tags", ())),
                            poster=poster, added=os.path.getmtime(path))
@@ -305,13 +314,57 @@ class FolderSource(Source):
         return None
 
     def stream(self, movie: SourceMovie, start: int, player: str, library: "Library") -> str:
-        return library.files.url(library.base_url, movie.key, movie.ref, start, player)
+        return library.files.url(library.base_url, movie.source_key, movie.ref, start, player)
 
     def public(self) -> dict:
         return {**super().public(), "path": self.path}
 
 
 KINDS = {"jellyfin": JellyfinSource, "folder": FolderSource}
+
+
+# ---- keys ------------------------------------------------------------------------------
+
+def id_keys(ids: dict) -> list[str]:
+    """``tmdb-603``, ``imdb-tt0133093``…: the keys a movie's IDs give, best first."""
+    return [f"{s}-{ids[s]}" for s in PROVIDERS if ids.get(s) and re.fullmatch(r"[A-Za-z0-9]+", str(ids[s]))]
+
+
+def title_key(title: str, year: int | None) -> str:
+    """``t-aliencovenant-2017``: a key from the title (letters and digits only, so "Alien:
+    Covenant" and "Alien Covenant" agree) and the year."""
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode().lower()
+    plain = re.sub(r"[^a-z0-9]", "", plain.replace("&", "and")) or "untitled"
+    return f"t-{plain}-{year}" if year else f"t-{plain}"
+
+
+def movie_id(ids: dict, title: str, year: int | None) -> str:
+    keys = id_keys(ids)
+    return keys[0] if keys else title_key(title, year)
+
+
+def plex_ids(movie) -> dict:
+    ids = {}
+    for guid in getattr(movie, "guids", None) or []:
+        source, _, ident = str(getattr(guid, "id", "")).partition("://")
+        if source in PROVIDERS and ident:
+            ids.setdefault(source, ident)
+    return ids
+
+
+def aliases(movie) -> list[str]:
+    """Every key a movie can be found by: IDs, its own key in its source, its title key, and
+    the ``jf-…``/``file-…`` forms."""
+    if isinstance(movie, SourceMovie):
+        found = id_keys(movie.ids)
+        prefix = movie.source_key.split("-", 1)[0]
+        found += [f"{prefix}-{k}" for k in found] + [movie.source_key]
+        if movie.key not in found:
+            found.append(movie.key)
+    else:  # Plex
+        found = id_keys(plex_ids(movie)) + [f"rk-{movie.ratingKey}"]
+    return found + [title_key(movie.title, getattr(movie, "year", None))]
 
 
 # ---- reading names and .nfo files -------------------------------------------------------
@@ -344,7 +397,7 @@ def parse_name(names: list[str]) -> tuple[str, int | None, dict]:
 
 
 def clean_title(title: str) -> str:
-    title = title.strip(" ._-([")
+    title = title.strip(" ._-").rstrip("([").strip()
     if " " not in title:  # Alien.Covenant or Alien_Covenant
         title = re.sub(r"[._]", " ", title)
     return re.sub(r"\s{2,}", " ", title).strip()
@@ -405,8 +458,41 @@ def _iso_time(value: str | None) -> float:
 
 # ---- the whole library -----------------------------------------------------------------
 
+@dataclass(eq=False)
+class LibraryMovie:
+    """One movie, from every source that has it: ``copies`` in the order sources are used."""
+    key: str
+    copies: list
+
+    @property
+    def movie(self):
+        return self.copies[0]
+
+    @property
+    def title(self) -> str:
+        return self.movie.title
+
+    @property
+    def year(self) -> int | None:
+        return getattr(self.movie, "year", None)
+
+
+def source_name(movie) -> str:
+    return movie.source.name if isinstance(movie, SourceMovie) else "Plex"
+
+
+def source_id(movie) -> str:
+    return movie.source.id if isinstance(movie, SourceMovie) else "plex"
+
+
 class Library:
-    """Plex and the sources added in the panel, as one list of movies."""
+    """Plex and the sources added in the panel, as one list of movies.
+
+    The same movie in several sources is one ``LibraryMovie``: copies are matched by
+    TMDB/IMDb/TVDB ID, else by title and year (unless their IDs disagree). Its copies
+    are kept in the order the sources are used in (``order``, set on the Sources tab;
+    Plex first unless moved), and playing picks the first copy the player can play.
+    """
 
     def __init__(self, plex, data_dir: str):
         self.plex = plex
@@ -414,6 +500,12 @@ class Library:
         self.path = os.path.join(data_dir, "sources.json")
         self.files = FileStreams(data_dir)
         self._lock = threading.Lock()
+        self._index_lock = threading.Lock()
+        self._index: tuple[float, list[LibraryMovie], dict[str, LibraryMovie]] | None = None
+        self._rebuilding = False
+        self._miss_at = 0.0
+        self._plex_cache: tuple[float, list] | None = None
+        self.playing: dict[str, dict] = {}  # player ID -> {"key", "source"}: what each player was last sent
         try:
             with open(self.path) as f:
                 saved = json.load(f)
@@ -426,6 +518,7 @@ class Library:
                 self.sources.append(KINDS[settings["kind"]](settings))
             except (KeyError, TypeError) as e:
                 log.warning("Skipping a source in %s that can't be read: %s", self.path, e)
+        self.order: list[str] = [i for i in saved.get("order", []) if isinstance(i, str)]
 
     @property
     def base_url(self) -> str:
@@ -434,8 +527,14 @@ class Library:
     def _save(self) -> None:
         tmp = f"{self.path}.tmp"
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
-            json.dump({"plex": self.use_plex, "sources": [s.settings for s in self.sources]}, f, indent=1)
+            json.dump({"plex": self.use_plex, "order": self.ordered_ids(),
+                       "sources": [s.settings for s in self.sources]}, f, indent=1)
         os.replace(tmp, self.path)
+
+    def changed(self) -> None:
+        """Sources, their order or the Plex sign-in changed: build the merged list again."""
+        self._index = None
+        self._plex_cache = None
 
     # ---- settings (the control panel) ----
 
@@ -443,10 +542,29 @@ class Library:
     def plex_in_use(self) -> bool:
         return self.use_plex and bool(self.plex.config.plex_token)
 
+    def ordered_ids(self) -> list[str]:
+        """Every source's ID (``plex`` for Plex), in the order they're used."""
+        known = ["plex"] + [s.id for s in self.sources]
+        return [i for i in self.order if i in known] + [i for i in known if i not in self.order]
+
+    def ordered(self) -> list:
+        """``"plex"`` and the Source objects, in the order they're used."""
+        by_id = {s.id: s for s in self.sources}
+        return ["plex" if i == "plex" else by_id[i] for i in self.ordered_ids()]
+
+    def set_order(self, ids: list[str]) -> None:
+        with self._lock:
+            self.order = [i for i in ids if isinstance(i, str)]
+            self._save()
+        self.changed()
+
     def public(self) -> dict:
-        return {"plex": {"enabled": self.use_plex, "signed_in": bool(self.plex.config.plex_token),
-                         "library": self.plex.config.library},
-                "sources": [s.public() for s in self.sources]}
+        plex = {"id": "plex", "kind": "plex", "enabled": self.use_plex, "signed_in": bool(self.plex.config.plex_token),
+                "library": self.plex.config.library}
+        by_id = {s.id: s for s in self.sources}
+        return {"plex": plex, "sources": [s.public() for s in self.sources],
+                "order": self.ordered_ids(),
+                "ordered": [plex if i == "plex" else by_id[i].public() for i in self.ordered_ids()]}
 
     def add(self, kind: str, **settings) -> Source:
         """Add a Jellyfin server or a folder, once its movies can be read."""
@@ -467,6 +585,7 @@ class Library:
         with self._lock:
             self.sources.append(source)
             self._save()
+        self.changed()
         return source
 
     def remove(self, source_id: str) -> bool:
@@ -476,6 +595,7 @@ class Library:
             if len(self.sources) == before:
                 return False
             self._save()
+        self.changed()
         return True
 
     def source(self, source_id: str) -> Source | None:
@@ -485,69 +605,147 @@ class Library:
         with self._lock:
             self.use_plex = bool(enabled)
             self._save()
+        self.changed()
 
     def jellyfin_client(self) -> Jellyfin | None:
         """The first Jellyfin source's server, for Jellyfin players when JELLYFIN_URL isn't set."""
-        return next((s.client for s in self.sources if isinstance(s, JellyfinSource)), None)
+        return next((s.client for s in self.ordered() if isinstance(s, JellyfinSource)), None)
 
-    # ---- movies ----
+    # ---- the merged list ----
 
-    def source_for_key(self, key: str) -> type[Source] | None:
-        """The kind of source a key belongs to (None: Plex)."""
-        if key.startswith("jf-"):
-            return JellyfinSource
-        if key.startswith("file-"):
-            return FolderSource
-        return None
+    def _plex_movies(self, fresh: bool = False) -> list:
+        if fresh or not self._plex_cache or time.monotonic() - self._plex_cache[0] > CACHE_TTL:
+            self._plex_cache = (time.monotonic(), list(self.plex.plex_movies()))
+        return self._plex_cache[1]
 
-    def find(self, key: str) -> SourceMovie | None:
-        """A Jellyfin or folder movie by its key; None if no source has it."""
-        kind = self.source_for_key(key)
-        if kind is JellyfinSource and not JF_KEY_RE.match(key) or kind is FolderSource and not FILE_KEY_RE.match(key):
-            return None
-        for source in self.sources:
-            if isinstance(source, kind):
-                try:
-                    if movie := source.find(key):
-                        return movie
-                except SourceError as e:
-                    log.warning("%s", e)
-        return None
+    def _build(self, fresh: bool = False) -> tuple[float, list[LibraryMovie], dict[str, LibraryMovie]]:
+        """Merge every source's movies, in the order sources are used."""
+        movies: list[LibraryMovie] = []
+        owner: dict[str, LibraryMovie] = {}
+        for source in self.ordered():
+            try:
+                if source == "plex":
+                    copies = self._plex_movies(fresh) if self.plex_in_use else []
+                else:
+                    copies = source.movies(fresh=fresh)
+            except Exception as e:  # noqa: BLE001 - one source being away leaves the others
+                log.warning("Couldn't read %s: %s", "Plex" if source == "plex" else source.name, e)
+                continue
+            for copy in copies:
+                keys = aliases(copy)
+                ids = keys[:len(id_keys(copy.ids if isinstance(copy, SourceMovie) else plex_ids(copy)))]
+                found = next((owner[k] for k in ids if k in owner), None)
+                if found is None and keys[-1] in owner and not _ids_disagree(owner[keys[-1]], copy):
+                    found = owner[keys[-1]]  # same title and year
+                if found is None:
+                    found = LibraryMovie("", [])
+                    movies.append(found)
+                found.copies.append(copy)
+                for k in keys:
+                    owner.setdefault(k, found)
+        for m in movies:
+            m.key = _main_key(m)
+            owner.setdefault(m.key, m)
+            for copy in m.copies:
+                if isinstance(copy, SourceMovie):
+                    copy.key = m.key
+                else:
+                    copy._marquee_key = m.key
+        movies.sort(key=lambda m: (sort_title(m.title), m.year or 0))
+        return time.monotonic(), movies, owner
+
+    def index(self) -> tuple[list[LibraryMovie], dict[str, LibraryMovie]]:
+        """The merged list and every key it's found by. A list that's getting old is used
+        while a new one is built in the background."""
+        current = self._index
+        if current is None:
+            with self._index_lock:
+                if self._index is None:
+                    self._index = self._build()
+                current = self._index
+        elif time.monotonic() - current[0] > INDEX_TTL and not self._rebuilding:
+            self._rebuilding = True
+            threading.Thread(target=self._rebuild, daemon=True).start()
+        return current[1], current[2]
+
+    def _rebuild(self, fresh: bool = False) -> None:
+        try:
+            built = self._build(fresh)
+            with self._index_lock:
+                self._index = built
+        finally:
+            self._rebuilding = False
+
+    def find(self, key: str, title: str | None = None, year: int | None = None) -> LibraryMovie | None:
+        """The movie for a key from a tag or a card, from whichever sources have it. A card
+        also knows its movie's title (and year), which finds it in sources that know it by
+        another key."""
+        movies, owner = self.index()
+        found = owner.get(key)
+        if found is None and time.monotonic() - self._miss_at > MISS_RESCAN:
+            self._miss_at = time.monotonic()  # added since the list was read?
+            with self._index_lock:
+                self._index = self._build(fresh=True)
+            movies, owner = self._index[1], self._index[2]
+            found = owner.get(key)
+        if found is None and title:
+            found = owner.get(title_key(title, year))
+            if found is None and not year:
+                plain = title_key(title, None)
+                same = [m for m in movies if title_key(m.title, None) == plain]
+                found = same[0] if len(same) == 1 else None
+        return found
+
+    def canonical(self, key: str) -> str:
+        """The key a movie is listed under, for any key it has (without reading any source)."""
+        current = self._index
+        found = current[2].get(key) if current else None
+        return found.key if found else key
+
+    def movie_for(self, copy) -> LibraryMovie | None:
+        """The merged movie one source's copy belongs to."""
+        _, owner = self.index()
+        return next((owner[k] for k in aliases(copy) if k in owner), None)
 
     def movies(self, collection: str | None = None, label: str | None = None, source: str | None = None) -> list:
-        """Every movie (Plex's, then each source's), or those in a collection or with a label,
-        or from one source (``plex`` or a source's ID). A source that can't be read is left
-        out, unless every one fails."""
+        """Every movie once (as its first copy), or those in a collection or with a label in any
+        source, or in one source (``plex`` or a source's ID)."""
+        if not self.plex_in_use and not self.sources:
+            return list(self.plex.plex_movies(collection, label))  # says why: not signed in
+        movies, _ = self.index()
+        if not (collection or label or source):
+            return [m.movie for m in movies]
         found: list = []
         errors: list[str] = []
         tried = 0
-        if source in (None, "", "plex") and (self.plex_in_use or (self.use_plex and not self.sources)):
-            tried += 1
-            try:
-                found += list(self.plex.plex_movies(collection, label))
-            except Exception as e:  # noqa: BLE001 - Plex signed out or unreachable: still list the rest
-                if not self.sources or source == "plex":
-                    raise
-                errors.append(str(e))
-                log.warning("Couldn't list Plex movies: %s", e)
-        for s in self.sources:
-            if source not in (None, "", s.id):
+        for s in self.ordered():
+            if source and source != ("plex" if s == "plex" else s.id):
                 continue
             tried += 1
             try:
-                movies = s.movies()
-                if collection:
-                    movies = [m for m in movies if s.in_collection(m, collection)]
-                if label:
-                    movies = [m for m in movies if label.casefold() in (x.casefold() for x in m.labels)]
-                found += movies
-            except SourceError as e:
+                if s == "plex":
+                    if not self.plex_in_use:
+                        continue
+                    copies = (list(self.plex.plex_movies(collection, label)) if collection or label
+                              else self._plex_movies())
+                else:
+                    copies = s.movies()
+                    if collection:
+                        copies = [m for m in copies if s.in_collection(m, collection)]
+                    if label:
+                        copies = [m for m in copies if label.casefold() in (x.casefold() for x in m.labels)]
+                found += copies
+            except Exception as e:  # noqa: BLE001
                 errors.append(str(e))
                 log.warning("%s", e)
-        if errors and len(errors) == tried:
+        if errors and len(errors) == tried and not found:
             from .plex import PlexNFCError
             raise PlexNFCError("; ".join(errors))
-        return found
+        merged: dict[str, LibraryMovie] = {}
+        for copy in found:
+            if (m := self.movie_for(copy)) and m.key not in merged:
+                merged[m.key] = m
+        return [m.movie for m in sorted(merged.values(), key=lambda m: (sort_title(m.title), m.year or 0))]
 
     def filters(self) -> dict:
         """Collections (with how many movies each holds) and labels from every source, and
@@ -567,20 +765,34 @@ class Library:
                     labels.update(m.labels)
             except SourceError as e:
                 log.warning("%s", e)
-        sources = ([{"id": "plex", "name": "Plex"}] if self.plex_in_use else []) + \
-                  [{"id": s.id, "name": s.name} for s in self.sources]
+        sources = [{"id": "plex", "name": "Plex"} if s == "plex" else {"id": s.id, "name": s.name}
+                   for s in self.ordered() if s != "plex" or self.plex_in_use]
         return {"collections": [{"title": t, "count": c} for t, c in sorted(collections.items(),
                                                                           key=lambda c: c[0].casefold())],
                 "labels": sorted(labels, key=str.casefold),
                 "sources": sources if len(sources) > 1 else []}
 
-    def poster(self, movie: SourceMovie, width: int | None = None, height: int | None = None) -> tuple[bytes, str]:
-        """A Jellyfin or folder movie's poster: its own, the art inside its file, or a placeholder."""
-        if found := movie.source.poster(movie, width, height):
-            return found
-        if isinstance(movie.source, FolderSource):
-            if art := self._embedded(movie):
-                return art, "image/jpeg"
+    # ---- posters and streams ----
+
+    def poster(self, movie: LibraryMovie, width: int | None = None, height: int | None = None) -> tuple[bytes, str]:
+        """The poster of the first copy that has one; the art inside a file; else a placeholder."""
+        import requests
+
+        for copy in movie.copies:
+            if isinstance(copy, SourceMovie):
+                if found := copy.source.poster(copy, width, height):
+                    return found
+            elif getattr(copy, "thumb", None):
+                try:
+                    r = requests.get(self.plex.poster_url(copy, width or 600, height or 900), timeout=15)
+                    if r.ok and isinstance(r.content, bytes) and r.content:
+                        return r.content, r.headers.get("Content-Type", "image/jpeg")
+                except Exception as e:  # noqa: BLE001 - Plex away: try the next copy
+                    log.debug("No Plex poster for %s: %s", copy.title, e)
+        for copy in movie.copies:
+            if isinstance(copy, SourceMovie) and isinstance(copy.source, FolderSource):
+                if art := self._embedded(copy):
+                    return art, "image/jpeg"
         return placeholder_poster(movie.title, movie.year, width or 600, height or 900), "image/jpeg"
 
     def _embedded(self, movie: SourceMovie) -> bytes | None:
@@ -598,12 +810,41 @@ class Library:
         return art
 
     def stream(self, movie: SourceMovie, start: int, player: str) -> str:
-        """The address the Marquee app on ``player`` plays this movie from."""
+        """The address the Marquee app on ``player`` plays this copy from."""
         return movie.source.stream(movie, start, player, self)
 
     def file_movie(self, key: str, token: str) -> SourceMovie | None:
-        """A folder movie for a signed ``/files`` address, or None."""
+        """A folder copy for a signed ``/files`` address (made for its ``file-…`` key), or None."""
         if not self.files.check(key, token):
             return None
-        movie = self.find(key)
-        return movie if movie and isinstance(movie.source, FolderSource) else None
+        for s in self.sources:
+            if isinstance(s, FolderSource):
+                try:
+                    if (m := s.find(key)) and m.source_key == key:
+                        return m
+                except SourceError:
+                    continue
+        return None
+
+
+def _ids_disagree(movie: LibraryMovie, copy) -> bool:
+    """Whether a copy and a movie have different IDs from the same provider (a remake with
+    the same title and year, say), so they aren't the same movie."""
+    mine = copy.ids if isinstance(copy, SourceMovie) else plex_ids(copy)
+    for other in movie.copies:
+        theirs = other.ids if isinstance(other, SourceMovie) else plex_ids(other)
+        if any(mine.get(p) and theirs.get(p) and str(mine[p]) != str(theirs[p]) for p in PROVIDERS):
+            return True
+    return False
+
+
+def _main_key(movie: LibraryMovie) -> str:
+    """The key a movie is listed (and new tags and cards linked) under: an ID from the first
+    copy that has one; else a Plex copy's ``rk-…``; else its title and year."""
+    for copy in movie.copies:
+        if keys := id_keys(copy.ids if isinstance(copy, SourceMovie) else plex_ids(copy)):
+            return keys[0]
+    for copy in movie.copies:
+        if not isinstance(copy, SourceMovie):
+            return f"rk-{copy.ratingKey}"
+    return title_key(movie.title, movie.year)

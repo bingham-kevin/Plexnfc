@@ -33,7 +33,7 @@ export function Tags({ overview }: { overview: Overview }) {
   const players = usePlayers();
   const toast = useToast();
   // One movie's card: a scan of just that movie, on the Cards tab
-  const linkCard = useCardAction<Movie>(() => "cards/scan", (m) => ({ movies: [{ key: m.key, title: m.title }] }));
+  const linkCard = useCardAction<Movie>(() => "cards/scan", (m) => ({ movies: [{ key: m.key, title: m.title, year: m.year }] }));
   const play = useAction<Movie>(() => "play", (m) => ({ key: m.key, player: player || null }),
                                 (m) => `Starting ${m.title}`);
 
