@@ -9,6 +9,7 @@ import {
   type SortingState,
 } from "@tanstack/react-table";
 import { useMemo, useState } from "react";
+import { EditMovie } from "./EditMovie";
 import { posterURL, type Movie, type Overview } from "./api";
 import { useAction, useCardAction, useMovies, usePlayers } from "./hooks";
 import { useToast } from "./toast";
@@ -30,6 +31,8 @@ export function Tags({ overview }: { overview: Overview }) {
   const [filter, setFilter] = useState("");
   const [sorting, setSorting] = useState<SortingState>([{ id: "title", desc: false }]);
   const [player, setPlayer] = useState("");
+  const [editing, setEditing] = useState<Movie | null>(null);
+  const [posters, setPosters] = useState(0);  // changes when a movie's poster may have changed
   const players = usePlayers();
   const toast = useToast();
   // One movie's card: a scan of just that movie, on the Cards tab
@@ -58,7 +61,8 @@ export function Tags({ overview }: { overview: Overview }) {
     column.display({
       id: "poster",
       header: "",
-      cell: ({ row }) => <img className="thumb" src={posterURL(row.original.key, 80, 120)} alt="" loading="lazy" />,
+      cell: ({ row }) => <img className="thumb" alt="" loading="lazy"
+                                 src={posterURL(row.original.key, 80, 120, posters ? `${posters}` : "")} />,
     }),
     column.accessor("title", { header: "Title", cell: (c) => <b>{c.getValue()}</b> }),
     column.accessor("year", { header: "Year", cell: (c) => c.getValue() ?? "—", sortUndefined: "last" }),
@@ -82,6 +86,11 @@ export function Tags({ overview }: { overview: Overview }) {
               {row.original.cards.length ? "✓ Card" : "Link card"}
             </button>
           )}
+          {overview.can_manage && row.original.files.length > 0 && (
+            <button onClick={() => setEditing(row.original)} title="Match it with TMDB, or change its details">
+              {row.original.key.startsWith("t-") ? "Match…" : "Edit"}
+            </button>
+          )}
           {overview.can_manage && (
             <button className="primary" disabled={play.isPending} onClick={() => play.mutate(row.original)}
                     title="Start it, as tapping the tag would">▶ Try</button>
@@ -89,7 +98,7 @@ export function Tags({ overview }: { overview: Overview }) {
         </div>
       ),
     }),
-  ], [overview.can_manage, play.isPending, linkCard.isPending, player, manySources]);
+  ], [overview.can_manage, play.isPending, linkCard.isPending, player, manySources, posters]);
 
   const table = useReactTable({
     data: movies.data?.movies ?? [],
@@ -205,6 +214,7 @@ export function Tags({ overview }: { overview: Overview }) {
           </div>
         </>
       )}
+      {editing && <EditMovie movie={editing} onClose={() => setEditing(null)} onSaved={() => setPosters((n) => n + 1)} />}
     </section>
   );
 }

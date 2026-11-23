@@ -192,3 +192,51 @@ td form.row, td .row.end { flex-wrap: nowrap; }
 }
 .order { white-space: nowrap; }
 .order .row { display: inline-flex; gap: 2px; margin-left: 6px; }
+
+/* Dialogs: the folder picker and editing a movie */
+.dialog { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text);
+          padding: 0; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+.dialog.wide { width: min(820px, calc(100vw - 32px)); }
+.dialog::backdrop { background: rgb(0 0 0 / 0.55); }
+.dialog-body { padding: 16px 18px 18px; }
+.dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.dialog-head h2 { margin: 0; }
+.dialog-foot { margin-top: 12px; flex-wrap: wrap; }
+.dialog-foot .muted { flex: 1; }
+.row.wrap { flex-wrap: wrap; }
+.roots { margin: 10px 0; }
+.roots button.on { border-color: var(--gold); }
+.pick-list.folders { max-height: 320px; display: grid; }
+.pick-list.folders .pick { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none;
+                           text-align: left; justify-content: flex-start; }
+.pick-list.folders .pick:hover { background: var(--surface-2); }
+.pad { padding: 8px 10px; }
+.edit-head { display: flex; gap: 16px; align-items: flex-start; }
+.edit-poster { width: 120px; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 6px; background: var(--surface-2);
+               flex: none; }
+.tmdb-results { display: grid; gap: 8px; margin-top: 10px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+.tmdb-result { display: flex; gap: 10px; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; }
+.tmdb-result.on { border-color: var(--good); }
+.tmdb-result img, .tmdb-result .no-poster { width: 64px; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 4px;
+                                            background: var(--surface-2); flex: none; }
+.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+         font-size: 0.85rem; margin: 2px 0 6px; }
+textarea { font: inherit; color: inherit; background: var(--surface-2); border: 1px solid var(--line);
+           border-radius: 8px; padding: 8px 10px; width: 100%; }
+@media (max-width: 560px) { .edit-head { flex-direction: column; } .tmdb-results { grid-template-columns: 1fr; } }
+
+/* The Sources tab */
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 6px; }
+.card-head h2 { margin: 0; }
+.sources .kind { font-size: 0.75rem; color: var(--muted); border: 1px solid var(--line); border-radius: 99px;
+                 padding: 1px 8px; margin-left: 4px; vertical-align: 1px; }
+.sources .where { font-size: 0.85rem; margin-top: 2px; overflow-wrap: anywhere; }
+.tmdb-line { margin-top: 12px; font-size: 0.9rem; }
+.add-form { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.dialog .fields { max-width: none; }
+.row.nowrap { flex-wrap: nowrap; }
+.row.nowrap input, .grow { flex: 1; min-width: 0; }
+details.help { margin-top: 12px; }
+details.help summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
+.sources td.actions { width: 1%; white-space: nowrap; }
+.sources td { vertical-align: middle; }

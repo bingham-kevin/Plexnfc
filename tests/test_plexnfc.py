@@ -325,7 +325,7 @@ def test_control_panel_is_served_with_relative_addresses(plex):
     # the tag list, and trying a tag from the panel
     movies = app.get("/panel/api/movies").json
     assert movies["movies"] == [{"key": "tmdb-603", "title": "The Matrix", "year": 1999,
-                                 "url": "http://nfc.local:8080/m/tmdb-603", "cards": [], "source": "Plex", "sources": ["Plex"]}]
+                                 "url": "http://nfc.local:8080/m/tmdb-603", "cards": [], "source": "Plex", "sources": ["Plex"], "files": []}]
     assert [c["action"] for c in movies["controls"]] == ["pause", "play", "stop"]
     assert app.post("/panel/api/play", json={"key": "tmdb-603"}, environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
     with mock.patch("plexnfc.server.threading.Thread") as thread:
@@ -1498,3 +1498,17 @@ def test_box_text():
     assert box_text("七人の侍 Seven Samurai") == "Seven Samurai"
     assert box_text("Plain title") == "Plain title"
     assert box_json({"title": "8½", "n": 3, "l": ["É"]}) == {"title": "8 1/2", "n": 3, "l": ["E"]}
+
+
+def test_apps_start_the_plex_sign_in_with_json(plex, tmp_path):
+    from dataclasses import replace
+    plex.config = replace(plex.config, auth_file=str(tmp_path / "plex_auth.json"))
+    app = create_app(plex.config, plex).test_client()
+    with mock.patch("plexnfc.plexauth.start_pin", return_value=(42, "https://app.plex.tv/auth#?code=x")), \
+         mock.patch("plexnfc.plexauth.check_pin", return_value="tok") as check:
+        assert app.post("/panel/api/plex/login",
+                        environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
+        r = app.post("/panel/api/plex/login")
+        assert r.json == {"ok": True, "pin_id": 42, "auth_url": "https://app.plex.tv/auth#?code=x"}
+        assert app.get("/plex/check?id=42").json == {"signed_in": True}
+    check.assert_called_once()

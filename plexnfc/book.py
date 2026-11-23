@@ -26,7 +26,7 @@ import requests
 
 from .config import Config
 from .plex import Plex, movie_key
-from .sources import SourceMovie
+from .sources import LibraryMovie, SourceMovie
 
 # The look follows the Marquee app: a vintage movie theater, in print. Colors are
 # ink-friendly on white paper; print with "Background graphics" on.
@@ -292,7 +292,8 @@ def build(plex: Plex, base_url: str, layout: str, title: str, collection: str | 
     def embed(movie):
         print(f"[{next(count)}/{len(movies)}] {movie.title}")
         if isinstance(movie, SourceMovie):  # Jellyfin or a folder: its poster, or a placeholder
-            data, mime = plex.library.poster(movie, 1200, 1800)
+            merged = plex.library.movie_for(movie) or LibraryMovie(movie.key, [movie])
+            data, mime = plex.library.poster(merged, 1200, 1800)
             return f"data:{mime};base64,{base64.b64encode(data).decode()}"
         return data_uri(plex.poster_url(movie, 1200, 1800))
 

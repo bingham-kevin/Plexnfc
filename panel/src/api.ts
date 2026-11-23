@@ -60,6 +60,53 @@ export interface Movie {
   source: string;
   /** Every source that has it, in the order they're used */
   sources: string[];
+  /** Its files in folder sources, which can be matched with TMDB or edited */
+  files: { id: string; source: string; matched: string }[];
+}
+
+/** A folder movie's details, from its file (and .nfo) and the changes made here. */
+export interface FolderMovie {
+  id: string;
+  key: string;
+  source: string;
+  /** Its file, inside the folder source */
+  path: string;
+  title: string;
+  year: number | null;
+  summary: string;
+  collections: string[];
+  labels: string[];
+  ids: Record<string, string>;
+  /** "manual" or "auto" if matched with TMDB */
+  matched: string;
+  edited: boolean;
+  /** What its file and .nfo say */
+  file: { title?: string; year?: number | null };
+}
+
+export interface TmdbResult {
+  id: number;
+  title: string;
+  year: number | null;
+  summary: string;
+  poster: string | null;
+}
+
+export interface Browse {
+  path: string;
+  parent: string | null;
+  dirs: string[];
+  /** Movie files right in this folder */
+  videos: number;
+  roots: { name: string; path: string; network: boolean }[];
+}
+
+export interface MatchJob {
+  running: boolean;
+  done: number;
+  total: number;
+  matched: number;
+  error: string | null;
 }
 
 export interface Card {
@@ -129,6 +176,10 @@ export interface Sources {
   /** Source IDs ("plex" for Plex) in the order movies play from them */
   order: string[];
   ordered: (PlexSource | Source)[];
+  /** Whether a TMDB API key is set, for matching folder movies */
+  tmdb: boolean;
+  /** "Match all" progress, by folder source ID */
+  matching: Record<string, MatchJob>;
 }
 
 export interface Movies {
@@ -163,4 +214,5 @@ export const get = <T>(path: string) => call<T>(path);
 export const post = <T = { ok: boolean; message?: string; [field: string]: unknown }>(path: string, body: object = {}) =>
   call<T>(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
-export const posterURL = (key: string, w: number, h: number) => `poster/${encodeURIComponent(key)}?w=${w}&h=${h}`;
+export const posterURL = (key: string, w: number, h: number, version = "") =>
+  `poster/${encodeURIComponent(key)}?w=${w}&h=${h}${version ? `&v=${encodeURIComponent(version)}` : ""}`;
