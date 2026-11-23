@@ -52,7 +52,7 @@ from .cards import normalize_uid
 from .plex import Plex, PlexNFCError, app_movie, movie_key
 from .screen_text import box_json
 from .filestream import DIRECT_TYPES
-from .sources import SourceError, source_name
+from .sources import FolderSource, SourceError, SourceMovie, source_name
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -809,8 +809,12 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             key = movie_key(m)
             merged = plex.library.movie_for(m) if plex.library.sources else None
             sources = list(dict.fromkeys(source_name(c) for c in merged.copies)) if merged else [source_name(m)]
+            files = [{"id": c.source_key, "source": c.source.name, "matched": c.matched}
+                     for c in (merged.copies if merged else [m])
+                     if isinstance(c, SourceMovie) and isinstance(c.source, FolderSource)]
             movies.append({"key": key, "title": m.title, "year": m.year, "url": f"{config.public_base_url}/m/{key}",
-                           "cards": cards.get(key, []), "source": ", ".join(sources), "sources": sources})
+                           "cards": cards.get(key, []), "source": ", ".join(sources), "sources": sources,
+                           "files": files})
         controls = [{"action": a, "url": f"{config.public_base_url}/{a}"}
                     for a in ("pause", "play", "stop") + (("off",) if config.ha_off_script else ())]
         return jsonify(movies=movies, controls=controls)
@@ -849,6 +853,127 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         except (SourceError, JellyfinError) as e:
             return jsonify(ok=False, message=str(e)), 400
         return jsonify(ok=True, source=source.public(), **plex.library.public())
+
+    @panel_route("/browse")
+    def panel_browse():
+        """The folders in a folder on this server, to choose a folder source from. Only the
+        panel itself can look (it shows the server's files), even just to look."""
+        from .sources import browse_folder
+
+        if not from_panel():
+            return jsonify(ok=False, message="Open the control panel on the server to browse its folders"), 403
+        try:
+            return jsonify(ok=True, **browse_folder(request.args.get("path") or None))
+        except SourceError as e:
+            return jsonify(ok=False, message=str(e)), 400
+
+    @panel_route("/sources/tmdb", methods=["POST"])
+    def panel_tmdb_key():
+        """Keep a TMDB API key (blank forgets it), for matching folder movies."""
+        try:
+            plex.library.set_tmdb_key(str(panel_body().get("key") or ""))
+        except SourceError as e:
+            return jsonify(ok=False, message=str(e)), 400
+        return jsonify(ok=True, **plex.library.public())
+
+    @panel_route("/sources/<source_id>/match", methods=["POST"])
+    def panel_match_all(source_id):
+        """Match a folder's unmatched movies with TMDB, in the background."""
+        try:
+            job = plex.library.start_match_all(source_id)
+        except SourceError as e:
+            return jsonify(ok=False, message=str(e)), 400
+        return jsonify(ok=True, job=job, **plex.library.public())
+
+    # ---- a folder movie's details and its match with TMDB ----
+
+    def folder_movie_json(copy) -> dict:
+        return {"id": copy.source_key, "key": plex.library.canonical(copy.key), "source": copy.source.name,
+                "path": os.path.relpath(copy.ref, copy.source.path), "title": copy.title, "year": copy.year,
+                "summary": copy.summary, "collections": list(copy.collections), "labels": list(copy.labels),
+                "ids": copy.ids, "matched": copy.matched, "edited": plex.library.edits.get(copy.source_key) is not None,
+                "file": copy.base or {}}
+
+    def folder_movie_or_404(source_key):
+        copy = plex.library.folder_copy(source_key)
+        if copy is None:
+            raise PlexNFCError("That movie file isn't in any folder source")
+        return copy
+
+    @panel_route("/files/<source_key>")
+    def panel_folder_movie(source_key):
+        return jsonify(ok=True, movie=folder_movie_json(folder_movie_or_404(source_key)))
+
+    @panel_route("/files/<source_key>/edit", methods=["POST"])
+    def panel_folder_movie_edit(source_key):
+        """Change a folder movie's title, year, summary, collections or labels by hand."""
+        copy = folder_movie_or_404(source_key)
+        body = panel_body()
+        edit = dict(plex.library.edits.get(source_key) or {})
+        if "title" in body:
+            title = str(body["title"] or "").strip()
+            if not title:
+                return jsonify(ok=False, message="A movie needs a title"), 400
+            edit["title"] = title[:200]
+        if "year" in body:
+            year = str(body["year"] or "").strip()
+            if year and not (year.isdigit() and 1880 <= int(year) <= 2100):
+                return jsonify(ok=False, message="The year should be like 1979"), 400
+            edit["year"] = int(year) if year else None
+        if "summary" in body:
+            edit["summary"] = str(body["summary"] or "")[:5000]
+        for field in ("collections", "labels"):
+            if field in body:
+                values = body[field] if isinstance(body[field], list) else str(body[field] or "").split(",")
+                edit[field] = list(dict.fromkeys(v for v in (str(x).strip()[:100] for x in values) if v))
+        if "tmdb" in body:  # an ID typed by hand, or blank to drop it
+            ids = dict(edit.get("ids", copy.ids))
+            tmdb = str(body["tmdb"] or "").strip()
+            if tmdb and not tmdb.isdigit():
+                return jsonify(ok=False, message="A TMDB ID is a number, like 348"), 400
+            if tmdb:
+                ids["tmdb"] = tmdb
+            else:
+                ids.pop("tmdb", None)
+            edit["ids"] = ids
+        plex.library.edit_movie(copy, edit)
+        return jsonify(ok=True, movie=folder_movie_json(copy))
+
+    @panel_route("/files/<source_key>/match", methods=["POST"])
+    def panel_folder_movie_match(source_key):
+        """Match a folder movie with a TMDB movie (from the search)."""
+        copy = folder_movie_or_404(source_key)
+        tmdb_id = str(panel_body().get("tmdb_id") or "")
+        if not tmdb_id.isdigit():
+            return jsonify(ok=False, message="Choose a TMDB movie"), 400
+        try:
+            plex.library.match_movie(copy, tmdb_id)
+        except SourceError as e:
+            return jsonify(ok=False, message=str(e)), 400
+        return jsonify(ok=True, movie=folder_movie_json(copy))
+
+    @panel_route("/files/<source_key>/reset", methods=["POST"])
+    def panel_folder_movie_reset(source_key):
+        """Forget a folder movie's match and changes: back to what its file says."""
+        copy = folder_movie_or_404(source_key)
+        plex.library.edit_movie(copy, None)
+        return jsonify(ok=True, movie=folder_movie_json(copy))
+
+    @panel_route("/match/search")
+    def panel_match_search():
+        """TMDB's movies for a title (and year), with their posters."""
+        from .metadata import poster_url
+
+        query = (request.args.get("q") or "").strip()
+        if not query:
+            return jsonify(ok=False, message="Type a title to look for"), 400
+        year = request.args.get("year") or ""
+        try:
+            results = plex.library.search_tmdb(query, int(year) if year.isdigit() else None)
+        except SourceError as e:
+            return jsonify(ok=False, message=str(e)), 400
+        return jsonify(ok=True, results=[{**r, "poster": poster_url(r["poster_path"], 342) if r["poster_path"] else None}
+                                         for r in results[:12]])
 
     @panel_route("/sources/<source_id>/refresh", methods=["POST"])
     def panel_source_refresh(source_id):
@@ -976,6 +1101,17 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     def panel_remove(device_id):
         plex.app_pairings.remove(device_id)
         return jsonify(ok=True)
+
+    @panel_route("/plex/login", methods=["POST"])
+    def panel_plex_login():
+        """Start signing in to Plex from an app: the plex.tv page to open, and the PIN to check
+        (with /plex/check) until it's signed in."""
+        try:
+            pin_id, auth_url = plexauth.start_pin(config.auth_file)
+        except requests.RequestException as e:
+            return jsonify(ok=False, message=f"Couldn't reach plex.tv: {e}"), 502
+        pins.add(pin_id)
+        return jsonify(ok=True, pin_id=pin_id, auth_url=auth_url)
 
     @panel_route("/plex/logout", methods=["POST"])
     def panel_plex_logout():

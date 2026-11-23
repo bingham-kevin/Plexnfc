@@ -533,3 +533,157 @@ def test_a_plex_card_plays_from_the_folder_once_plex_is_gone(plex, matrix_file):
     den = next(d for d in app.get("/panel/api/overview").json["devices"] if d["name"] == "Den")
     assert den["status"]["source"] == "Movies"
     assert app.get("/now").json["source"] == "Movies"
+
+
+# ---- choosing a folder, and matching folder movies with TMDB --------------------------------
+
+def test_browse_shows_folders_to_the_panel_only(plex, movies_dir):
+    app = create_app(plex.config, plex).test_client()
+    r = app.get(f"/panel/api/browse?path={movies_dir}", environ_base=PANEL)
+    assert r.status_code == 200
+    assert r.json["dirs"] == ["Alien (1979)", "Arrival", "Heat.1995.1080p.BluRay.x264"]
+    assert r.json["videos"] == 3 and r.json["parent"] == str(movies_dir.parent)
+    assert isinstance(r.json["roots"], list)
+    # another device on the network can't look around the server's files
+    assert app.get(f"/panel/api/browse?path={movies_dir}", environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
+    assert app.get(f"/panel/api/browse?path={movies_dir}/nope", environ_base=PANEL).status_code == 400
+
+
+TMDB_MOVIES = {
+    348: {"id": 348, "title": "Alien", "release_date": "1979-05-25", "overview": "In space.", "runtime": 117,
+          "imdb_id": "tt0078748", "poster_path": "/alien.jpg", "belongs_to_collection": {"name": "Alien Collection"}},
+    679: {"id": 679, "title": "Aliens", "release_date": "1986-07-18", "overview": "More.", "poster_path": None},
+    949: {"id": 949, "title": "Heat", "release_date": "1995-12-15", "overview": "LA.", "runtime": 170,
+          "imdb_id": "tt0113277", "poster_path": "/heat.jpg"},
+    950: {"id": 950, "title": "Heat", "release_date": "1986-03-14", "overview": "Vegas."},
+    24: {"id": 24, "title": "Kill Bill: Vol. 1", "release_date": "2003-10-10", "overview": "Revenge."},
+}
+
+
+@pytest.fixture
+def tmdb(monkeypatch):
+    """TMDB's API and images, answering for the movies above (and only the key "goodkey")."""
+    calls = []
+
+    def get(url, params=None, headers=None, timeout=None):
+        calls.append((url, params))
+        if url.startswith("https://image.tmdb.org/"):
+            return mock.Mock(ok=True, content=jpeg(color=(0, 0, 200)), status_code=200)
+        if (params or {}).get("api_key") != "goodkey":
+            return mock.Mock(ok=False, status_code=401)
+        path = url.removeprefix("https://api.themoviedb.org/3")
+        if path == "/search/movie":
+            words = params["query"].lower()
+            found = [m for m in TMDB_MOVIES.values() if words in m["title"].lower()]
+            if params.get("year"):
+                found = [m for m in found if m["release_date"].startswith(str(params["year"]))]
+            return mock.Mock(ok=True, status_code=200, json=lambda: {"results": found})
+        movie = TMDB_MOVIES.get(int(path.rsplit("/", 1)[1]))
+        return mock.Mock(ok=bool(movie), status_code=200 if movie else 404, json=lambda: movie)
+
+    monkeypatch.setattr("requests.get", get)
+    return calls
+
+
+def file_id(app, title):
+    return next(m for m in app.get("/panel/api/movies").json["movies"] if m["title"] == title)["files"][0]["id"]
+
+
+def test_tmdb_key_is_checked_and_never_shown(plex, movies_dir, tmdb, tmp_path):
+    folder_plex(plex, movies_dir)
+    app = create_app(plex.config, plex).test_client()
+    assert app.get("/panel/api/sources").json["tmdb"] is False
+    r = app.post("/panel/api/sources/tmdb", json={"key": "badkey"}, environ_base=PANEL)
+    assert r.status_code == 400 and "API key" in r.json["message"]
+    assert app.post("/panel/api/sources/tmdb", json={"key": "goodkey"}, environ_base={"REMOTE_ADDR": "192.0.2.50"}
+                    ).status_code == 403
+    r = app.post("/panel/api/sources/tmdb", json={"key": "goodkey"}, environ_base=PANEL)
+    assert r.status_code == 200 and r.json["tmdb"] is True and "goodkey" not in r.data.decode()
+    assert json.loads((tmp_path / "sources.json").read_text())["tmdb_key"] == "goodkey"
+    assert "goodkey" not in app.get("/panel/api/sources").data.decode()
+
+
+def test_matching_a_folder_movie_with_tmdb(plex, movies_dir, tmdb, tmp_path):
+    folder_plex(plex, movies_dir)
+    app = create_app(plex.config, plex).test_client()
+    alien = file_id(app, "Alien")
+    # no key yet: searching says where to add one
+    assert "TMDB API key" in app.get("/panel/api/match/search?q=Alien").json["message"]
+    app.post("/panel/api/sources/tmdb", json={"key": "goodkey"}, environ_base=PANEL)
+    results = app.get("/panel/api/match/search?q=Alien&year=1979").json["results"]
+    assert [r["id"] for r in results] == [348] and results[0]["poster"] == "https://image.tmdb.org/t/p/w342/alien.jpg"
+    before = sorted(p.name for p in movies_dir.rglob("*"))
+
+    r = app.post(f"/panel/api/files/{alien}/match", json={"tmdb_id": 348}, environ_base=PANEL)
+    assert r.status_code == 200
+    m = r.json["movie"]
+    assert m["key"] == "tmdb-348" and m["matched"] == "manual" and m["summary"] == "In space."
+    assert m["ids"] == {"tmdb": "348", "imdb": "tt0078748"} and m["collections"] == ["Alien Collection"]
+    assert m["file"]["title"] == "Alien"
+    # it's listed under its new key, and tags and cards made with the old one still find it
+    row = next(x for x in app.get("/panel/api/movies").json["movies"] if x["title"] == "Alien")
+    assert row["key"] == "tmdb-348" and row["files"][0]["matched"] == "manual"
+    assert plex.find_movie("t-alien-1979").title == "Alien"
+    assert {"title": "Alien Collection", "count": 1} in app.get("/panel/api/filters").json["collections"]
+    # a movie matched by hand shows TMDB's poster, even with a poster file beside it
+    poster = Image.open(io.BytesIO(app.get("/poster/tmdb-348?w=40&h=60").data))
+    assert poster.getpixel((20, 30))[2] > 150
+    # nothing was written to the share; the match is kept in the data folder, and survives a restart
+    assert sorted(p.name for p in movies_dir.rglob("*")) == before
+    assert alien in json.loads((tmp_path / "folder_metadata.json").read_text())
+    assert Library(plex, str(tmp_path)).find("tmdb-348").title == "Alien"
+
+    r = app.post(f"/panel/api/files/{alien}/reset", environ_base=PANEL)
+    assert r.json["movie"]["key"] == "t-alien-1979" and r.json["movie"]["matched"] == ""
+    assert plex.find_movie("t-alien-1979").summary == ""
+
+
+def test_editing_a_folder_movie_by_hand(plex, movies_dir):
+    folder_plex(plex, movies_dir)
+    app = create_app(plex.config, plex).test_client()
+    heat = file_id(app, "Heat")
+    assert app.post(f"/panel/api/files/{heat}/edit", json={"title": "Heat"},
+                    environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
+    assert app.post(f"/panel/api/files/{heat}/edit", json={"year": "95"}, environ_base=PANEL).status_code == 400
+    assert app.post(f"/panel/api/files/{heat}/edit", json={"title": " "}, environ_base=PANEL).status_code == 400
+    r = app.post(f"/panel/api/files/{heat}/edit", environ_base=PANEL, json={
+        "title": "Heat (Director's Cut)", "year": "1995", "summary": "Long.", "collections": "Mann, Crime",
+        "labels": "Favourites"})
+    m = r.json["movie"]
+    assert m["key"] == "t-heatdirectorscut-1995" and m["collections"] == ["Mann", "Crime"]
+    assert m["labels"] == ["Favourites"] and m["edited"] and not m["matched"]
+    assert plex.find_movie("t-heat-1995").title == "Heat (Director's Cut)"  # the old key
+    # a TMDB ID typed by hand gives it that key
+    r = app.post(f"/panel/api/files/{heat}/edit", json={"tmdb": "949"}, environ_base=PANEL)
+    assert r.json["movie"]["key"] == "tmdb-949" and r.json["movie"]["title"] == "Heat (Director's Cut)"
+    assert app.post(f"/panel/api/files/{heat}/edit", json={"tmdb": "x"}, environ_base=PANEL).status_code == 400
+    assert app.get("/panel/api/files/file-000000000000").status_code == 400
+
+
+def test_match_all_takes_only_sure_matches(plex, movies_dir, tmdb):
+    folder_plex(plex, movies_dir)
+    app = create_app(plex.config, plex).test_client()
+    folder = plex.library.sources[0].id
+    assert "TMDB API key" in app.post(f"/panel/api/sources/{folder}/match", environ_base=PANEL).json["message"]
+    app.post("/panel/api/sources/tmdb", json={"key": "goodkey"}, environ_base=PANEL)
+    with mock.patch("plexnfc.sources.threading.Thread") as thread:
+        r = app.post(f"/panel/api/sources/{folder}/match", environ_base=PANEL)
+    assert r.json["job"] == {"running": True, "done": 0, "total": 3, "matched": 0, "error": None}
+    thread.return_value.start.assert_called_once()
+    plex.library._match_all(*thread.call_args.kwargs["args"])  # run it here
+    job = app.get("/panel/api/sources").json["matching"][folder]
+    # Alien and Heat (the 1995 one) are surely those; "Kill Bill" isn't surely "Kill Bill: Vol. 1"
+    assert job == {"running": False, "done": 3, "total": 3, "matched": 2, "error": None}
+    keys = {m["title"]: m["key"] for m in app.get("/panel/api/movies").json["movies"]}
+    assert keys["Alien"] == "tmdb-348" and keys["Heat"] == "tmdb-949" and keys["Kill Bill"] == "t-killbill"
+    assert plex.library.folder_copy(file_id(app, "Heat")).matched == "auto"
+    # a movie matched automatically keeps the poster beside it
+    poster = Image.open(io.BytesIO(app.get("/poster/tmdb-348?w=40&h=60").data))
+    assert poster.getpixel((20, 30))[0] > 150
+
+
+def test_best_match_allows_a_year_off_by_one(tmdb):
+    from plexnfc.metadata import Tmdb
+    assert Tmdb("goodkey").best_match("Alien", 1980)["id"] == 348
+    assert Tmdb("goodkey").best_match("Heat", None) is None  # two of them
+    assert Tmdb("goodkey").best_match("Aliens", None)["id"] == 679

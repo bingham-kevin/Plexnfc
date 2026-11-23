@@ -23,7 +23,12 @@ export const useFilters = () =>
   useQuery({ queryKey: ["filters"], queryFn: () => get<Filters>("filters"), staleTime: 5 * 60_000 });
 
 /** Plex, and the Jellyfin servers and folders added here. */
-export const useSources = () => useQuery({ queryKey: ["sources"], queryFn: () => get<Sources>("sources") });
+export const useSources = () => useQuery({
+  queryKey: ["sources"],
+  queryFn: () => get<Sources>("sources"),
+  // Checked every second while folders are being matched with TMDB
+  refetchInterval: (q) => (Object.values(q.state.data?.matching ?? {}).some((j) => j.running) ? 1000 : false),
+});
 
 /** A POST to the source routes, whose answer is the new list of sources: the movie lists change too. */
 export function useSourceAction<V>(path: (v: V) => string, body: (v: V) => object = () => ({}),
@@ -34,7 +39,7 @@ export function useSourceAction<V>(path: (v: V) => string, body: (v: V) => objec
     mutationFn: (v: V) => post<Sources & { ok: boolean; count?: number }>(path(v), body(v)),
     onSuccess: (result, v) => {
       client.setQueryData(["sources"], { plex: result.plex, sources: result.sources, order: result.order,
-                                         ordered: result.ordered });
+                                         ordered: result.ordered, tmdb: result.tmdb, matching: result.matching });
       for (const key of ["movies", "filters"]) client.invalidateQueries({ queryKey: [key] });
       const text = success?.(v, result);
       if (text) toast(text);

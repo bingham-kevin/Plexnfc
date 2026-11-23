@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 
 from .filestream import FileStreams, embedded_poster, placeholder_poster
 from .jellyfin import PROVIDERS, TICKS_PER_SECOND, Jellyfin, JellyfinError
+from .metadata import MetadataError, MovieEdits, Tmdb, poster_url
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +80,12 @@ class SourceMovie:
     thumb: str = "poster"  # always something to show: its poster, or a placeholder
     ratingKey = None
     guids: tuple = field(default=())
+    # Folder movies: the key its file name gives (still found by it after a match or an edit),
+    # what it had before any edit, how it was matched with TMDB, and TMDB's poster
+    parsed_key: str = ""
+    base: dict | None = None
+    matched: str = ""
+    poster_path: str | None = None
 
 
 # ---- the sources ---------------------------------------------------------------------
@@ -124,6 +131,15 @@ class Source:
                     self._movies, self._by_key = movies, by_key
                 self._read_at = time.monotonic()
             return list(self._movies)
+
+    def reindex(self) -> None:
+        """Find movies by their keys again, after one of them was edited."""
+        with self._lock:
+            by_key: dict[str, SourceMovie] = {}
+            for m in self._movies or []:
+                for alias in aliases(m):
+                    by_key.setdefault(alias, m)
+            self._by_key = by_key
 
     def find(self, key: str) -> SourceMovie | None:
         self.movies()
@@ -263,6 +279,7 @@ class FolderSource(Source):
     def __init__(self, settings: dict):
         super().__init__(settings)
         self.path = os.path.abspath(os.path.expanduser(settings["path"]))
+        self.edits: MovieEdits | None = None  # the panel's changes to its movies (set by Library)
 
     def default_name(self) -> str:
         return os.path.basename(os.path.normpath(self.settings["path"])) or self.settings["path"]
@@ -297,11 +314,15 @@ class FolderSource(Source):
         candidates = [f"{stem}-poster", stem] + (["poster", "folder", "cover", "movie"] if alone else [])
         poster = next((os.path.join(folder, lower[c.lower() + ext]) for c in candidates for ext in IMAGE_TYPES
                        if c.lower() + ext in lower), None)
-        return SourceMovie(key=movie_id(ids, title, year), title=title, year=year, source=self, ids=ids,
-                           source_key=f"file-{hashlib.sha1(relative.encode()).hexdigest()[:12]}",
-                           ref=path, summary=info.get("plot", ""), duration=info.get("runtime", 0),
-                           collections=tuple(info.get("sets", ())), labels=tuple(info.get("tags", ())),
-                           poster=poster, added=os.path.getmtime(path))
+        movie = SourceMovie(key=movie_id(ids, title, year), title=title, year=year, source=self, ids=ids,
+                            source_key=f"file-{hashlib.sha1(relative.encode()).hexdigest()[:12]}",
+                            ref=path, summary=info.get("plot", ""), duration=info.get("runtime", 0),
+                            collections=tuple(info.get("sets", ())), labels=tuple(info.get("tags", ())),
+                            poster=poster, added=os.path.getmtime(path), parsed_key=title_key(title, year))
+        movie.base = {"title": title, "year": year, "summary": movie.summary, "duration": movie.duration,
+                      "ids": dict(ids), "collections": list(movie.collections), "labels": list(movie.labels)}
+        apply_edit(movie, self.edits.get(movie.source_key) if self.edits else None)
+        return movie
 
     def poster(self, movie: SourceMovie, width: int | None, height: int | None) -> tuple[bytes, str] | None:
         if movie.poster:
@@ -321,6 +342,99 @@ class FolderSource(Source):
 
 
 KINDS = {"jellyfin": JellyfinSource, "folder": FolderSource}
+
+
+def apply_edit(movie: SourceMovie, edit: dict | None) -> None:
+    """Give a folder movie what its file and .nfo say (``base``), then the panel's changes."""
+    base = movie.base or {}
+    edit = edit or {}
+    movie.title = edit.get("title") or base.get("title") or movie.title
+    movie.year = edit["year"] if "year" in edit else base.get("year")
+    movie.summary = edit["summary"] if "summary" in edit else base.get("summary", "")
+    movie.duration = edit.get("duration") or base.get("duration", 0)
+    movie.ids = dict(edit["ids"] if "ids" in edit else base.get("ids", {}))
+    movie.collections = tuple(edit["collections"] if "collections" in edit else base.get("collections", ()))
+    movie.labels = tuple(edit["labels"] if "labels" in edit else base.get("labels", ()))
+    movie.poster_path = edit.get("poster_path")
+    movie.matched = edit.get("matched", "")
+    movie.key = movie_id(movie.ids, movie.title, movie.year)
+
+
+# ---- choosing a folder in the control panel ----------------------------------------------
+
+NETWORK_FS = {"smbfs", "nfs", "nfs4", "cifs", "afpfs", "webdav", "smb3", "fuse.sshfs"}
+
+
+def mounts() -> dict[str, str]:
+    """Mounted file systems: mount point -> type (``smbfs``, ``nfs``...)."""
+    found: dict[str, str] = {}
+    try:
+        with open("/proc/mounts") as f:  # Linux (Home Assistant)
+            for line in f:
+                parts = line.split()
+                if len(parts) > 2:
+                    found[parts[1].replace("\\040", " ")] = parts[2]
+        return found
+    except OSError:
+        pass
+    import subprocess
+    try:  # macOS: "//user@host/share on /Volumes/share (smbfs, nodev, ...)"
+        out = subprocess.run(["mount"], capture_output=True, text=True, timeout=5, check=False).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return found
+    for line in out.splitlines():
+        if m := re.match(r"^.+? on (.+) \(([^,)]+)", line):
+            found[m.group(1)] = m.group(2)
+    return found
+
+
+def browse_roots() -> list[dict]:
+    """Places to start looking for a movie folder: mounted shares and disks, and home."""
+    types = mounts()
+    roots = []
+    for base in ("/Volumes", "/media", "/share", "/mnt"):
+        if not os.path.isdir(base):
+            continue
+        if base == "/Volumes":
+            for name in sorted(os.listdir(base)):
+                path = os.path.join(base, name)
+                if name.startswith(".") or name == "Recovery" or os.path.islink(path) or not os.path.isdir(path):
+                    continue  # the startup disk is a link to /
+                roots.append({"name": name, "path": path, "network": types.get(path) in NETWORK_FS})
+        else:
+            roots.append({"name": base, "path": base, "network": types.get(base) in NETWORK_FS})
+    home = os.path.expanduser("~")
+    if os.path.isdir(home) and home != "/root":
+        roots.append({"name": "Home", "path": home, "network": False})
+    return roots
+
+
+def browse_folder(path: str | None) -> dict:
+    """A folder's folders, for choosing a folder source: its path, its parent, the folders in
+    it, and how many movie files are right in it."""
+    path = os.path.abspath(os.path.expanduser(path)) if path else ""
+    result = {"path": path, "parent": None, "dirs": [], "videos": 0, "roots": browse_roots()}
+    if not path:
+        return result
+    try:
+        entries = list(os.scandir(path))
+    except OSError as e:
+        raise SourceError(f"Can't open {path}: {e.strerror or e}") from e
+    dirs = []
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name.startswith("@") or entry.name.startswith("#"):
+            continue
+        try:
+            if entry.is_dir():
+                dirs.append(entry.name)
+            elif os.path.splitext(entry.name)[1].lower() in VIDEO_TYPES:
+                result["videos"] += 1
+        except OSError:
+            continue
+    result["dirs"] = sorted(dirs, key=str.casefold)
+    parent = os.path.dirname(path)
+    result["parent"] = parent if parent != path else None
+    return result
 
 
 # ---- keys ------------------------------------------------------------------------------
@@ -362,6 +476,8 @@ def aliases(movie) -> list[str]:
         found += [f"{prefix}-{k}" for k in found] + [movie.source_key]
         if movie.key not in found:
             found.append(movie.key)
+        if movie.parsed_key and movie.parsed_key != title_key(movie.title, movie.year):
+            found.append(movie.parsed_key)  # its key before a match or an edit renamed it
     else:  # Plex
         found = id_keys(plex_ids(movie)) + [f"rk-{movie.ratingKey}"]
     return found + [title_key(movie.title, getattr(movie, "year", None))]
@@ -506,6 +622,8 @@ class Library:
         self._miss_at = 0.0
         self._plex_cache: tuple[float, list] | None = None
         self.playing: dict[str, dict] = {}  # player ID -> {"key", "source"}: what each player was last sent
+        self.edits = MovieEdits(data_dir)
+        self.match_jobs: dict[str, dict] = {}  # folder source ID -> its "Match all" progress
         try:
             with open(self.path) as f:
                 saved = json.load(f)
@@ -519,6 +637,10 @@ class Library:
             except (KeyError, TypeError) as e:
                 log.warning("Skipping a source in %s that can't be read: %s", self.path, e)
         self.order: list[str] = [i for i in saved.get("order", []) if isinstance(i, str)]
+        self.tmdb_key: str = saved.get("tmdb_key") or ""
+        for s in self.sources:
+            if isinstance(s, FolderSource):
+                s.edits = self.edits
 
     @property
     def base_url(self) -> str:
@@ -527,14 +649,15 @@ class Library:
     def _save(self) -> None:
         tmp = f"{self.path}.tmp"
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
-            json.dump({"plex": self.use_plex, "order": self.ordered_ids(),
+            json.dump({"plex": self.use_plex, "order": self.ordered_ids(), "tmdb_key": self.tmdb_key,
                        "sources": [s.settings for s in self.sources]}, f, indent=1)
         os.replace(tmp, self.path)
 
-    def changed(self) -> None:
+    def changed(self, keep_plex: bool = False) -> None:
         """Sources, their order or the Plex sign-in changed: build the merged list again."""
         self._index = None
-        self._plex_cache = None
+        if not keep_plex:
+            self._plex_cache = None
 
     # ---- settings (the control panel) ----
 
@@ -563,7 +686,8 @@ class Library:
                 "library": self.plex.config.library}
         by_id = {s.id: s for s in self.sources}
         return {"plex": plex, "sources": [s.public() for s in self.sources],
-                "order": self.ordered_ids(),
+                "order": self.ordered_ids(), "tmdb": bool(self.tmdb_key),
+                "matching": {i: j for i, j in self.match_jobs.items() if i in by_id},
                 "ordered": [plex if i == "plex" else by_id[i].public() for i in self.ordered_ids()]}
 
     def add(self, kind: str, **settings) -> Source:
@@ -581,6 +705,8 @@ class Library:
             if not settings.get("token"):
                 raise SourceError("Give an API key, or sign in")
         source = KINDS[kind](settings)
+        if isinstance(source, FolderSource):
+            source.edits = self.edits
         source.movies(fresh=True)  # raises SourceError if it can't be read
         with self._lock:
             self.sources.append(source)
@@ -610,6 +736,135 @@ class Library:
     def jellyfin_client(self) -> Jellyfin | None:
         """The first Jellyfin source's server, for Jellyfin players when JELLYFIN_URL isn't set."""
         return next((s.client for s in self.ordered() if isinstance(s, JellyfinSource)), None)
+
+    # ---- matching folder movies with TMDB, and editing them ----
+
+    def set_tmdb_key(self, key: str) -> None:
+        """Keep a TMDB API key, once TMDB accepts it (a blank one forgets it)."""
+        key = (key or "").strip()
+        if key:
+            try:
+                Tmdb(key).search("Alien", 1979)
+            except MetadataError as e:
+                raise SourceError(str(e)) from e
+        with self._lock:
+            self.tmdb_key = key
+            self._save()
+
+    def tmdb(self) -> Tmdb:
+        if not self.tmdb_key:
+            raise SourceError("Add a TMDB API key on the Sources tab first")
+        return Tmdb(self.tmdb_key)
+
+    def folder_copy(self, source_key: str) -> SourceMovie | None:
+        """A folder movie by its ``file-…`` key."""
+        for s in self.sources:
+            if isinstance(s, FolderSource):
+                try:
+                    if (m := s.find(source_key)) and m.source_key == source_key:
+                        return m
+                except SourceError:
+                    continue
+        return None
+
+    def edit_movie(self, copy: SourceMovie, edit: dict | None) -> SourceMovie:
+        """Save a folder movie's changes (None: back to what its file says) and use them now."""
+        if edit is None:
+            self.edits.remove(copy.source_key)
+        else:
+            edit = self.edits.set(copy.source_key, edit)
+        apply_edit(copy, edit)
+        copy.source.reindex()
+        self.changed(keep_plex=True)
+        return copy
+
+    def match_movie(self, copy: SourceMovie, tmdb_id: int | str, how: str = "manual") -> SourceMovie:
+        """Match a folder movie with a TMDB movie: its title, year, summary, IDs, poster and
+        collection (added to any its .nfo gives). Its labels stay."""
+        try:
+            details = self.tmdb().details(tmdb_id)
+        except MetadataError as e:
+            raise SourceError(str(e)) from e
+        return self.edit_movie(copy, self._match_edit(copy, details, how))
+
+    @staticmethod
+    def _match_edit(copy: SourceMovie, details: dict, how: str) -> dict:
+        base = copy.base or {}
+        collections = list(dict.fromkeys(list(base.get("collections", [])) + details.pop("collections", [])))
+        return {**details, "collections": collections, "matched": how}
+
+    def search_tmdb(self, query: str, year: int | None = None) -> list[dict]:
+        try:
+            return self.tmdb().search(query, year)
+        except MetadataError as e:
+            raise SourceError(str(e)) from e
+
+    def start_match_all(self, source_id: str) -> dict:
+        """Match a folder's movies that have no IDs and no match yet, in the background. Only
+        sure matches are taken (the same title, and a year within one); the rest are left."""
+        source = self.source(source_id)
+        if not isinstance(source, FolderSource):
+            raise SourceError("Only folder movies can be matched")
+        tmdb = self.tmdb()
+        job = self.match_jobs.get(source_id)
+        if job and job["running"]:
+            return job
+        todo = [m for m in source.movies() if not m.matched and not m.ids]
+        job = {"running": True, "done": 0, "total": len(todo), "matched": 0, "error": None}
+        self.match_jobs[source_id] = job
+        threading.Thread(target=self._match_all, args=(source, tmdb, todo, job), daemon=True).start()
+        return job
+
+    def _match_all(self, source: FolderSource, tmdb: Tmdb, todo: list[SourceMovie], job: dict) -> None:
+        try:
+            for m in todo:
+                try:
+                    if found := tmdb.best_match(m.title, m.year):
+                        edit = self._match_edit(m, tmdb.details(found["id"]), "auto")
+                        apply_edit(m, self.edits.set(m.source_key, edit))
+                        job["matched"] += 1
+                except MetadataError as e:
+                    if "API key" in str(e):
+                        raise
+                    log.info("Couldn't match %s: %s", m.title, e)
+                job["done"] += 1
+        except MetadataError as e:
+            job["error"] = str(e)
+        finally:
+            job["running"] = False
+            source.reindex()
+            self.changed(keep_plex=True)
+            log.info("Matched %d of %d movies in %s with TMDB", job["matched"], job["total"], source.name)
+
+    def tmdb_poster(self, poster_path: str, width: int | None = None) -> bytes | None:
+        """A TMDB poster, kept in poster_cache/."""
+        import requests
+
+        url = poster_url(poster_path, width)
+        cache = os.path.join(self.data_dir, "poster_cache")
+        path = os.path.join(cache, f"tmdb-{hashlib.sha1(url.encode()).hexdigest()[:16]}.jpg")
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                return f.read() or None
+        try:
+            r = requests.get(url, timeout=15)
+        except requests.RequestException as e:
+            log.debug("No TMDB poster %s: %s", url, e)
+            return None
+        if not (r.ok and isinstance(r.content, bytes) and r.content):
+            return None
+        os.makedirs(cache, exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(r.content)
+        return r.content
+
+    def _folder_poster(self, copy: SourceMovie, width: int | None, height: int | None) -> tuple[bytes, str] | None:
+        """A poster file beside the movie, else TMDB's; TMDB's first if it was matched by hand."""
+        tmdb = (lambda: (art, "image/jpeg") if copy.poster_path and (art := self.tmdb_poster(copy.poster_path, width))
+                else None)
+        if copy.matched == "manual" and (found := tmdb()):
+            return found
+        return copy.source.poster(copy, width, height) or tmdb()
 
     # ---- the merged list ----
 
@@ -780,7 +1035,9 @@ class Library:
 
         for copy in movie.copies:
             if isinstance(copy, SourceMovie):
-                if found := copy.source.poster(copy, width, height):
+                found = (self._folder_poster(copy, width, height) if isinstance(copy.source, FolderSource)
+                         else copy.source.poster(copy, width, height))
+                if found:
                     return found
             elif getattr(copy, "thumb", None):
                 try:

@@ -13,6 +13,10 @@ struct MarqueeServerApp: App {
         MenuBarExtra("Marquee Server", systemImage: "film.stack") {
             MenuContent(server: delegate.server)
         }
+        Window("Marquee", id: "panel") {
+            PanelWindow(model: delegate.panel, server: delegate.server)
+        }
+        .defaultSize(width: 1100, height: 760)
         Window("Marquee Server Settings", id: "settings") {
             SettingsView(server: delegate.server)
         }
@@ -27,6 +31,7 @@ struct MarqueeServerApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let server = ServerController()
+    lazy var panel = PanelModel(server: server)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         server.start()
@@ -45,7 +50,9 @@ struct MenuContent: View {
     var body: some View {
         Text(server.statusText)
         Divider()
-        Button("Open Control Panel") { NSWorkspace.shared.open(server.panelURL) }
+        Button("Open Control Panel") { show("panel") }
+            .keyboardShortcut("o")
+        Button("Open Control Panel in Browser") { NSWorkspace.shared.open(server.panelURL) }
             .disabled(server.state != .running)
         switch server.state {
         case .running: Button("Restart Server") { server.restart() }
