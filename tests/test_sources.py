@@ -652,3 +652,108 @@ def test_best_match_allows_a_year_off_by_one(tmdb):
     assert Tmdb("goodkey").best_match("Alien", 1980)["id"] == 348
     assert Tmdb("goodkey").best_match("Heat", None) is None  # two of them
     assert Tmdb("goodkey").best_match("Aliens", None)["id"] == 679
+
+
+def test_book_can_hold_only_movies_with_cards(plex, movies_dir):
+    folder_plex(plex, movies_dir)
+    app = create_app(plex.config, plex).test_client()
+    app.post("/panel/api/cards/link", json={"uid": "04-11-22-33", "key": "tmdb-78"}, environ_base=PANEL)
+    book = app.get("/book?cards=1").data.decode()
+    assert "Blade Runner" in book and "Arrival" not in book and "The Matrix" not in book
+    assert "Arrival" in app.get("/book").data.decode()
+
+
+# ---- more Plex servers ---------------------------------------------------------------------
+
+@pytest.fixture
+def office_plex(monkeypatch):
+    """A second Plex server, "Office", shared with the account: The Matrix (as on the first
+    server) and Heat, which only it has."""
+    from types import SimpleNamespace as NS
+    movies = [
+        NS(title="The Matrix", year=1999, ratingKey=7, thumb="/m.jpg", summary="", duration=0, viewOffset=0,
+           guids=[NS(id="tmdb://603")], collections=[], labels=[], addedAt=None),
+        NS(title="Heat", year=1995, ratingKey=8, thumb="/h.jpg", summary="LA.", duration=100, viewOffset=0,
+           guids=[NS(id="tmdb://949")], collections=[NS(tag="Mann")], labels=[NS(tag="Crime")], addedAt=None),
+    ]
+    section = NS(type="movie", title="Films", all=lambda: movies)
+    server = mock.Mock(_baseurl="http://office:32400")
+    server.library.sections.return_value = [section]
+    server.transcodeImage.side_effect = lambda thumb, height, width: f"http://office:32400/photo{thumb}"
+    made = mock.Mock(return_value=server)
+    monkeypatch.setattr("plexapi.server.PlexServer", made)
+    resource = mock.Mock(clientIdentifier="office-id", owned=False, provides="server", accessToken="office-token")
+    resource.name = "Office"
+    resource.connect.return_value = server
+    mine = mock.Mock(clientIdentifier="home-id", owned=True, provides="server")
+    mine.name = "Home"
+    monkeypatch.setattr("plexnfc.sources.plex_account_servers", lambda token: [mine, resource])
+    return NS(server=server, made=made, resource=resource)
+
+
+def test_plex_servers_on_the_account_can_be_added(plex, office_plex, monkeypatch):
+    plex.server.machineIdentifier = "home-id"
+    app = create_app(plex.config, plex).test_client()
+    servers = app.get("/panel/api/plex/servers").json["servers"]
+    assert [(s["name"], s["owned"], s["signed_in"], s["added"]) for s in servers] == [
+        ("Home", True, True, False), ("Office", False, False, False)]
+    r = app.post("/panel/api/sources", json={"kind": "plex", "machine": "office-id"}, environ_base=PANEL)
+    assert r.status_code == 200, r.json
+    source = r.json["source"]
+    assert source["name"] == "Office" and source["url"] == "http://office:32400" and source["count"] == 2
+    assert "office-token" not in r.data.decode()
+    office_plex.made.assert_called_with("http://office:32400", "office-token", timeout=15)
+    assert next(s for s in app.get("/panel/api/plex/servers").json["servers"] if s["name"] == "Office")["added"]
+    # the same server again is refused
+    assert app.post("/panel/api/sources", json={"kind": "plex", "machine": "office-id"},
+                    environ_base=PANEL).status_code == 400
+
+    # one library: The Matrix from both servers is one movie; Heat comes from Office
+    movies = {m["title"]: m for m in app.get("/panel/api/movies").json["movies"]}
+    assert movies["The Matrix"]["sources"] == ["Plex", "Office"] and movies["Heat"]["key"] == "tmdb-949"
+    assert {"title": "Mann", "count": 1} in app.get("/panel/api/filters").json["collections"]
+    # Heat streams to Marquee from the Office server, with its own token
+    with mock.patch("plexnfc.plex.requests.get", return_value=mock.Mock(status_code=200)):
+        details = plex.app_play_details("Den", "tmdb-949")
+    assert details["url"].startswith("http://office:32400/video/:/transcode/universal/start.m3u8?")
+    assert "X-Plex-Token=office-token" in details["url"] and "%2Flibrary%2Fmetadata%2F8" in details["url"]
+    # and its poster comes from there
+    with mock.patch("requests.get", return_value=mock.Mock(ok=True, content=jpeg(), headers={})) as get:
+        assert app.get("/poster/tmdb-949").status_code == 200
+    assert get.call_args.args[0] == "http://office:32400/photo/h.jpg"
+
+
+def test_a_plex_server_can_be_added_by_its_address(plex, office_plex):
+    app = create_app(plex.config, plex).test_client()
+    r = app.post("/panel/api/sources", environ_base=PANEL, json={
+        "kind": "plex", "url": "http://office:32400/", "token": "typed", "library": "Films", "name": "Office"})
+    assert r.status_code == 200 and r.json["source"]["library"] == "Films"
+    office_plex.made.assert_called_with("http://office:32400", "typed", timeout=15)
+    r = app.post("/panel/api/sources", environ_base=PANEL, json={"kind": "plex", "url": "http://x:32400", "token": "t",
+                                                                  "library": "Nope"})
+    assert r.status_code == 400 and "no movie library named Nope" in r.json["message"]
+    assert app.post("/panel/api/sources", environ_base=PANEL, json={"kind": "plex", "url": "office"}).status_code == 400
+
+
+def test_one_page_of_the_book_can_be_reprinted(plex, movies_dir):
+    folder_plex(plex, movies_dir)
+    app = create_app(plex.config, plex).test_client()
+    whole = app.get("/book?layout=full").data.decode()
+    assert whole.count('<section class="sheet">') == 6 and 'class="cover"' in whole
+    # the page Heat is on, as in the whole book: its number at the foot, and nothing else
+    page = app.get("/book?layout=full&movie=t-heat-1995").data.decode()
+    assert page.count("<section") == 1 and "Heat" in page and "Alien" not in page and 'class="cover"' not in page
+    sheet = page.split("<body>")[1].removesuffix("</body></html>")
+    assert sheet in whole and "&#9670; 6 &#9670;" in sheet  # the very same page, page 6
+    # four to a page: the whole sheet Heat is on, with the movies beside it
+    grid = app.get("/book?layout=grid&movie=t-heat-1995").data.decode()
+    assert grid.count("<section") == 1 and grid.count('class="card"') == 4  # Heat is 4th: the first sheet of 4
+    # by page number: 1 is the cover, the last is the remote control page
+    assert 'class="cover"' in app.get("/book?page=1").data.decode()
+    assert 'class="remote"' in app.get("/book?page=9").data.decode()  # cover, contents, 6 sheets, remote
+    r = app.get("/book?page=10")
+    assert r.status_code == 404 and "pages 1 to 9" in r.data.decode()
+    # a movie that isn't in this book (another collection, say)
+    plex.section.collection.return_value.items.return_value = []
+    r = app.get("/book?collection=Villeneuve&movie=t-heat-1995")
+    assert r.status_code == 404 and "isn&#x27;t in this book" in r.data.decode()

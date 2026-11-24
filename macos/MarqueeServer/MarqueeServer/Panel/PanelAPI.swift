@@ -278,6 +278,16 @@ struct MatchJob: Decodable, Sendable, Equatable {
     let error: String?
 }
 
+/// A Plex server the signed-in Plex account can reach
+struct PlexServerChoice: Decodable, Sendable, Identifiable {
+    let machine: String
+    let name: String
+    let owned: Bool
+    let added: Bool
+    let signedIn: Bool
+    var id: String { machine }
+}
+
 struct PlexSource: Decodable, Sendable {
     let enabled: Bool
     let signedIn: Bool
@@ -286,7 +296,7 @@ struct PlexSource: Decodable, Sendable {
 
 struct MovieSource: Decodable, Sendable, Identifiable {
     let id: String
-    let kind: String  // "jellyfin" or "folder"
+    let kind: String  // "plex", "jellyfin" or "folder"
     let name: String
     let error: String?
     let count: Int?
@@ -295,9 +305,9 @@ struct MovieSource: Decodable, Sendable, Identifiable {
     let user: String?
     let path: String?
 
-    var kindName: String { kind == "jellyfin" ? "Jellyfin" : "Folder" }
+    var kindName: String { kind == "jellyfin" ? "Jellyfin" : kind == "plex" ? "Plex" : "Folder" }
     var whereText: String {
-        if kind == "jellyfin" {
+        if kind != "folder" {
             return [url, library, user].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
         }
         return path ?? ""

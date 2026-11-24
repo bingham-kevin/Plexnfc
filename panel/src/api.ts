@@ -180,7 +180,9 @@ export interface Filters {
 
 export interface Source {
   id: string;
-  kind: "jellyfin" | "folder";
+  kind: "jellyfin" | "folder" | "plex";
+  /** A Plex server's name, as the Plex account knows it */
+  server?: string | null;
   name: string;
   /** Why its movies couldn't be read last time, if they couldn't */
   error: string | null;
@@ -191,6 +193,17 @@ export interface Source {
   /** The Jellyfin user signed in as, if not an API key */
   user?: string | null;
   path?: string;
+}
+
+/** A Plex server the signed-in Plex account can reach */
+export interface PlexServer {
+  machine: string;
+  name: string;
+  owned: boolean;
+  /** Already a source */
+  added: boolean;
+  /** The server signed in to, which is the "Plex" source */
+  signed_in: boolean;
 }
 
 export interface PlexSource {

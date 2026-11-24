@@ -40,7 +40,7 @@ CACHE_TTL = 300  # a source's movie list is read again after this long
 MISS_RESCAN = 30  # a key that isn't found rescans its source, but not more often than this
 
 INDEX_TTL = 300  # the merged list of every source's movies is rebuilt (in the background) after this long
-LIBRARY_KEY_RE = re.compile(r"^(t-[a-z0-9]+(-\d{4})?|jf-[A-Za-z0-9-]+|file-[A-Za-z0-9-]+)$")
+LIBRARY_KEY_RE = re.compile(r"^(t-[a-z0-9]+(-\d{4})?|jf-[A-Za-z0-9-]+|file-[A-Za-z0-9-]+|px-[A-Za-z0-9-]+)$")
 
 VIDEO_TYPES = {".mp4", ".m4v", ".mov", ".mkv", ".avi", ".wmv", ".mpg", ".mpeg", ".ts", ".m2ts", ".webm",
                ".flv", ".vob", ".divx"}
@@ -270,6 +270,121 @@ class JellyfinSource(Source):
                 "user": self.settings.get("user") or None}
 
 
+class PlexServerSource(Source):
+    """Another Plex server's movies (one shared with this Plex account, say), besides the Plex
+    server signed in to. Reached at its address with the token Plex gives for it."""
+    kind = "plex"
+    prefix = "px"
+
+    def __init__(self, settings: dict):
+        super().__init__(settings)
+        self.url = settings["url"].rstrip("/")
+        self.library = settings.get("library") or ""
+        self._server = None
+
+    def default_name(self) -> str:
+        return self.settings.get("server") or "Plex"
+
+    @property
+    def server(self):
+        if self._server is None:
+            from plexapi.server import PlexServer
+            try:
+                self._server = PlexServer(self.url, self.settings["token"], timeout=15)
+            except Exception as e:  # noqa: BLE001 - plexapi raises several types
+                raise SourceError(f"Couldn't reach the Plex server {self.name} at {self.url}: {e}") from None
+        return self._server
+
+    def _sections(self) -> list:
+        try:
+            sections = [s for s in self.server.library.sections() if s.type == "movie"]
+        except SourceError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            self._server = None  # connect again next time
+            raise SourceError(f"{self.name}: {e}") from None
+        if self.library:
+            sections = [s for s in sections if s.title.casefold() == self.library.casefold()]
+            if not sections:
+                raise SourceError(f"{self.name} has no movie library named {self.library}")
+        return sections
+
+    def scan(self) -> list[SourceMovie]:
+        movies = []
+        for section in self._sections():
+            try:
+                items = section.all()
+            except Exception as e:  # noqa: BLE001
+                raise SourceError(f"{self.name}: {e}") from None
+            for m in items:
+                ids = plex_ids(m)
+                title = m.title or "?"
+                year = getattr(m, "year", None)
+                movies.append(SourceMovie(
+                    key=movie_id(ids, title, year), title=title, year=year, source=self, ids=ids,
+                    source_key=f"px-{self.id}-{m.ratingKey}", ref=str(m.ratingKey),
+                    summary=getattr(m, "summary", "") or "", duration=getattr(m, "duration", 0) or 0,
+                    viewOffset=getattr(m, "viewOffset", 0) or 0,
+                    collections=tuple(c.tag for c in getattr(m, "collections", None) or ()),
+                    labels=tuple(label.tag for label in getattr(m, "labels", None) or ()),
+                    poster=getattr(m, "thumb", None),
+                    added=m.addedAt.timestamp() if getattr(m, "addedAt", None) else 0))
+        return movies
+
+    def poster(self, movie: SourceMovie, width: int | None, height: int | None) -> tuple[bytes, str] | None:
+        import requests
+
+        if not movie.poster:
+            return None
+        try:
+            url = self.server.transcodeImage(movie.poster, height=height or 900, width=width or 600)
+            r = requests.get(url, timeout=15)
+        except Exception as e:  # noqa: BLE001
+            log.debug("No poster for %s from %s: %s", movie.title, self.name, e)
+            return None
+        if r.ok and isinstance(r.content, bytes) and r.content:
+            return r.content, r.headers.get("Content-Type", "image/jpeg")
+        return None
+
+    def stream(self, movie: SourceMovie, start: int, player: str, library: "Library") -> str:
+        """Plex's HLS stream, as for the Plex server signed in to: the Apple TV plays it from the server."""
+        from .tvapp import plex_hls_url
+        url = plex_hls_url(self.url, self.settings["token"], movie.ref, start, player)
+        library.plex._start_plex_session(url)
+        return url
+
+    def public(self) -> dict:
+        return {**super().public(), "url": self.url, "library": self.library,
+                "server": self.settings.get("server") or None, "machine": self.settings.get("machine") or None}
+
+
+def plex_account_servers(token: str) -> list:
+    """The Plex servers a Plex account can reach (its own and ones shared with it), as plex.tv's resources."""
+    from plexapi.myplex import MyPlexAccount
+    try:
+        account = MyPlexAccount(token=token)
+        return [r for r in account.resources() if "server" in (r.provides or "")]
+    except Exception as e:  # noqa: BLE001 - plexapi raises several types here
+        raise SourceError(f"Couldn't ask plex.tv for your Plex servers: {e}") from None
+
+
+def connect_plex_server(token: str, machine: str) -> dict:
+    """The settings for one of the account's Plex servers (by its machine ID): the address it
+    answers at (its home-network address first, which the Apple TV streams from too) and its token."""
+    resource = next((r for r in plex_account_servers(token) if r.clientIdentifier == machine), None)
+    if resource is None:
+        raise SourceError("Your Plex account can't reach that server any more")
+    try:
+        server = resource.connect(ssl=False, timeout=5, locations=["local"])
+    except Exception:  # noqa: BLE001
+        try:
+            server = resource.connect(timeout=5)
+        except Exception as e:  # noqa: BLE001
+            raise SourceError(f"Couldn't connect to the Plex server {resource.name}: {e}") from None
+    return {"url": server._baseurl.rstrip("/"), "token": resource.accessToken or token, "machine": machine,
+            "server": resource.name}
+
+
 class FolderSource(Source):
     """Movie files in a folder (and the folders inside it): a local path, or a network share
     mounted on the server (on a Mac, under /Volumes; in Home Assistant, under /media or /share)."""
@@ -341,7 +456,7 @@ class FolderSource(Source):
         return {**super().public(), "path": self.path}
 
 
-KINDS = {"jellyfin": JellyfinSource, "folder": FolderSource}
+KINDS = {"jellyfin": JellyfinSource, "folder": FolderSource, "plex": PlexServerSource}
 
 
 def apply_edit(movie: SourceMovie, edit: dict | None) -> None:
@@ -693,9 +808,16 @@ class Library:
     def add(self, kind: str, **settings) -> Source:
         """Add a Jellyfin server or a folder, once its movies can be read."""
         if kind not in KINDS:
-            raise SourceError("Choose Jellyfin or a folder")
+            raise SourceError("Choose a Plex server, Jellyfin or a folder")
         settings = {k: v.strip() if isinstance(v, str) else v for k, v in settings.items() if v not in (None, "")}
         settings.update(id=uuid.uuid4().hex[:8], kind=kind)
+        if kind == "plex":
+            if not re.match(r"^https?://[^/\s]+", settings.get("url", "")):
+                raise SourceError("Type the Plex server's address, e.g. http://192.168.1.20:32400")
+            if not settings.get("token"):
+                raise SourceError("Give the Plex server's token, or choose it from your Plex account")
+            if settings.get("machine") and any(s.settings.get("machine") == settings["machine"] for s in self.sources):
+                raise SourceError(f"{settings.get('server') or 'That Plex server'} is already a source")
         if kind == "folder" and not settings.get("path"):
             raise SourceError("Type the folder's path")
         if kind == "jellyfin":

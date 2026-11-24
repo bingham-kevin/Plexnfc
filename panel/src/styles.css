@@ -304,3 +304,7 @@ details.help summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; 
 .speaker .pair-pin { display: flex; gap: 6px; align-items: center; }
 .speaker .pair-pin input { flex: 1; min-width: 0; width: auto; }
 .speaker > button.small { justify-self: start; }
+.plex-servers { display: grid; gap: 6px; }
+.plex-server { justify-content: space-between; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.reprint { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); display: grid; gap: 8px; }
+.reprint input[type=search] { max-width: 320px; }

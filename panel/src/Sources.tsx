@@ -1,6 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import type { MatchJob, Overview, PlexSource, Source, Sources as SourcesData } from "./api";
+import { useQuery } from "@tanstack/react-query";
+import { get, type MatchJob, type Overview, type PlexServer, type PlexSource, type Source,
+         type Sources as SourcesData } from "./api";
 import { Dialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
 import { useSourceAction, useSources } from "./hooks";
@@ -17,7 +19,7 @@ export function Sources({ overview }: { overview: Overview }) {
   const data = sources.data;
   const canManage = overview.can_manage;
   // Plex is listed while it's used (or nothing else is); "Add source" brings it back once removed
-  const shown = data?.ordered.filter((s) => s.kind !== "plex" || (s as PlexSource).enabled || !data.sources.length) ?? [];
+  const shown = data?.ordered.filter((s) => s.id !== "plex" || (s as PlexSource).enabled || !data.sources.length) ?? [];
   const move = (index: number, by: number) => {
     if (!data) return;
     const ids = shown.map((s) => s.id);
@@ -53,7 +55,7 @@ export function Sources({ overview }: { overview: Overview }) {
                       </span>
                     )}
                   </td>
-                  {s.kind === "plex"
+                  {s.id === "plex"
                     ? <PlexRow plex={s as PlexSource} canManage={canManage} others={data.sources.length > 0} />
                     : <SourceRow source={s as Source} canManage={canManage} tmdb={data.tmdb}
                                  job={data.matching?.[s.id]} />}
@@ -122,7 +124,7 @@ function SourceRow({ source, canManage, tmdb, job }:
   const refresh = useSourceAction<void>(() => `sources/${source.id}/refresh`, undefined,
                                         (_, r) => `${source.name}: ${r.count} movies`);
   const remove = useSourceAction<void>(() => `sources/${source.id}/remove`, undefined, () => `Removed ${source.name}`);
-  const where = source.kind === "jellyfin"
+  const where = source.kind !== "folder"
     ? `${source.url}${source.library ? ` · ${source.library}` : ""}${source.user ? ` · ${source.user}` : ""}`
     : source.path;
   return (
@@ -171,7 +173,7 @@ function AddSource({ sources, onClose }: { sources: SourcesData; onClose: () => 
           <select value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
             <option value="folder">Network or local folder</option>
             <option value="jellyfin">Jellyfin server</option>
-            <option value="plex">Plex</option>
+            <option value="plex">Plex server</option>
           </select>
         </label>
       </div>
@@ -184,23 +186,74 @@ function AddSource({ sources, onClose }: { sources: SourcesData; onClose: () => 
   );
 }
 
+/** Plex servers: the one signed in to (added back if it was removed), others on the Plex
+ * account (its own and ones shared with it), or any server by its address and token. */
 function AddPlex({ plex, onDone }: { plex: PlexSource; onDone: () => void }) {
   const usePlex = useSourceAction<void>(() => "sources/plex", () => ({ enabled: true }), () => "Using Plex's movies");
-  if (plex.enabled && plex.signed_in) {
-    return <p className="muted">Plex is already a source (library {plex.library}). Marquee Server uses one Plex
-      account.</p>;
-  }
+  const servers = useQuery({
+    queryKey: ["plex-servers"],
+    queryFn: () => get<{ servers: PlexServer[] }>("plex/servers"),
+    enabled: plex.signed_in,
+    retry: false,
+  });
+  const [library, setLibrary] = useState("");
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [token, setToken] = useState("");
+  const add = useSourceAction<{ machine?: string; label: string }>(() => "sources", (v) => ({
+    kind: "plex", library, name, ...(v.machine ? { machine: v.machine } : { url, token }),
+  }), (v) => `Added ${v.label}`);
+
   return (
-    <>
-      <p className="muted">Movies from the Plex library <b>{plex.library}</b>.</p>
-      <div className="row">
-        {!plex.enabled && (
+    <div className="fields">
+      {!plex.signed_in && (
+        <p className="row"><a className="button primary" href="plex/login">Sign in with Plex</a>
+          <span className="muted">to choose from your Plex servers</span></p>
+      )}
+      {plex.signed_in && !plex.enabled && (
+        <p className="row">
           <button className="primary" disabled={usePlex.isPending}
-                  onClick={() => usePlex.mutate(undefined, { onSuccess: onDone })}>Add Plex</button>
-        )}
-        {!plex.signed_in && <a className={`button${plex.enabled ? " primary" : ""}`} href="plex/login">Sign in with Plex</a>}
-      </div>
-    </>
+                  onClick={() => usePlex.mutate(undefined, { onSuccess: onDone })}>Add Plex back</button>
+          <span className="muted">the server you're signed in to (library {plex.library})</span>
+        </p>
+      )}
+      {servers.isPending && plex.signed_in && <p className="muted">Asking plex.tv for your servers…</p>}
+      {servers.isError && <p className="err">{servers.error.message}</p>}
+      {servers.data && (
+        <div className="plex-servers">
+          {servers.data.servers.map((s) => (
+            <div key={s.machine} className="row plex-server">
+              <span><b>{s.name}</b> <span className="muted">{s.owned ? "yours" : "shared with you"}</span></span>
+              {s.signed_in ? <span className="pill good"><span className="dot" /> Signed in (Plex)</span>
+                : s.added ? <span className="pill good"><span className="dot" /> Added</span>
+                : <button className="primary" disabled={add.isPending}
+                          onClick={() => add.mutate({ machine: s.machine, label: s.name }, { onSuccess: onDone })}>
+                    {add.isPending && add.variables?.machine === s.machine ? "Connecting…" : "Add"}
+                  </button>}
+            </div>
+          ))}
+        </div>
+      )}
+      <label>Library <input value={library} onChange={(e) => setLibrary(e.target.value)}
+                            placeholder="Every movie library" /></label>
+      <label>Name <input value={name} onChange={(e) => setName(e.target.value)} placeholder="The server's name"
+                         maxLength={40} /></label>
+      <details className="help">
+        <summary>Add a server by its address</summary>
+        <form className="fields" onSubmit={(e) => {
+          e.preventDefault();
+          add.mutate({ label: "the Plex server" }, { onSuccess: onDone });
+        }}>
+          <label>Address <input value={url} onChange={(e) => setUrl(e.target.value)} required type="url"
+                                placeholder="http://192.168.1.20:32400" /></label>
+          <label>Token <input value={token} onChange={(e) => setToken(e.target.value)} required autoComplete="off" />
+            <span className="muted">The server's X-Plex-Token.</span></label>
+          <button className="primary" disabled={add.isPending}>{add.isPending ? "Connecting…" : "Add"}</button>
+        </form>
+      </details>
+      <p className="muted">Movies from another Plex server play in Marquee, streamed straight from that server, so
+        the Apple TV has to be able to reach it.</p>
+    </div>
   );
 }
 

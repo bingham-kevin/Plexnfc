@@ -10,6 +10,7 @@ struct BookView: View {
     @AppStorage("book.layout") private var layout = "full"
     @AppStorage("book.paper") private var paper = "letter"
     @AppStorage("book.qr") private var qr = true
+    @AppStorage("book.cards") private var withCards = false
     @State private var source = ""
     @State private var filters: Filters?
 
@@ -67,6 +68,10 @@ struct BookView: View {
                     }
                     GridRow {
                         Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                        Toggle("Only movies with a card linked", isOn: $withCards)
+                    }
+                    GridRow {
+                        Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
                         Button("Open Printable Book") { NSWorkspace.shared.open(bookURL) }
                             .buttonStyle(.borderedProminent)
                     }
@@ -76,13 +81,21 @@ struct BookView: View {
             Text("It opens in your browser. Wait for all the posters to load, then print at 100% scale with background "
                  + "graphics on. The book sets its own margins.")
                 .foregroundStyle(.secondary)
+            Divider()
+            ReprintView(model: model, collection: collection, source: source) { only in
+                NSWorkspace.shared.open(bookURL(only))
+            }
         }
         .task(id: model.libraryVersion) { filters = try? await model.api.get("filters") }
     }
 
-    private var bookURL: URL {
+    private var bookURL: URL { bookURL([:]) }
+
+    /// The book, or (``only``: a movie or a page number) just one page of it
+    private func bookURL(_ only: [String: String]) -> URL {
         model.api.url("book", ["title": title, "collection": collection, "source": source, "layout": layout,
-                               "page_size": paper, "qr": qr ? "1" : "0"])
+                               "page_size": paper, "qr": qr ? "1" : "0",
+                               "cards": withCards ? "1" : "0"].merging(only) { $1 })
     }
 
     /// A sketch of a page: one poster, or four.
@@ -105,6 +118,66 @@ struct BookView: View {
                 .padding(12)
             }
             Text("\(count == 4 ? "4 per page" : "1 per page") · \(paper)").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Reprint one page of the book (a damaged one): the page a movie is on, or a page by its number,
+/// exactly as in the book made with the settings above.
+private struct ReprintView: View {
+    let model: PanelModel
+    let collection: String
+    let source: String
+    let open: ([String: String]) -> Void
+    @State private var byMovie = true
+    @State private var search = ""
+    @State private var page = ""
+    @State private var movies: [Movie] = []
+
+    private var matches: [Movie] {
+        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+        return q.isEmpty ? [] : Array(movies.filter { "\($0.title) \($0.yearText)".lowercased().contains(q) }.prefix(8))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Reprint a page").font(.headline)
+            Text("For a damaged page: it comes out exactly as in the book, with the same page number (and, at 4 per page, "
+                 + "the same movies beside it), as long as the settings above are the ones the book was made with.")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Picker("Reprint by", selection: $byMovie) {
+                Text("A movie's page").tag(true)
+                Text("Page number").tag(false)
+            }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+            if byMovie {
+                TextField("Find the movie", text: $search).textFieldStyle(.roundedBorder).frame(maxWidth: 300)
+                ForEach(matches) { movie in
+                    Button {
+                        open(["movie": movie.key])
+                    } label: {
+                        HStack {
+                            Poster(url: model.poster(movie.key, 80, 120), width: 24)
+                            Text(movie.title)
+                            Text(movie.yearText).foregroundStyle(.secondary)
+                            Image(systemName: "printer").foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open its page to print")
+                }
+            } else {
+                HStack {
+                    TextField("7", text: $page).textFieldStyle(.roundedBorder).frame(width: 70)
+                        .onChange(of: page) { _, new in page = new.filter(\.isNumber) }
+                        .onSubmit { if !page.isEmpty { open(["page": page]) } }
+                    Button("Open Page") { open(["page": page]) }.buttonStyle(.borderedProminent).disabled(page.isEmpty)
+                    Text("The number at the foot of the page; 1 is the cover.").foregroundStyle(.secondary)
+                }
+            }
+        }
+        .task(id: "\(collection)|\(source)|\(model.libraryVersion)") {
+            movies = (try? await model.api.get("movies", ["collection": collection, "source": source], as: Movies.self).movies) ?? []
         }
     }
 }
