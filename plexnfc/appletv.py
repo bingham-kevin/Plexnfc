@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 try:
     import pyatv
     from pyatv.const import Protocol
-except ImportError:  # the Home Assistant app doesn't need it
+except ImportError:  # without it, Apple TVs can't be woken or paired
     pyatv = None
 
 MARQUEE_BUNDLE_ID = "com.binghamkevin.moviebook"

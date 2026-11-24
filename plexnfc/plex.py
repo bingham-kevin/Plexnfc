@@ -1,4 +1,4 @@
-"""Plex lookups and playback.
+"""Movie lookups, and playback in the Marquee app on Apple TV.
 
 Each poster's NFC tag stores a short, stable movie key such as ``tmdb-603``.
 We prefer external IDs (TMDB / IMDb / TVDB) over Plex's internal ratingKey
@@ -23,9 +23,8 @@ from .config import Config
 from .appletv import AppleTVError, AppleTVs
 from .cards import Cards
 from .homeassistant import HomeAssistant, HomeAssistantError
-from .jellyfin import TICKS_PER_SECOND, Jellyfin, JellyfinError, tag_key
-from .sources import LIBRARY_KEY_RE, JellyfinSource, Library, LibraryMovie, SourceMovie, source_name
-from .tvapp import AppInbox, AppPairings, jellyfin_hls_url, plex_hls_url
+from .sources import LIBRARY_KEY_RE, Library, LibraryMovie, SourceMovie, source_name
+from .tvapp import AppInbox, AppPairings, plex_hls_url
 
 log = logging.getLogger(__name__)
 
@@ -61,12 +60,10 @@ def app_movie(movie, key: str | None = None) -> dict:
 
 class Plex:
     def __init__(self, config: Config, server: PlexServer | None = None,
-                 ha: HomeAssistant | None = None, jellyfin: Jellyfin | None = None,
-                 apple_tvs: AppleTVs | None = None):
+                 ha: HomeAssistant | None = None, apple_tvs: AppleTVs | None = None):
         self.config = config
         self._server = server
         self._account = None
-        self._session_keys: dict[int, str] = {}  # ratingKey -> tag key, see _session_key
         self.ha = ha
         if self.ha is None and config.ha_url and config.ha_token:
             self.ha = HomeAssistant(config.ha_url, config.ha_token)
@@ -80,19 +77,6 @@ class Plex:
         self.cards = Cards(os.path.join(os.path.dirname(config.auth_file) or ".", "movie_cards.json"))
         # Jellyfin servers and folders added in the control panel, alongside Plex
         self.library = Library(self, os.path.dirname(config.auth_file) or ".")
-        self.jellyfin = jellyfin
-        if self.jellyfin is None and config.jellyfin_url and config.jellyfin_api_key:
-            self.jellyfin = Jellyfin(config.jellyfin_url, config.jellyfin_api_key)
-        self._jellyfin_keys: dict[str, str] = {}  # Jellyfin item ID -> the key it was started with
-
-    @property
-    def jellyfin(self) -> Jellyfin | None:
-        """The Jellyfin server for Jellyfin players: JELLYFIN_URL's, else the first Jellyfin source's."""
-        return self._jellyfin or self.library.jellyfin_client()
-
-    @jellyfin.setter
-    def jellyfin(self, value: Jellyfin | None) -> None:
-        self._jellyfin = value
 
     @property
     def server(self) -> PlexServer:
@@ -208,95 +192,28 @@ class Plex:
                 "labels": sorted({c.title for c in listed(lambda: self.section.listFilterChoices("label"))},
                                  key=str.casefold)}
 
-    # ---- playback -----------------------------------------------------------
-
-    def _find_client(self, name: str):
-        try:
-            return self.server.client(name)
-        except NotFound:
-            pass
-        try:
-            if self._account is None:
-                self._account = self.server.myPlexAccount()
-            return self._account.resource(name).connect()
-        except Exception as e:  # plexapi raises several types here
-            log.debug("Player %r not reachable via plex.tv: %s", name, e)
-        return None
-
-    def _account_players(self) -> list[str]:
-        """Players on your plex.tv account (Apple TVs, smart TVs...), which local discovery misses."""
-        try:
-            if self._account is None:
-                self._account = self.server.myPlexAccount()
-            return [r.name for r in self._account.resources() if "player" in (r.provides or "")]
-        except Exception as e:
-            log.debug("Couldn't list plex.tv players: %s", e)
-            return []
-
-    def get_client(self, name: str | None = None, wait: float = 0):
-        """Find a player by name, retrying for up to ``wait`` seconds.
-
-        Players on the local network that have "Advertise as player" turned on
-        are found directly. Others (Apple TV, smart TVs, consoles) are found
-        through your plex.tv account. Waiting matters when Home Assistant has
-        just switched the TV on and the Plex app is still starting.
-        """
-        name = name or self.config.client
-        if not name:
-            raise PlexNFCError("No player configured: set PLEX_CLIENT or add ?client=NAME")
-        deadline = time.monotonic() + wait
-        while True:
-            client = self._find_client(name)
-            if client is not None:
-                return client
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(3)
-        available = sorted({c.title for c in self.server.clients()} | set(self._account_players()))
-        hint = f" Players found: {', '.join(available)}." if available else ""
-        raise PlexNFCError(f"Couldn't find a Plex player named '{name}'. Is it switched on?{hint}")
+    # ---- playback: always in the Marquee app on Apple TV -----------------------
 
     def default_player(self) -> str:
-        """The ID of the player taps go to when nothing else is chosen."""
-        c = self.config
-        if c.app_player:
-            return f"app:{c.app_player}"
-        if c.jellyfin_player:
-            return f"jellyfin:{c.jellyfin_player}"
-        return c.ha_player or c.client
+        """The ID of the player taps go to when nothing else is chosen: ``app:APP_PLAYER``."""
+        return f"app:{self.config.app_player}" if self.config.app_player else ""
 
     def players(self) -> list[dict]:
-        """Every player a phone can send its taps to: paired Marquee Apple TVs, Jellyfin
-        apps that are open, and Plex players. ``id`` is what ``?client=`` takes."""
-        found = [{"id": f"app:{d['name']}", "name": d["name"], "kind": "Marquee"}
-                 for d in self.app_pairings.devices() if d["kind"] == "tv"]
-        if self.jellyfin:
-            try:
-                found += [{"id": f"jellyfin:{n}", "name": n, "kind": "Jellyfin"} for n in self.jellyfin.players()]
-            except JellyfinError as e:
-                log.debug("Couldn't list Jellyfin players: %s", e)
-        try:
-            plex_names = {c.title for c in self.server.clients()} | set(self._account_players())
-        except Exception as e:  # Plex unreachable or signed out: list the others
-            log.debug("Couldn't list Plex players: %s", e)
-            plex_names = set()
-        if self.config.client:
-            plex_names.add(self.config.client)
-        found += [{"id": n, "name": n, "kind": "Plex"} for n in sorted(plex_names, key=str.casefold)]
-        if self.config.ha_player:
-            found.append({"id": self.config.ha_player, "name": self.config.ha_player, "kind": "Home Assistant"})
-        seen = set()
-        return [p for p in found if not (p["id"].casefold() in seen or seen.add(p["id"].casefold()))]
+        """Every player a phone can send its taps to: the paired Marquee Apple TVs.
+        ``id`` is what ``?client=`` takes."""
+        return [{"id": f"app:{d['name']}", "name": d["name"], "kind": "Marquee"}
+                for d in self.app_pairings.devices() if d["kind"] == "tv"]
 
     def _ready_script(self, client_name: str | None) -> str | None:
         """The get-ready script for this player: its own from PLAYER_SCRIPTS, else HA_SCRIPT,
         which belongs to the default player (so a tap for another room doesn't wake this one)."""
         if not client_name:
             return self.config.ha_script or None
-        scripts = {k.casefold(): v for k, v in (self.config.player_scripts or {}).items()}
-        if script := scripts.get(client_name.casefold()):
+        # Players are Marquee names, written with or without "app:"
+        scripts = {k.removeprefix("app:").casefold(): v for k, v in (self.config.player_scripts or {}).items()}
+        if script := scripts.get(client_name.removeprefix("app:").casefold()):
             return script
-        if client_name.casefold() == self.default_player().casefold():
+        if client_name.removeprefix("app:").casefold() == self.default_player().removeprefix("app:").casefold():
             return self.config.ha_script or None
         return None
 
@@ -314,7 +231,7 @@ class Plex:
                 log.warning("Couldn't open Marquee on %s: %s", name, e)
                 return str(e)
             return None
-        script = self._ready_script(client_name)
+        script = self._ready_script(f"app:{client_name.removeprefix('app:')}" if client_name else None)
         if not (self.ha and script):
             return None
         try:
@@ -324,35 +241,15 @@ class Plex:
             return str(e)
         return None
 
-    def _ha_entity(self, client_name: str | None) -> str | None:
-        """The Home Assistant media_player to play on, if HA should start playback."""
-        if not self.ha:
-            return None
-        if client_name:
-            return client_name if client_name.startswith("media_player.") else None
-        return self.config.ha_player or None
-
-    def _play_via_ha(self, entity: str, movie, resume: bool, ha_error: str | None):
-        """Ask Home Assistant's Plex integration to start the movie.
-
-        The Plex entity only accepts playback once the Plex app is running, so
-        keep retrying for up to PLAYER_WAIT seconds after the TV was switched on.
-        """
-        deadline = time.monotonic() + self.config.player_wait
-        while True:
-            try:
-                self.ha.play_plex(entity, movie.ratingKey, resume)
-                return movie, SimpleNamespace(title=entity)
-            except HomeAssistantError as e:
-                if time.monotonic() >= deadline:
-                    msg = f"Home Assistant couldn't start playback on {entity}: {e}"
-                    raise PlexNFCError(f"{msg} (script: {ha_error})" if ha_error else msg) from None
-            time.sleep(3)
-
     def play(self, key: str, client_name: str | None = None, resume: bool | None = None):
-        result = self._play(key, client_name, resume)
+        found = self.find_library_movie(key)
+        resume = self.config.resume if resume is None else resume
+        name = self._player(client_name)
+        # Leave the movie in the inbox before the app is opened, which picks it up
+        movie = self._play_in_app(name, found, resume)
+        self.prepare_tv(client_name)
         self._run_started_script()
-        return result
+        return movie, SimpleNamespace(title=name)
 
     def _run_started_script(self) -> None:
         """Start the HA_STARTED_SCRIPT without waiting, e.g. to press a remote button
@@ -364,58 +261,6 @@ class Plex:
         except HomeAssistantError as e:
             log.warning("%s", e)
 
-    def _play(self, key: str, client_name: str | None, resume: bool | None):
-        found = self.find_library_movie(key)
-        key = found.key
-        resume = self.config.resume if resume is None else resume
-        if name := self._app_player(client_name):
-            # Leave the movie in the inbox before the app is opened, which picks it up
-            movie = self._play_in_app(name, found, resume)
-            self.prepare_tv(client_name)
-            return movie, SimpleNamespace(title=name)
-        jellyfin_name = self._jellyfin_player(client_name)
-        movie = self._copy_for(found, client_name, jellyfin=bool(jellyfin_name))
-        self._note_playing(client_name or self.default_player(), key, movie)
-        ha_error = self.prepare_tv(client_name)
-        if jellyfin_name:
-            return self._play_via_jellyfin(jellyfin_name, key, movie, resume, ha_error)
-        if entity := self._ha_entity(client_name):
-            log.info("Playing %s (%s) on %s via Home Assistant", movie.title, key, entity)
-            return self._play_via_ha(entity, movie, resume, ha_error)
-        wait = self.config.player_wait if self._ready_script(client_name) else 0
-        try:
-            client = self.get_client(client_name, wait=wait)
-        except PlexNFCError as e:
-            raise PlexNFCError(f"{e} (Home Assistant: {ha_error})" if ha_error else str(e)) from None
-        offset = movie.viewOffset if resume and getattr(movie, "viewOffset", 0) else 0
-        log.info("Playing %s (%s) on %s from %sms", movie.title, key, client.title, offset)
-        try:
-            client.playMedia(movie, offset=offset)
-        except Exception as e:  # plexapi raises several types when a player rejects it
-            raise PlexNFCError(f"{client.title} didn't accept the movie: {e}") from None
-        if not resume and getattr(movie, "viewOffset", 0):
-            self._rewind_when_playing(client, movie)
-        return movie, client
-
-    def _copy_for(self, found: LibraryMovie, client_name: str | None, jellyfin: bool):
-        """The copy a Plex or Jellyfin player plays: Plex players only play Plex's; Jellyfin players
-        play the Jellyfin server's own copy, else find a Plex copy there by title and ID."""
-        if jellyfin:
-            server = getattr(self.jellyfin, "url", None)
-            copies = sorted((c for c in found.copies if not isinstance(c, SourceMovie)
-                             or isinstance(c.source, JellyfinSource)),
-                            key=lambda c: not (isinstance(c, SourceMovie) and c.source.url == server))
-        else:
-            copies = [c for c in found.copies if not isinstance(c, SourceMovie)]
-        if copies:
-            return copies[0]
-        where = sorted({source_name(c) for c in found.copies})
-        jellyfin_too = any(isinstance(c, SourceMovie) and isinstance(c.source, JellyfinSource) for c in found.copies)
-        raise PlexNFCError(f"{found.title} is only in {' and '.join(where)}, which "
-                           f"{'plays' if len(where) == 1 else 'play'} on Marquee"
-                           f"{' and Jellyfin players' if jellyfin_too else ''}, "
-                           f"not on {client_name or self.default_player() or 'this player'}")
-
     def _note_playing(self, player: str | None, key: str, movie) -> None:
         """Remember which source a player was sent a movie from, for Now Playing."""
         if player:
@@ -426,15 +271,16 @@ class Plex:
         noted = self.library.playing.get((player or "").casefold())
         return noted["source"] if noted and key and noted["key"] == key else None
 
-    # ---- the Marquee Apple TV app -------------------------------------------------
-
     def _app_player(self, client_name: str | None) -> str | None:
-        """The Marquee player to use: ``?client=app:NAME``, else APP_PLAYER."""
-        if client_name:
-            name = client_name.removeprefix("app:") if client_name.startswith("app:") else None
-        else:
-            name = self.config.app_player or None
+        """The Marquee player to use: ``?client=NAME`` (or ``app:NAME``), else APP_PLAYER."""
+        name = client_name.removeprefix("app:") if client_name else self.config.app_player
         return self._marquee_name(name) if name else None
+
+    def _player(self, client_name: str | None) -> str:
+        if name := self._app_player(client_name):
+            return name
+        raise PlexNFCError("No Marquee player chosen: pair Marquee on an Apple TV and choose it as the "
+                           "player taps go to, or add ?client=NAME to the tag")
 
     def _marquee_name(self, name: str) -> str:
         """The paired Marquee's name for ``name``, which may instead be the name of the
@@ -485,9 +331,6 @@ class Plex:
         start = int((movie.viewOffset or 0) / 1000) if resume and getattr(movie, "viewOffset", 0) else 0
         if isinstance(movie, SourceMovie):  # from Jellyfin, or a file Marquee Server sends itself
             url = self.library.stream(movie, start, name)
-        elif self.jellyfin and self.config.app_stream == "jellyfin":
-            item = self._jellyfin_item(key, movie)
-            url = jellyfin_hls_url(self.config.jellyfin_url, self.config.jellyfin_api_key, item["Id"], start, name)
         else:
             url = plex_hls_url(self.plex_url, self.config.plex_token, movie.ratingKey, start, name)
             self._start_plex_session(url)
@@ -573,146 +416,6 @@ class Plex:
                 "poster": f"/poster/{key}" if key else None, "player": name,
                 "position": int(status.get("position") or 0), "duration": int(status.get("duration") or 0)}
 
-    # ---- Jellyfin players (e.g. Swiftfin on Apple TV) ---------------------------
-
-    def _jellyfin_player(self, client_name: str | None) -> str | None:
-        """The Jellyfin player to use: ``?client=jellyfin:NAME``, else JELLYFIN_PLAYER."""
-        if client_name:
-            name = client_name.removeprefix("jellyfin:") if client_name.startswith("jellyfin:") else None
-        else:
-            name = self.config.jellyfin_player or None
-        if name and self.jellyfin is None:
-            raise PlexNFCError("Add a Jellyfin server in the control panel (or set JELLYFIN_URL and "
-                               "JELLYFIN_API_KEY) to play on a Jellyfin player")
-        return name
-
-    def _jellyfin_session(self, name: str, wait: float = 0) -> dict:
-        """The open Jellyfin app on player ``name``, retrying for up to ``wait`` seconds."""
-        deadline = time.monotonic() + wait
-        try:
-            while True:
-                if session := self.jellyfin.session(name):
-                    return session
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(3)
-            available = self.jellyfin.players()
-        except JellyfinError as e:
-            raise PlexNFCError(str(e)) from None
-        hint = f" Players found: {', '.join(available)}." if available else ""
-        raise PlexNFCError(f"Couldn't find a Jellyfin player named '{name}'. Is the app open?{hint}")
-
-    def _jellyfin_item(self, key: str, movie) -> dict:
-        """The item on the Jellyfin players' server for a movie: itself, for a movie from that
-        server; else found by title, year and ID (for a Plex movie, or one from another server)."""
-        if isinstance(movie, SourceMovie) and movie.source.url == self.jellyfin.url:
-            return {"Id": movie.ref, "Name": movie.title}
-        try:
-            return self.jellyfin.find_movie(movie.title, movie.year, key)
-        except JellyfinError as e:
-            raise PlexNFCError(str(e)) from None
-
-    def _play_via_jellyfin(self, name: str, key: str, movie, resume: bool, ha_error: str | None):
-        item = self._jellyfin_item(key, movie)
-        self._jellyfin_keys[item["Id"]] = key
-        wait = self.config.player_wait if self._ready_script(f"jellyfin:{name}") else 0
-        try:
-            session = self._jellyfin_session(name, wait)
-        except PlexNFCError as e:
-            raise PlexNFCError(f"{e} (Home Assistant: {ha_error})" if ha_error else str(e)) from None
-        log.info("Playing %s (%s) on Jellyfin player %s", movie.title, key, name)
-        try:
-            # Without a start position the Jellyfin app picks up where the movie was left.
-            self.jellyfin.play(session, item["Id"], start_seconds=None if resume else 0)
-        except JellyfinError as e:
-            raise PlexNFCError(str(e)) from None
-        self._jellyfin_subtitles_off(name, item, from_start=not resume)
-        return movie, SimpleNamespace(title=name)
-
-    def _jellyfin_subtitles_off(self, name: str, item: dict, from_start: bool, wait: float = 20) -> None:
-        """Turn subtitles off once the movie is playing.
-
-        Swiftfin ignores the subtitle index in the play command and the user's
-        Jellyfin subtitle setting, and turns on a movie's default subtitle track.
-        If that movie was already playing, the session shows the old playback for
-        a moment, so wait briefly and (when starting over) for a position near 0.
-        """
-        time.sleep(2)
-        deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
-            try:
-                session = self.jellyfin.session(name)
-                playing = (session or {}).get("NowPlayingItem") or {}
-                position = ((session or {}).get("PlayState") or {}).get("PositionTicks") or 0
-                restarted = not from_start or position < 60 * TICKS_PER_SECOND
-                if playing.get("Id") == item["Id"] and restarted:
-                    index = (session.get("PlayState") or {}).get("SubtitleStreamIndex")
-                    if index is None or index < 0:
-                        return
-                    if self.jellyfin.subtitles_off(session):
-                        log.info("Turned off subtitle track %s on %s", index, name)
-                    else:
-                        log.info("%s doesn't support turning subtitles off remotely", name)
-                    return
-            except JellyfinError as e:  # never let this stop a movie that's already playing
-                log.debug("Couldn't check subtitles on %s: %s", name, e)
-                return
-            time.sleep(1)
-        log.debug("%s didn't report %s playing; subtitles left as they are", name, item.get("Name"))
-
-    def _jellyfin_command(self, name: str, command: str, *args):
-        session = self._jellyfin_session(name)
-        try:
-            getattr(self.jellyfin, command)(session, *args)
-        except JellyfinError as e:
-            raise PlexNFCError(str(e)) from None
-        return SimpleNamespace(title=name)
-
-    def _jellyfin_now(self, name: str) -> dict:
-        try:
-            session = self.jellyfin.session(name)
-        except JellyfinError as e:
-            raise PlexNFCError(str(e)) from None
-        item = (session or {}).get("NowPlayingItem")
-        if not item:
-            return {"state": "idle"}
-        state = session.get("PlayState") or {}
-        # The key it was started with (Plex's tmdb-603, or a Jellyfin source's jf-tmdb-603)
-        key = self._jellyfin_keys.get(item["Id"]) or self.library.canonical(tag_key(item) or f"jf-{item['Id']}")
-        return {
-            "state": "paused" if state.get("IsPaused") else "playing",
-            "source": self.playing_source(f"jellyfin:{name}", key) or "Jellyfin",
-            "title": item.get("Name"),
-            "year": item.get("ProductionYear"),
-            "key": key,
-            "poster": f"/poster/{key}",
-            "player": name,
-            "position": int((state.get("PositionTicks") or 0) / TICKS_PER_SECOND),
-            "duration": int((item.get("RunTimeTicks") or 0) / TICKS_PER_SECOND),
-        }
-
-    def _rewind_when_playing(self, client, movie, wait: float = 20) -> None:
-        """Seek back to the start once the movie is playing.
-
-        Some players (Plex for Roku) ignore the start offset and always resume from
-        the saved spot, so a movie that should start over is rewound instead.
-        """
-        deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
-            try:
-                session = self.current_session(client.title)
-                if session is not None and str(session.ratingKey) == str(movie.ratingKey):
-                    if (session.viewOffset or 0) > 5000:
-                        log.info("%s resumed %s at %sms; seeking to the start",
-                                 client.title, movie.title, session.viewOffset)
-                        client.seekTo(0)
-                    return
-            except Exception as e:  # never let this stop a movie that's already playing
-                log.debug("Couldn't check where %s started: %s", movie.title, e)
-                return
-            time.sleep(1)
-        log.debug("%s didn't report %s playing; not rewinding", client.title, movie.title)
-
     def tv_off(self) -> None:
         if not (self.ha and self.config.ha_off_script):
             raise PlexNFCError("No HA_OFF_SCRIPT configured")
@@ -721,118 +424,25 @@ class Plex:
         except HomeAssistantError as e:
             raise PlexNFCError(str(e)) from None
 
+    # ---- controls and now playing (for the Movie Remote and phones) -------------
+
     def control(self, action: str, client_name: str | None = None):
-        if name := self._app_player(client_name):
-            self.app_inbox.send(name, {"pause": "pause", "play": "resume", "stop": "stop"}[action])
-            return SimpleNamespace(title=name)
-        if name := self._jellyfin_player(client_name):
-            command = {"pause": "Pause", "play": "Unpause", "stop": "Stop"}[action]
-            return self._jellyfin_command(name, "command", command)
-        if entity := self._ha_entity(client_name):
-            service = {"pause": "media_pause", "play": "media_play", "stop": "media_stop"}[action]
-            try:
-                self.ha.call_service("media_player", service, {"entity_id": entity})
-            except HomeAssistantError as e:
-                raise PlexNFCError(str(e)) from None
-            return SimpleNamespace(title=entity)
-        client = self.get_client(client_name)
-        getattr(client, action)()
-        return client
-
-    # ---- now playing (for the ESP32 remote) -----------------------------------
-
-    def current_session(self, client_name: str | None = None):
-        """The movie currently playing on our player, from the Plex server's sessions."""
-        name = client_name if client_name and not client_name.startswith("media_player.") else self.config.client
-        for session in self.server.sessions():
-            if getattr(session, "type", None) not in ("movie", "episode"):
-                continue
-            player = getattr(session, "player", None)
-            if not name or (player is not None and player.title == name):
-                return session
-        return None
-
-    def _session_key(self, session) -> str:
-        """The tag key for a playing movie.
-
-        Session items come without their TMDB/IMDb IDs, so movie_key() would give
-        ``rk-...`` rather than the key on the tag. Look the full item up once per
-        movie (the Movie Remote asks every couple of seconds).
-        """
-        if session.type != "movie":
-            return f"rk-{session.ratingKey}"
-        key = movie_key(session)
-        if not key.startswith("rk-"):
-            return key
-        rating_key = int(session.ratingKey)
-        if rating_key not in self._session_keys:
-            try:
-                self._session_keys[rating_key] = movie_key(self.server.fetchItem(rating_key))
-            except Exception as e:
-                log.debug("Couldn't look up %s: %s", rating_key, e)
-                return key
-        return self._session_keys[rating_key]
+        name = self._player(client_name)
+        self.app_inbox.send(name, {"pause": "pause", "play": "resume", "stop": "stop"}[action])
+        return SimpleNamespace(title=name)
 
     def now_playing(self, client_name: str | None = None) -> dict:
-        if name := self._app_player(client_name):
-            return self._app_now(name)
-        if name := self._jellyfin_player(client_name):
-            return self._jellyfin_now(name)
-        session = self.current_session(client_name)
-        if session is None:
-            return {"state": "idle"}
-        player = session.player
-        key = self.library.canonical(self._session_key(session))
-        return {
-            "state": player.state,  # playing / paused / buffering
-            "source": "Plex",
-            "title": session.title,
-            "year": session.year,
-            "key": key,
-            "poster": f"/poster/{key}",
-            "player": player.title,
-            "position": int((session.viewOffset or 0) / 1000),
-            "duration": int((session.duration or 0) / 1000),
-        }
+        name = self._app_player(client_name)
+        return self._app_now(name) if name else {"state": "idle"}
 
     def toggle(self, client_name: str | None = None):
-        if self._app_player(client_name):
-            playing = self.now_playing(client_name)["state"] == "playing"
-            return self.control("pause" if playing else "play", client_name)
-        if self._jellyfin_player(client_name):
-            playing = self.now_playing(client_name)["state"] == "playing"
-            return self.control("pause" if playing else "play", client_name)
-        session = self.current_session(client_name)
-        playing = session is not None and session.player.state == "playing"
+        playing = self.now_playing(client_name)["state"] == "playing"
         return self.control("pause" if playing else "play", client_name)
 
     def seek(self, by_seconds: int, client_name: str | None = None):
-        if name := self._app_player(client_name):
-            self.app_inbox.send(name, "seek", by=by_seconds)
-            return SimpleNamespace(title=name)
-        if name := self._jellyfin_player(client_name):
-            now = self._jellyfin_now(name)
-            if now["state"] == "idle":
-                raise PlexNFCError("Nothing is playing")
-            target = max(0, now["position"] + by_seconds)
-            if now["duration"]:
-                target = min(target, now["duration"] - 5)
-            return self._jellyfin_command(name, "seek", target)
-        session = self.current_session(client_name)
-        if session is None:
-            raise PlexNFCError("Nothing is playing")
-        target = max(0, int((session.viewOffset or 0) / 1000) + by_seconds)
-        if session.duration:
-            target = min(target, int(session.duration / 1000) - 5)
-        if entity := self._ha_entity(client_name):
-            try:
-                self.ha.call_service("media_player", "media_seek", {"entity_id": entity, "seek_position": target})
-            except HomeAssistantError as e:
-                raise PlexNFCError(str(e)) from None
-            return SimpleNamespace(title=entity)
-        client = self.get_client(client_name)
-        client.seekTo(target * 1000)
-        return client
+        name = self._player(client_name)
+        self.app_inbox.send(name, "seek", by=by_seconds)
+        return SimpleNamespace(title=name)
 
     def poster_url(self, movie, width: int = 600, height: int = 900) -> str:
         return self.server.transcodeImage(movie.thumb, height=height, width=width)

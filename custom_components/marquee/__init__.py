@@ -1,6 +1,6 @@
 """Marquee: movies playing in the Marquee app, as media players with triggers.
 
-Pairs with Marquee Server (or the plexnfc Home Assistant app) the way Marquee
+Pairs with Marquee Server the way Marquee
 does: you approve a code in the server's control panel. Each Marquee player
 (an Apple TV, iPhone or iPad) becomes a media player, and the "started",
 "paused", "resumed" and "stopped" triggers let automations follow the movie.

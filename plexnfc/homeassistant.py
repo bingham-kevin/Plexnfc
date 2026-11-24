@@ -1,7 +1,6 @@
 """Run Home Assistant scripts, e.g. to turn the TV on before a movie starts."""
 from __future__ import annotations
 
-import json
 import logging
 
 import requests
@@ -59,19 +58,3 @@ class HomeAssistant:
         name = entity_id.removeprefix("script.")
         log.info("Running Home Assistant script.%s", name)
         self.call_service("script", name, timeout=timeout)
-
-    def play_plex(self, entity_id: str, rating_key: int, resume: bool) -> None:
-        """Start a Plex item on a Plex media_player entity via HA's Plex integration."""
-        # Home Assistant skips actions on an unavailable entity with only a log
-        # warning, so check first rather than report a movie that never started.
-        state = self.state(entity_id)
-        if state is None:
-            raise HomeAssistantError(f"Home Assistant has no entity {entity_id}")
-        if state in ("unavailable", "unknown"):
-            raise HomeAssistantError(f"{entity_id} is {state}, so the Plex app isn't ready for playback")
-        payload = json.dumps({"plex_key": int(rating_key), "resume": resume})
-        self.call_service("media_player", "play_media", {
-            "entity_id": entity_id,
-            "media_content_type": "movie",
-            "media_content_id": f"plex://{payload}",
-        })

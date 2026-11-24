@@ -2,8 +2,7 @@
 
 The service is ``_moviebook._tcp`` on this machine's address from PUBLIC_BASE_URL,
 and its TXT record carries that URL. Bonjour only reaches the home network when
-plexnfc is on the host's network (``host_network`` for the Home Assistant app,
-``network_mode: host`` with Docker); otherwise the apps still connect by address.
+the server is on the host's network (``network_mode: host`` with Docker); otherwise the apps still connect by address.
 
 When PUBLIC_BASE_URL names a ``.local`` host, such as ``http://marquee.local:8080``,
 plexnfc answers for that name itself, with whatever address this machine has

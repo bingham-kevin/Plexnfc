@@ -6,7 +6,7 @@ Choose which TV the movie book plays on when you tap it with this phone. Each pa
 
 1. Choose the Movie Book server from **On this network** (plexnfc announces itself with Bonjour as `_moviebook._tcp`), or enter its address.
 2. The app shows a 6-digit code. In Home Assistant's **Movie Book** panel, name the phone and approve the code.
-3. Pick a player: a Marquee Apple TV, an open Jellyfin app, or a Plex player. **Default** follows the server's setting.
+3. Pick a player: a Marquee Apple TV. **Default** follows the server's setting.
 
 A tapped tag opens in Safari, not in the app, so plexnfc recognizes the phone by the Wi-Fi address the app last used (`/phone/players`, `/phone/player`). Open Marquee Remote after joining the home Wi-Fi, and set the network's **Private Wi-Fi Address** to **Fixed** on the phone, so the address stays the same.
 

@@ -78,7 +78,7 @@ struct DevicesView: View {
             }
         }
         .task {
-            // Asks Plex and Jellyfin, so it's slower: only for choosing a Movie Remote's player
+            // Only for choosing a Movie Remote's player: the paired Marquee Apple TVs
             if overview.devices.contains(where: { $0.kind == .remote }),
                let found: Players = try? await model.api.get("players") {
                 players = found.players
@@ -155,7 +155,7 @@ private struct DeviceRow: View {
             Picker("Player", selection: Binding(get: { current }, set: { choose($0) })) {
                 Text("The default player").tag("")
                 if !current.isEmpty, !players.contains(where: { $0.id == current }) { Text(current).tag(current) }
-                ForEach(players) { Text("\($0.name) (\($0.kind))").tag($0.id) }
+                ForEach(players) { Text($0.name).tag($0.id) }
             }
             .labelsHidden()
             .frame(maxWidth: 240)

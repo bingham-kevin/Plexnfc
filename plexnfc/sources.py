@@ -733,10 +733,6 @@ class Library:
             self._save()
         self.changed()
 
-    def jellyfin_client(self) -> Jellyfin | None:
-        """The first Jellyfin source's server, for Jellyfin players when JELLYFIN_URL isn't set."""
-        return next((s.client for s in self.ordered() if isinstance(s, JellyfinSource)), None)
-
     # ---- matching folder movies with TMDB, and editing them ----
 
     def set_tmdb_key(self, key: str) -> None:
