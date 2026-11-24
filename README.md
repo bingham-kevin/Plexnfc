@@ -87,7 +87,7 @@ With a [Movie Remote](esphome/README.md), nothing has to be written on the cards
 
 To link one card, use **Link card** next to the movie under **Movies › Tags**. If the Movie Remote reads a card that isn't linked, the **Cards** page offers to link it. While a scan is going, cards held on a Movie Remote are linked instead of played.
 
-A card can play music or an audiobook instead. **Music › Cards** and **Books › Cards** scan cards for albums, playlists and audiobooks the same way, to play on a chosen speaker; a book card picks up where you left off ([music](docs/music.md#music-cards), [books](docs/books.md#book-cards)). **Music › Book** and **Books › Book** print matching books of covers.
+A card can play music or an audiobook instead. **Music › Cards** and **Books › Cards** scan cards for albums, playlists and audiobooks the same way. A card plays on the speakers of the reader it's held to, and a book card picks up where you left off ([music](docs/music.md#music-cards), [books](docs/books.md#book-cards)). **Music › Book** and **Books › Book** print matching books of covers.
 
 Phones can't read these cards on their own, since there's no address on them. For phones, write the tag URLs as above; a written tag works on the Movie Remote too.
 

@@ -185,7 +185,6 @@ function ScanView({ scan, canManage }: { scan: Scan; canManage: boolean }) {
             <p className="muted">Hold this {!scan.current.music ? "movie" : scan.current.music.id?.startsWith("abs|") ? "book"
               : "music"}'s card on a Movie Remote or an NFC reader in Home Assistant</p>
             <h3 className="scan-title">{scan.current.title}</h3>
-            {scan.current.music && <p className="muted">Plays on {scan.current.speaker_name}</p>}
             {scan.next && <p className="muted">Next: {scan.next.title}</p>}
             {scan.last && (
               <p key={scan.last.at} className={`scan-last ${recent ? "fresh" : ""}`}>
@@ -253,7 +252,7 @@ function UnknownCard({ uid, section }: { uid: string; section: Section }) {
       {kind !== "movie" ? (
         <p className="muted">Find the {kind === "music" ? "music" : "book"} under{" "}
           <a href={kind === "music" ? "#music/library" : "#books/library"}>{kind === "music" ? "Music" : "Books"} ›
-          Library</a>, choose one speaker, and use <b>Link card {uid}</b>.</p>
+          Library</a>, open it, and use <b>Link card {uid}</b>.</p>
       ) : (
         <>
       <input type="search" placeholder="Search titles" value={search} autoFocus
@@ -302,7 +301,7 @@ function LinkedCards({ state, canManage, section }: { state: CardsState; canMana
                     </td>
                     <td>
                       <b>{c.title}</b>
-                      {c.music && <div className="muted">{section === "books" ? "📖" : "♪"} {c.music.media_type} on {c.speaker_name}</div>}
+                      {c.music && <div className="muted">{section === "books" ? "📖" : "♪"} {c.music.media_type}{c.speaker_name ? ` on ${c.speaker_name}` : ""}</div>}
                     </td>
                     <td><code>{c.uid}</code></td>
                     <td className="row end">

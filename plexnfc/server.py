@@ -396,10 +396,23 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         return reader, settings
 
     def card_speakers(card: dict, reader: dict | None) -> list[str]:
-        """Where a music card plays: the reader's speakers, if it has any; else the card's own."""
+        """Where a music or book card plays: the speakers of the reader it's held to. Raises
+        MusicError if it has none."""
         if reader and reader["speakers"]:
             return list(reader["speakers"])
-        return [card["speaker"]]
+        if reader:
+            raise MusicError(f"{reader['name']} has no speakers yet. Choose its default output in Marquee, "
+                             "under Devices › Readers.")
+        raise MusicError("Hold the card to a reader to play it")
+
+    def house_speakers() -> list[str]:
+        """For a card started from its QR code (no reader): a paired Home Assistant's speakers,
+        else the first reader's that has some."""
+        with_speakers = [r for r in all_readers() if r["speakers"]]
+        for reader in sorted(with_speakers, key=lambda r: r["kind"] != "assistant"):
+            return list(reader["speakers"])
+        raise MusicError("Hold the card to a reader to play it. Choose the readers' speakers in Marquee, "
+                         "under Devices › Readers.")
 
     def play_in_background(key, client, resume):
         try:
@@ -630,9 +643,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         card = plex.cards.card(uid)
         if card and "music" in card:
             item = card["music"]
-            speaker = music.speaker_name(card["speaker"]) or card.get("speaker_name") or card["speaker"]
-            reply = dict(ok=True, result="music", title=music_title(item),
-                         message=f"Playing {music_title(item)} on {speaker}")
+            reply = dict(ok=True, result="music", title=music_title(item), message=f"Playing {music_title(item)}")
             if "id" in item:  # linked on the Music tab: Marquee plays it
                 try:
                     reply["message"] = play_card_music(card, speakers=card_speakers(card, settings)).replace("\n", " ")
@@ -641,6 +652,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                     return answer(ok=False, result="error", title=music_title(item),
                                   message=f"Couldn't play {music_title(item)}: {e}")
                 return answer(**reply)
+            speaker = music.speaker_name(card["speaker"]) or card.get("speaker_name") or card["speaker"]
+            reply["message"] += f" on {speaker}"
             if music.plays_here():  # connected to Music Assistant directly: play it from here
                 try:
                     music.play(item, card["speaker"])
@@ -1162,7 +1175,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         for card in plex.cards.all():
             item = card.get("music") or {}
             if item.get("id") and item["id"] not in out:
-                out[item["id"]] = {"uid": card["uid"], "speaker_name": card.get("speaker_name")}
+                out[item["id"]] = {"uid": card["uid"]}
         return out
 
     @app.get("/book/<any(music, books):kind>")
@@ -1218,7 +1231,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         if "id" not in card["music"]:
             return page("Can't play", '<h1 class="err">Link this card again on the Music page</h1>', 400)
         try:
-            message = play_card_music(card)
+            message = play_card_music(card, house_speakers())
         except MusicError as e:
             return page("Can't play", f'<h1 class="err">Can\'t play that</h1><p>{escape(str(e))}</p>', 502)
         title, _, where = message.partition("\n")
@@ -1628,20 +1641,15 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         return jsonify(ok=True, **cards_state())
 
     def checked_music(body: dict) -> dict:
-        """``{"music", "speaker"}`` from the panel, checked, with the speaker's name. The music
-        is an item from the Music tab (any source, any kind of speaker: ``ma:``, ``airplay:``,
-        ``cast:``), or, as before, a Music Assistant item for a Music Assistant player."""
+        """``{"music"}`` from the panel, checked. The music (or book) is an item from the Music
+        or Books tab; it plays on the speakers of the reader the card is held to. As before, a
+        Music Assistant item for a Music Assistant player also needs its ``speaker``."""
         raw = body.get("music")
-        speaker = str(body.get("speaker") or "").strip()
-        if not speaker or len(speaker) > 200:
-            raise ValueError("Choose a speaker")
         if isinstance(raw, dict) and raw.get("id"):
             try:
                 source, kind, ref = split_id(str(raw["id"]))
             except MusicSourceError as e:
                 raise ValueError(str(e)) from None
-            if speaker.split(":", 1)[0] not in ("ma", "airplay", "cast"):
-                raise ValueError("Choose a speaker")
             item = {"id": str(raw["id"]), "kind": kind, "media_type": kind, "name": str(raw.get("name") or "")[:200],
                     "artist": str(raw.get("artist") or "")[:200],
                     "image": raw["image"] if isinstance(raw.get("image"), str) and len(raw["image"]) < 2000 else None}
@@ -1649,17 +1657,18 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                 raise ValueError("Choose some music")
             if source == "ma":
                 item["uri"] = ref
-            return {"music": item, "speaker": speaker, "speaker_name": player.speaker_name(speaker)}
+            return {"music": item}
+        speaker = str(body.get("speaker") or "").strip()
+        if not speaker or len(speaker) > 200:
+            raise ValueError("Choose a speaker")
         item = music_item(raw)
         return {"music": item, "speaker": speaker, "speaker_name": music.speaker_name(speaker) or speaker}
 
-    def play_card_music(card: dict, wait: float = 4, speakers: list[str] | None = None) -> str:
-        """Start a music card from the Music tab, on its own speaker or on ``speakers`` (a
-        reader's): the box's message. Raises MusicError."""
+    def play_card_music(card: dict, speakers: list[str], wait: float = 4) -> str:
+        """Start a music or book card from the Music or Books tab on ``speakers`` (a reader's):
+        the box's message. Raises MusicError."""
         item = card["music"]
-        speakers = speakers or [card["speaker"]]
-        name = (card.get("speaker_name") or player.speaker_name(card["speaker"])) if speakers == [card["speaker"]] \
-            else " + ".join(player.speaker_name(s) for s in speakers)
+        name = " + ".join(player.speaker_name(s) or s for s in speakers)
         done = threading.Event()
         failed: list = []
 
@@ -1843,12 +1852,12 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     @panel_route("/cards/link", methods=["POST"])
     def panel_card_link():
         """Link one card (by its ID, such as the last unknown card read) to a movie, or to
-        music (``music`` and ``speaker``)."""
+        music or a book (``music``)."""
         body = panel_body()
         if "music" in body:
             try:
                 m = checked_music(body)
-                plex.cards.link_music(str(body.get("uid", "")), m["music"], m["speaker"], m["speaker_name"])
+                plex.cards.link_music(str(body.get("uid", "")), m["music"], m.get("speaker"), m.get("speaker_name"))
             except ValueError as e:
                 return jsonify(ok=False, message=str(e)), 400
             return jsonify(ok=True, **cards_state())

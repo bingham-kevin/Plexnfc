@@ -68,15 +68,15 @@ Marquee tries these sources in order:
 **Music › Cards** links a whole shelf of albums at once, the way **Movies › Cards** does for movies:
 
 1. Choose a source, then **Albums**, **Playlists** or **An artist's albums**. Everything in the list is picked; untick what you don't want.
-2. Choose the speaker the cards play on, and leave **Skip albums that already have a card** on to fill in only the missing ones.
+2. Leave **Skip albums that already have a card** on to fill in only the missing ones.
 3. Click **Scan cards**. Each album comes up in turn; hold a blank card on a Movie Remote (or an NFC reader in Home Assistant) and it moves on to the next. **Skip** and **Back** move through the list.
 
-To link one card from **Music › Library**, open any album, artist, playlist or track with **one** speaker chosen:
+To link one card from **Music › Library**, open any album, artist, playlist or track:
 
 - **Link next card**, then hold a blank card on a reader.
 - **Link card XX-XX-XX-XX** links the card a reader has just read, if it isn't linked to anything.
 
-Tapping the card later plays that music on that speaker, replacing what's playing there. **Music › Cards** lists the music cards; movie cards stay under **Movies › Cards**. Cards linked to Music Assistant music before the Music section existed keep working.
+A card has no speaker of its own. Tapping it plays the music on the speakers of the reader it's held to, replacing what's playing there. Each reader's speakers are its **default output** under **Devices › Readers**, or what was last chosen on the reader. A reader with no speakers yet says so. The QR code in a printed book plays on Home Assistant's speakers, or else on the first reader that has some. **Music › Cards** lists the music cards; movie cards stay under **Movies › Cards**. Cards linked to Music Assistant music before the Music section existed keep working, on their own speaker.
 
 ## A printable book of albums
 

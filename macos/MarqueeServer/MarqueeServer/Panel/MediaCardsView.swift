@@ -1,16 +1,14 @@
 import SwiftUI
 
-/// Choose albums (or playlists) or audiobooks and the speaker they play on, then scan a card
-/// for each in turn. The movie scan's counterpart for Music and Books.
+/// Choose albums (or playlists) or audiobooks, then scan a card for each in turn. A card plays
+/// on the speakers of the reader it's held to. The movie scan's counterpart for Music and Books.
 struct MediaScanSetupView: View {
     let model: PanelModel
     let books: Bool
     let canManage: Bool
     let cards: [Card]
     let update: (CardsState) -> Void
-    @AppStorage("musicSpeakers") private var speakersJSON = "[]"
     @State private var sources: [MusicSourcesState.Source] = []
-    @State private var speakers: [MusicSpeaker] = []
     @State private var source = ""
     @State private var mode = ""
     @State private var parents: [LibItem] = []
@@ -18,7 +16,6 @@ struct MediaScanSetupView: View {
     @State private var items: [LibItem] = []
     @State private var picked: Set<String> = []
     @State private var search = ""
-    @State private var speaker = ""
     @State private var skipLinked = true
     @State private var loading = false
     @State private var error: String?
@@ -40,8 +37,9 @@ struct MediaScanSetupView: View {
 
     var body: some View {
         PanelSection("Scan cards", subtitle: "Link blank NFC cards to \(books ? "audiobooks" : "albums or playlists") without "
-                     + "writing anything on them. Choose them and the speaker they play on, start the scan, then hold each "
-                     + "\(thing)'s card on a Movie Remote when it comes up here."
+                     + "writing anything on them. Choose them, start the scan, then hold each \(thing)'s card on a reader "
+                     + "when it comes up here. A card plays on the speakers of the reader it's held to (its default "
+                     + "output, under Devices › Readers)."
                      + (books ? " A book card picks up where you left off." : "")) {
             HStack {
                 if !books {
@@ -96,18 +94,12 @@ struct MediaScanSetupView: View {
                 .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
             }
             HStack {
-                Picker("Plays on", selection: $speaker) {
-                    Text("Choose the speaker they play on").tag("")
-                    ForEach(speakers.filter { $0.syncedTo == nil }) { Text($0.name + ($0.group ? " (group)" : "")).tag($0.id) }
-                }
-                .frame(maxWidth: 360)
                 Toggle("Skip \(thing)s that already have a card", isOn: $skipLinked).toggleStyle(.checkbox)
             }
             HStack {
                 Button(queue.isEmpty ? "Scan Cards" : "Scan \(queue.count) Card\(queue.count == 1 ? "" : "s")", action: start)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!canManage || queue.isEmpty || speaker.isEmpty || busy)
-                    .help(speaker.isEmpty ? "Choose a speaker first" : "")
+                    .disabled(!canManage || queue.isEmpty || busy)
                 let already = items.filter { picked.contains($0.id) && hasCard.contains($0.id) }.count
                 if skipLinked && already > 0 { Text("\(already) already have a card").foregroundStyle(.secondary) }
             }
@@ -119,9 +111,6 @@ struct MediaScanSetupView: View {
                     .filter { $0.searchOnly != true }
                 if source.isEmpty { source = sources.first?.id ?? "" }
             }
-            speakers = (try? await model.api.get("music/speakers", as: Speakers.self).speakers) ?? []
-            let chosen = (try? JSONDecoder().decode([String].self, from: Data(speakersJSON.utf8))) ?? []
-            if speaker.isEmpty, let first = chosen.first { speaker = first }
         }
         .task(id: "\(from)|\(mode)") {
             parent = ""
@@ -150,7 +139,7 @@ struct MediaScanSetupView: View {
 
     private func start() {
         busy = true
-        let movies = queue.map { ["music": $0.cardBody, "speaker": speaker] as [String: Any] }
+        let movies = queue.map { ["music": $0.cardBody] as [String: Any] }
         Task {
             await cardAction(model, "cards/scan", ["movies": movies], update: update)
             busy = false

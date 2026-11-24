@@ -54,7 +54,7 @@ def meta_line(item: dict, kind: str) -> str:
 def render(items: list[dict], kind: str = "music", layout: str = "full", title: str = "", qr: bool = True,
            page_size: str = "letter", art_src=None, cards: dict | None = None, base_url: str = "") -> str:
     """The book as one HTML page. ``art_src(item)`` is each cover's <img> src (or None);
-    ``cards`` maps an item ID to its card ``{"uid", "speaker_name"}``, for the QR code
+    ``cards`` maps an item ID to its card ``{"uid"}``, for the QR code
     and the speaker line."""
     words = WORDS[kind]
     spec = LAYOUTS[layout]
@@ -83,8 +83,6 @@ def render(items: list[dict], kind: str = "music", layout: str = "full", title: 
             f'<h3 class="title">{escape(item["name"])}</h3>'
             + (f'<div class="meta caps">{escape(meta)}</div>' if meta else "")
             + (f'<div class="speaker">{escape(series)}</div>' if series else "")
-            + (f'<div class="speaker">Plays on {escape(card["speaker_name"])}</div>'
-               if card and card.get("speaker_name") else "")
             + (f'<div class="summary">{escape(summary)}</div>' if summary else "")
             + f'</div><div class="marks">{marks}</div></div></div>'
         )

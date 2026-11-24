@@ -251,9 +251,6 @@ private struct ScanProgressView: View {
                              + "Movie Remote or an NFC reader in Home Assistant")
                             .foregroundStyle(.secondary)
                         Text(current.title).font(.largeTitle.weight(.semibold))
-                        if current.music != nil, let speaker = current.speakerName {
-                            Text("Plays on \(speaker)").foregroundStyle(.secondary)
-                        }
                         if let next = scan.next { Text("Next: \(next.title)").foregroundStyle(.secondary) }
                         lastCard
                         HStack {
@@ -327,7 +324,7 @@ private struct UnknownCardView: View {
             }
             .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 320)
             if kind != .movies {
-                Text("Find the \(kind == .music ? "music" : "book") under **\(kind.label) › Library**, choose one speaker, "
+                Text("Find the \(kind == .music ? "music" : "book") under **\(kind.label) › Library**, open it, "
                      + "and use **Link Card \(uid)**.")
                     .foregroundStyle(.secondary)
             } else {
@@ -380,7 +377,7 @@ private struct LinkedCardsView: View {
                                 MusicArtwork(url: model.musicArt(music.image), size: 39, symbol: music.isBook ? "book.closed" : "music.note")
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(card.title).bold()
-                                    Text("\(music.mediaType ?? "") on \(card.speakerName ?? "")")
+                                    Text((music.mediaType ?? "") + (card.speakerName.map { " on \($0)" } ?? ""))
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                             } else {

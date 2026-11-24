@@ -1628,6 +1628,13 @@ def test_music_from_any_source_plays_on_music_assistant_speakers(music_app):
         assert bad.status_code == 400 and "Google Home" in bad.json["message"]
 
 
+def give_reader_speakers(app, kind, speakers):
+    """Set the default output of the (first) reader of this kind."""
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    reader = next(r for r in app.get("/panel/api/readers").json["readers"] if r["kind"] == kind)
+    app.post(f"/panel/api/readers/{reader['id']}", json={"default": speakers}, **panel)
+
+
 def test_music_cards_from_the_music_tab(music_app):
     app, root = music_app
     panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
@@ -1636,25 +1643,28 @@ def test_music_cards_from_the_music_tab(music_app):
     player.airplay, player.cast = FakeAirPlay(), FakeCast()
     album = app.get(f"/panel/api/music/browse?source={sid}&kind=album&q=pastel").json["items"][0]
 
-    # a scan links the next card to the album on the Cast speaker
-    started = app.post("/panel/api/cards/scan", json={"movies": [{"music": album, "speaker": "cast:kitchen"}]}, **panel)
+    # a scan links the next card to the album, with no speaker of its own
+    started = app.post("/panel/api/cards/scan", json={"movies": [{"music": album}]}, **panel)
     assert started.status_code == 200, started.json
     box_headers = paired_box(app.plex, app)
     linked = app.post("/remote/tap", json={"uid": "04-AA-BB-CC"}, headers=box_headers).json
     assert linked["result"] == "linked" and "Pastel Blues - Nina Simone" in linked["message"]
     app.post("/panel/api/cards/scan/stop", **panel)
     card = app.get("/panel/api/cards").json["cards"][0]
-    assert (card["speaker"], card["speaker_name"], card["music"]["id"]) == ("cast:kitchen", "Kitchen speaker", album["id"])
+    assert card["music"]["id"] == album["id"] and "speaker" not in card
 
-    # tapping it plays the album there
+    # a reader without speakers says to choose them
+    tapped = app.post("/remote/tap", json={"uid": "04-AA-BB-CC"}, headers=box_headers)
+    assert tapped.status_code == 502 and "choose its default output" in tapped.json["message"].lower()
+    # tapping it plays the album on the reader's speakers
+    give_reader_speakers(app, "remote", ["cast:kitchen"])
     tapped = app.post("/remote/tap", json={"uid": "04-AA-BB-CC"}, headers=box_headers).json
     assert tapped["result"] == "music" and tapped["message"].endswith("on Kitchen speaker")
     assert wait_for(lambda: player.cast.played)
     assert player.cast.played[0][3] == "Be My Husband"
-    # a speaker that isn't one is refused
-    bad = app.post("/panel/api/cards/link", json={"uid": "04-11-22-33", "music": album, "speaker": "media_player.x"},
-                   **panel)
-    assert bad.status_code == 400
+    # a speaker sent along (by an older panel) isn't kept
+    app.post("/panel/api/cards/link", json={"uid": "04-11-22-33", "music": album, "speaker": "cast:den"}, **panel)
+    assert "speaker" not in next(c for c in app.get("/panel/api/cards").json["cards"] if c["uid"] == "04-11-22-33")
 
 
 def test_jellyfin_music_source():
@@ -1999,9 +2009,10 @@ def test_book_cards_scan_tap_and_print(music_app):
     app, player, fake = books_app(music_app)
     panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
     book = app.get("/panel/api/music/browse?source=abs&kind=book", **panel).json["items"][0]
-    started = app.post("/panel/api/cards/scan", json={"movies": [{"music": book, "speaker": "cast:kitchen"}]}, **panel)
+    started = app.post("/panel/api/cards/scan", json={"movies": [{"music": book}]}, **panel)
     assert started.json["scan"]["current"]["title"] == "Book One - Ada Author"
     box = paired_box(app.plex, app)
+    give_reader_speakers(app, "remote", ["cast:kitchen"])
     linked = app.post("/remote/tap", json={"uid": "04-B0-0C-01"}, headers=box).json
     assert linked["result"] == "linked"
     app.post("/panel/api/cards/scan/stop", **panel)
@@ -2012,15 +2023,15 @@ def test_book_cards_scan_tap_and_print(music_app):
     assert wait_for(lambda: player.cast.played) and player.cast.seeks[0] == pytest.approx(10.5)
     player.control(player.sessions[0].id, "stop")
 
-    # the printed book: a page per book, the card's QR code and speaker on its page
+    # the printed book: a page per book, the card's QR code on its page
     page = app.get("/book/books?layout=grid&qr=1").get_data(as_text=True)
     assert "Book One" in page and "Lonely Book" in page and "2 books" in page
-    assert "Plays on Kitchen speaker" in page and page.count('class="qr"') == 1
+    assert "Plays on" not in page and page.count('class="qr"') == 1
     assert "Story Time" in page and "read by Sam Reader" in page
     only = app.get("/book/books?cards=1").get_data(as_text=True)
     assert "Book One" in only and "Lonely Book" not in only
     assert "Lonely Book" not in app.get("/book/books?what=series:s1").get_data(as_text=True)
-    # the QR code's address plays the card
+    # the QR code's address plays the card, on a reader's speakers
     player.cast.played.clear()
     played = app.get("/c/04-B0-0C-01")
     assert played.status_code == 200 and "Book One" in played.get_data(as_text=True)
@@ -2154,10 +2165,10 @@ def test_home_assistant_readers_play_there_and_open_their_tessera_page(music_app
                                             "speaker": "cast:kitchen"}, **panel)
     ha = pair_home_assistant(plex, app)
 
-    # an unknown reader plays on the card's speaker, and becomes known
+    # an unknown reader becomes known; with no speakers yet (its own or Home Assistant's) it says so
     tapped = app.post("/ha/tap", json={"uid": "04aabbcc", "reader": "Office_Test", "reader_id": "dev1"}, headers=ha).json
-    assert tapped["result"] == "music" and tapped["reader"] == {"id": "ha:dev1", "page": None}
-    assert wait_for(lambda: player.cast.played)
+    assert tapped["result"] == "error" and tapped["reader"] == {"id": "ha:dev1", "page": None}
+    assert "Devices › Readers" in tapped["message"] and not player.cast.played
     hub, reader = app.get("/panel/api/readers").json["readers"]
     assert (reader["id"], reader["kind"], reader["name"]) == ("ha:dev1", "homeassistant", "Office_Test")
     assert hub["kind"] == "assistant" and hub["id"].startswith("home:")  # the paired Home Assistant itself

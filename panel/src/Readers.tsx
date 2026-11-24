@@ -12,8 +12,8 @@ export function Readers({ overview }: { overview: Overview }) {
   return (
     <section className="card">
       <h2>Readers</h2>
-      <p className="muted">Each NFC reader plays music and book cards on its own speakers, whatever speaker the card
-        was linked with, so a card plays in the room where it's held. Choose its <b>default output</b> here. On the
+      <p className="muted">Each NFC reader plays music and book cards on its own speakers, so a card plays in the
+        room where it's held. Choose its <b>default output</b> here. On the
         reader (a Movie Remote's speaker screen, or the controls Home Assistant gives a Tessera screen) the speakers
         can be changed, and are remembered until <b>Restore default</b>, or <b>Make default</b> keeps them.</p>
       {readers.isError && <p className="err">{readers.error.message}</p>}
@@ -61,7 +61,7 @@ function ReaderCard({ reader, state, canManage }: { reader: Reader; state: Reade
           <div className="muted small">
             {reader.now ? `${reader.now.state === "paused" ? "Paused" : "Playing"}: ${reader.now.title} · ` : ""}
             {reader.kind === "assistant" && "Every NFC reader in this Home Assistant (phones with its app too) uses these until it has settings of its own. "}
-            Plays on {reader.speaker_names.join(" + ") || (reader.kind === "homeassistant" ? "its Home Assistant's speakers" : "each card's own speaker")}
+            Plays on {reader.speaker_names.join(" + ") || (reader.kind === "homeassistant" ? "its Home Assistant's speakers" : "no speakers yet: choose them below")}
             {!reader.is_default && reader.default.length > 0 && " (chosen on the reader)"}
           </div>
         </div>

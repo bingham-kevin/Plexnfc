@@ -198,18 +198,19 @@ private struct BookDetailView: View {
                         }
                         if canManage {
                             HStack {
-                                Button(started ? "Resume at \(longClock(progress?.position))" : "Play") { play(nil) }
-                                    .buttonStyle(.borderedProminent)
-                                if started { Button("From the Start") { play(0) } }
+                                Group {
+                                    Button(started ? "Resume at \(longClock(progress?.position))" : "Play") { play(nil) }
+                                        .buttonStyle(.borderedProminent)
+                                    if started { Button("From the Start") { play(0) } }
+                                }
+                                .disabled(selected.isEmpty)
                                 if let unknown {
-                                    Button("Link Card \(unknown)") { link(book, uid: unknown) }.disabled(selected.count != 1)
+                                    Button("Link Card \(unknown)") { link(book, uid: unknown) }
                                 }
                                 Button("Link Next Card") { link(book, uid: nil) }
-                                    .disabled(selected.count != 1)
-                                    .help(selected.count == 1 ? "Then hold a blank card on a Movie Remote or a reader in Home Assistant"
-                                          : "Choose one speaker for the card")
+                                    .help("Then hold a blank card on a reader. It plays on that reader's speakers.")
                             }
-                            .disabled(selected.isEmpty || busy)
+                            .disabled(busy)
                         }
                         if let description = book.description {
                             Text(description).font(.callout).foregroundStyle(.secondary).lineLimit(4).frame(maxWidth: 520, alignment: .leading)
@@ -259,13 +260,12 @@ private struct BookDetailView: View {
     }
 
     private func link(_ book: LibItem, uid: String?) {
-        guard let speaker = selected.first else { return }
         busy = true
         Task {
             do {
                 let state: CardsState = uid != nil
-                    ? try await model.api.post("cards/link", ["uid": uid!, "music": book.cardBody, "speaker": speaker])
-                    : try await model.api.post("cards/scan", ["movies": [["music": book.cardBody, "speaker": speaker]]])
+                    ? try await model.api.post("cards/link", ["uid": uid!, "music": book.cardBody])
+                    : try await model.api.post("cards/scan", ["movies": [["music": book.cardBody]]])
                 cardsChanged(state)
                 model.say(uid.map { "Card \($0) linked" } ?? "Hold a blank card on a reader")
             } catch {

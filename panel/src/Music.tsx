@@ -399,7 +399,7 @@ function ItemView({ id, selected, canManage, unknown, onOpen, onBack }:
                   Play next</button>
                 <button disabled={noSpeaker || play.isPending} onClick={() => play.mutate({ ids: [item.id], option: "add" })}>
                   Add to queue</button>
-                <LinkCard item={item} selected={selected} unknown={unknown} />
+                <LinkCard item={item} unknown={unknown} />
               </div>
             )}
           </div>
@@ -436,30 +436,29 @@ function ItemView({ id, selected, canManage, unknown, onOpen, onBack }:
   );
 }
 
-/** Link a card to this item on the chosen speaker: the card just read, or the next one. */
-export function LinkCard({ item, selected, unknown }: { item: LibItem; selected: string[]; unknown: string | null }) {
+/** Link a card to this item: the card just read, or the next one. It plays on the speakers of the
+ * reader it's held to. */
+export function LinkCard({ item, unknown }: { item: LibItem; unknown: string | null }) {
   const client = useQueryClient();
   const toast = useToast();
   const music = { id: item.id, name: item.name, artist: item.artist, image: item.image };
   const link = useMutation({
     mutationFn: (uid: string | null) => uid
-      ? post<CardsState>("cards/link", { uid, music, speaker: selected[0] })
-      : post<CardsState>("cards/scan", { movies: [{ music, speaker: selected[0] }] }),
+      ? post<CardsState>("cards/link", { uid, music })
+      : post<CardsState>("cards/scan", { movies: [{ music }] }),
     onSuccess: (state, uid) => {
       client.setQueryData(["cards"], state);
       toast(uid ? `Card ${uid} linked` : "Hold a blank card on a reader");
     },
     onError: (error) => toast(error.message, "error"),
   });
-  const one = selected.length === 1;
-  const why = one ? "" : "Choose one speaker for the card";
   return (
     <>
       {unknown && (
-        <button disabled={!one || link.isPending} title={why || `Link card ${unknown}, which was just read`}
+        <button disabled={link.isPending} title={`Link card ${unknown}, which was just read`}
                 onClick={() => link.mutate(unknown)}>Link card {unknown}</button>
       )}
-      <button disabled={!one || link.isPending} title={why || "Then hold a blank card on a Movie Remote or a reader in Home Assistant"}
+      <button disabled={link.isPending} title="Then hold a blank card on a Movie Remote or a reader in Home Assistant"
               onClick={() => link.mutate(null)}>Link next card</button>
     </>
   );
@@ -480,7 +479,7 @@ export function CardScan({ state, canManage }: { state: CardsState; canManage: b
       </div>
       <p>Hold a blank card on a Movie Remote or an NFC reader in Home Assistant for
         {" "}<b>{scan.current?.title ?? "the next item"}</b>
-        {scan.current?.speaker_name && <> on {scan.current.speaker_name}</>}.</p>
+        .</p>
       {scan.last && <p className="muted">Card {scan.last.uid} plays {scan.last.title}.</p>}
     </section>
   );

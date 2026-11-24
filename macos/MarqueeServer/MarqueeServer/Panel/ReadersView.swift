@@ -34,8 +34,8 @@ struct ReadersView: View {
     @State private var error: String?
 
     var body: some View {
-        PanelSection("Readers", subtitle: "Each NFC reader plays music and book cards on its own speakers, whatever speaker "
-                     + "the card was linked with, so a card plays in the room where it's held. Choose its default output "
+        PanelSection("Readers", subtitle: "Each NFC reader plays music and book cards on its own speakers, so a card plays "
+                     + "in the room where it's held. Choose its default output "
                      + "here. On the reader (a Movie Remote's speaker screen, or the controls Home Assistant gives a "
                      + "Tessera screen) the speakers can be changed, and are remembered until Restore Default, or Make "
                      + "Default keeps them.") {
@@ -154,7 +154,7 @@ private struct ReaderRow: View {
             : ""
         if let now = reader.now { text += "\(now.state == "paused" ? "Paused" : "Playing"): \(now.title) · " }
         text += "Plays on " + (reader.speakerNames.isEmpty
-            ? (reader.kind == "homeassistant" ? "its Home Assistant's speakers" : "each card's own speaker") : reader.speakerNames.joined(separator: " + "))
+            ? (reader.kind == "homeassistant" ? "its Home Assistant's speakers" : "no speakers yet: choose them below") : reader.speakerNames.joined(separator: " + "))
         if !reader.isDefault && !reader.default.isEmpty { text += " (chosen on the reader)" }
         return text
     }
