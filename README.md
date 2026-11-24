@@ -138,6 +138,8 @@ The **Books** section plays audiobooks from Audiobookshelf on the same speakers,
 
 Each NFC reader (a Movie Remote, or a reader in Home Assistant such as a Tessera screen) has a **default output**, chosen under **Devices › Readers**: the speakers its music and book cards play on, so a card plays in the room where it's held. On the reader itself (the Movie Remote's speaker screen, or the controls the Home Assistant integration adds for a Tessera screen) you can add or take away speakers, control what's playing, put back the default or make the current speakers the new default. What's chosen there is remembered for the next card.
 
+A paired Home Assistant is listed there too, as soon as it's paired, and is set up the same way as a Movie Remote: its default output, the Marquee player for movies and the Now Playing screen. Every NFC reader in that Home Assistant uses these settings, including phones scanning with the Home Assistant app. Once a reader has read a card, it's listed on its own, and it keeps using the Home Assistant's settings for anything it isn't given itself.
+
 The Marquee app has a **Now Playing** screen for music and books: the cover, a timeline (with chapters for books), the track list and synced lyrics. A reader can also put it on the TV in its room each time a card is held to it. See [Now Playing on the TV](docs/music.md#now-playing-on-the-tv).
 
 ## Optional: a "Movie Remote" with a screen

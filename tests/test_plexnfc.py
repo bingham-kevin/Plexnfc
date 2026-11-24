@@ -2158,8 +2158,9 @@ def test_home_assistant_readers_play_there_and_open_their_tessera_page(music_app
     tapped = app.post("/ha/tap", json={"uid": "04aabbcc", "reader": "Office_Test", "reader_id": "dev1"}, headers=ha).json
     assert tapped["result"] == "music" and tapped["reader"] == {"id": "ha:dev1", "page": None}
     assert wait_for(lambda: player.cast.played)
-    reader = app.get("/panel/api/readers").json["readers"][0]
+    hub, reader = app.get("/panel/api/readers").json["readers"]
     assert (reader["id"], reader["kind"], reader["name"]) == ("ha:dev1", "homeassistant", "Office_Test")
+    assert hub["kind"] == "assistant" and hub["id"].startswith("home:")  # the paired Home Assistant itself
 
     # given a default output and a Tessera page, the next card plays there and opens the page
     app.post("/panel/api/readers/ha:dev1", json={"default": ["airplay:den"], "page": 3}, **panel)
@@ -2193,7 +2194,50 @@ def test_home_assistant_readers_play_there_and_open_their_tessera_page(music_app
     assert thread.call_args.kwargs["args"] == ("tmdb-603", "app:Office", False)
     # forgetting it
     app.post("/panel/api/readers/ha:dev1/remove", **panel)
-    assert app.get("/panel/api/readers").json["readers"] == []
+    assert [r["kind"] for r in app.get("/panel/api/readers").json["readers"]] == ["assistant"]
+
+
+def test_the_paired_home_assistant_is_a_reader_for_all_of_its_readers(music_app):
+    app, root = music_app
+    plex = app.plex
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    sid = app.post("/panel/api/music/folders", json={"path": str(root)}, **panel).json["folders"][0]["id"]
+    player = music_player(app)
+    player.airplay, player.cast = FakeAirPlay(), FakeCast()
+    album = app.get(f"/panel/api/music/browse?source={sid}&kind=album&q=abbey").json["items"][0]
+    app.post("/panel/api/cards/link", json={"uid": "04-AA-BB-CC", "music": {"id": album["id"], "name": album["name"]},
+                                            "speaker": "cast:kitchen"}, **panel)
+    ha = pair_home_assistant(plex, app)
+
+    # it's listed as soon as it's paired, before any card is read, and set up like a Movie Remote
+    (hub,) = app.get("/panel/api/readers").json["readers"]
+    assert hub["kind"] == "assistant"
+    pair(plex, "Office")
+    app.post(f"/panel/api/readers/{hub['id']}", json={"default": ["airplay:den"], "movie_player": "app:Office"},
+             **panel)
+
+    # a card read on a phone with the Home Assistant app (a reader with nothing of its own) plays there
+    app.post("/ha/tap", json={"uid": "04aabbcc", "reader": "Kevin's iPhone", "reader_id": "phone1"}, headers=ha)
+    assert wait_for(lambda: player.airplay.played) and not player.cast.played
+    # and so does one Home Assistant can't place
+    player.airplay.played.clear()
+    app.post("/ha/tap", json={"uid": "04aabbcc"}, headers=ha)
+    assert wait_for(lambda: player.airplay.played)
+    plex.cards.link("04-11-22-33", "tmdb-603", "The Matrix", 1999)
+    plex.find_library_movie = lambda key, title=None, year=None: NS(key=key, title=title)
+    with mock.patch("plexnfc.server.threading.Thread") as thread:
+        app.post("/ha/tap", json={"uid": "04112233", "reader_id": "phone1"}, headers=ha)
+    assert thread.call_args.kwargs["args"] == ("tmdb-603", "app:Office", False)
+
+    # a reader given its own speakers uses them instead
+    app.post("/panel/api/readers/ha:phone1", json={"default": ["cast:home"]}, **panel)
+    app.post("/ha/tap", json={"uid": "04aabbcc", "reader_id": "phone1"}, headers=ha)
+    assert wait_for(lambda: player.cast.played)
+
+    # unpairing Home Assistant removes it
+    device = next(d for d in plex.app_pairings.devices() if d["kind"] == "homeassistant")
+    app.post(f"/panel/api/devices/{device['id']}/remove", **panel)
+    assert [r["kind"] for r in app.get("/panel/api/readers").json["readers"]] == ["homeassistant"]
 
 
 def test_moving_music_assistant_queue_to_other_speakers(music_app):

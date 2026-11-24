@@ -42,8 +42,8 @@ struct ReadersView: View {
             if let error { ErrorText(error) }
             if let state {
                 if state.readers.isEmpty {
-                    Text("No readers yet. Pair a Movie Remote above, or hold any card to a reader in Home Assistant "
-                         + "(with the Marquee integration) and it shows up here.").foregroundStyle(.secondary)
+                    Text("No readers yet. Pair a Movie Remote or Home Assistant (with the Marquee integration) above. "
+                         + "Each reader in Home Assistant also shows up here once it reads a card.").foregroundStyle(.secondary)
                 }
                 ForEach(state.readers) { reader in
                     ReaderRow(model: model, reader: reader, state: state, canManage: overview.canManage) { self.state = $0 }
@@ -74,7 +74,7 @@ private struct ReaderRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(reader.name).bold()
-                Pill(text: reader.kind == "remote" ? "Movie Remote" : "Home Assistant reader", tone: .plain)
+                Pill(text: ["remote": "Movie Remote", "assistant": "Home Assistant"][reader.kind] ?? "Home Assistant reader", tone: .plain)
                 Spacer()
                 if canManage && reader.kind == "homeassistant" {
                     Button("Forget", role: .destructive) {
@@ -105,14 +105,14 @@ private struct ReaderRow: View {
                 Picker("Movies play on", selection: Binding(
                     get: { reader.moviePlayer ?? "" },
                     set: { send("readers/\(path)", ["movie_player": $0.isEmpty ? NSNull() : $0], done: "\(reader.name) saved") })) {
-                    Text("The default player").tag("")
+                    Text(reader.kind == "homeassistant" ? "Its Home Assistant's" : "The default player").tag("")
                     ForEach(state.players) { Text($0.name).tag($0.id) }
                 }
                 .frame(maxWidth: 320)
                 Picker("Shows Now Playing on", selection: Binding(
                     get: { reader.screen ?? "" },
                     set: { send("readers/\(path)", ["screen": $0.isEmpty ? NSNull() : $0], done: "\(reader.name) saved") })) {
-                    Text("No screen").tag("")
+                    Text(reader.kind == "homeassistant" ? "Its Home Assistant's" : "No screen").tag("")
                     ForEach(screenChoices, id: \.self) { Text($0).tag($0) }
                 }
                 .frame(maxWidth: 320)
@@ -149,9 +149,12 @@ private struct ReaderRow: View {
     private var path: String { reader.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? reader.id }
 
     private var summary: String {
-        var text = ""
+        var text = reader.kind == "assistant"
+            ? "Every NFC reader in this Home Assistant (phones with its app too) uses these until it has settings of its own. "
+            : ""
         if let now = reader.now { text += "\(now.state == "paused" ? "Paused" : "Playing"): \(now.title) · " }
-        text += "Plays on " + (reader.speakerNames.isEmpty ? "each card's own speaker" : reader.speakerNames.joined(separator: " + "))
+        text += "Plays on " + (reader.speakerNames.isEmpty
+            ? (reader.kind == "homeassistant" ? "its Home Assistant's speakers" : "each card's own speaker") : reader.speakerNames.joined(separator: " + "))
         if !reader.isDefault && !reader.default.isEmpty { text += " (chosen on the reader)" }
         return text
     }
