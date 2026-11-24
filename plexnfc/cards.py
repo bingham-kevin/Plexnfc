@@ -28,6 +28,11 @@ def normalize_uid(uid: str) -> str | None:
     return uid if UID_RE.match(uid) else None
 
 
+def music_title(item: dict) -> str:
+    """``Abbey Road - The Beatles``"""
+    return item["name"] + (f" - {item['artist']}" if item.get("artist") else "")
+
+
 class Cards:
     """Which movie each card plays, saved in ``path``; and the scan in progress, if any."""
 
@@ -51,11 +56,17 @@ class Cards:
 
     # ---- the cards ------------------------------------------------------------
 
-    def movie(self, uid: str) -> dict | None:
-        """The movie a card plays: ``{"key", "title"}``, or None."""
+    def card(self, uid: str) -> dict | None:
+        """What a card plays: a movie (``{"key", "title"}``) or music (with ``music``,
+        ``speaker`` and ``speaker_name``), or None."""
         with self._lock:
             card = self._cards.get(normalize_uid(uid) or "")
             return dict(card) if card else None
+
+    def movie(self, uid: str) -> dict | None:
+        """The movie a card plays: ``{"key", "title"}``, or None (for music too)."""
+        card = self.card(uid)
+        return card if card and "music" not in card else None
 
     def all(self) -> list[dict]:
         with self._lock:
@@ -66,7 +77,8 @@ class Cards:
         out: dict[str, list[str]] = {}
         with self._lock:
             for uid, card in self._cards.items():
-                out.setdefault(card["key"], []).append(uid)
+                if "music" not in card:
+                    out.setdefault(card["key"], []).append(uid)
         return out
 
     def link(self, uid: str, key: str, title: str, year: int | None = None) -> str | None:
@@ -82,6 +94,23 @@ class Cards:
             self._save()
         return before["title"] if before and before["key"] != key else None
 
+    def link_music(self, uid: str, item: dict, speaker: str, speaker_name: str | None = None) -> str | None:
+        """Make the card play music (a ``music_item``) on a Music Assistant speaker. Returns
+        the title it played before, if another."""
+        uid = normalize_uid(uid)
+        if uid is None:
+            raise ValueError("That isn't a card ID")
+        if not str(speaker).strip():  # a Music Assistant player ID (or, from before, an entity)
+            raise ValueError("Choose a speaker")
+        title = music_title(item)
+        with self._lock:
+            before = self._cards.get(uid)
+            self._cards[uid] = {"key": f"music:{item.get('id') or item['uri']}", "title": title, "music": item,
+                                "speaker": speaker, "speaker_name": speaker_name or speaker,
+                                "linked": int(time.time())}
+            self._save()
+        return before["title"] if before and before["title"] != title else None
+
     def remove(self, uid: str) -> bool:
         with self._lock:
             if self._cards.pop(normalize_uid(uid) or "", None) is None:
@@ -92,9 +121,14 @@ class Cards:
     # ---- scanning a batch of cards ------------------------------------------------
 
     def start_scan(self, movies: list[dict]) -> dict:
-        """Link the next cards read to these movies (``{"key", "title"}``), in order."""
-        movies = [{"key": str(m["key"]), "title": str(m.get("title") or m["key"]),
-                   **({"year": m["year"]} if isinstance(m.get("year"), int) else {})} for m in movies if m.get("key")]
+        """Link the next cards read to these movies (``{"key", "title"}``), in order. An item
+        can be music instead: ``{"music": <music_item>, "speaker", "speaker_name"}``."""
+        movies = [{"key": f"music:{m['music'].get('id') or m['music']['uri']}", "title": music_title(m["music"]), "music": m["music"],
+                   "speaker": str(m["speaker"]), "speaker_name": str(m.get("speaker_name") or m["speaker"])}
+                  if "music" in m else
+                  {"key": str(m["key"]), "title": str(m.get("title") or m["key"]),
+                   **({"year": m["year"]} if isinstance(m.get("year"), int) else {})}
+                  for m in movies if m.get("key") or "music" in m]
         if not movies:
             raise ValueError("Choose at least one movie")
         with self._lock:
@@ -149,7 +183,10 @@ class Cards:
             if last and last.get("uid") == uid and last.get("result") == "linked":
                 return {"message": f"That card is {last['title']}.\nUse the next card.", "result": "repeat"}
             movie = s["movies"][s["index"]]
-        moved_from = self.link(uid, movie["key"], movie["title"], movie.get("year"))
+        if "music" in movie:
+            moved_from = self.link_music(uid, movie["music"], movie["speaker"], movie.get("speaker_name"))
+        else:
+            moved_from = self.link(uid, movie["key"], movie["title"], movie.get("year"))
         with self._lock:
             if self._scan is not s:
                 return None  # stopped meanwhile; the card is linked all the same

@@ -96,6 +96,7 @@ struct PanelWindow: View {
                         PairingRequestsView(model: model, overview: overview)
                         DevicesView(model: model, overview: overview)
                         AppleTVsView(model: model, overview: overview)
+                    case .music: MusicView(model: model, overview: overview)
                     case .cards: CardsView(model: model, overview: overview)
                     case .book: BookView(model: model, overview: overview)
                     case .sources: SourcesView(model: model, overview: overview)

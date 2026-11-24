@@ -116,8 +116,8 @@ marquee_link:
             id(marquee).request("now", "GET", "/remote/now");  // it's starting
             return;
           }
-          // Anything else is a message for the screen: a card linked during a scan, or a
-          // card that isn't linked to a movie
+          // Anything else is a message for the screen: music a card started, a card linked
+          // during a scan, or a card that isn't linked to anything
           std::string message = status < 0 ? "Can't reach Marquee Server" : "";
           std::string result;
           bool scan = false;
@@ -129,8 +129,10 @@ marquee_link:
               return true;
             });
           }
-          // A sound for it, on a board with a speaker: linked, already linked or done, or a problem
-          id(feedback)->execute(std::string(!scan ? "error" : result == "linked" ? "linked"
+          // A sound for it, on a board with a speaker: music started, linked, already linked or
+          // done, or a problem
+          id(feedback)->execute(std::string(!scan ? (result == "music" ? "play" : "error")
+                                            : result == "linked" ? "linked"
                                             : result == "unreadable" ? "error" : "notice"));
           if (message.empty()) message = "That card didn't work";
           id(now_state) = "notice";

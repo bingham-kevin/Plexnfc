@@ -177,6 +177,14 @@ class AppleTVs:
         with self._lock:
             return {p: {k: v for k, v in link.items() if k != "credentials"} for p, link in self._links.items()}
 
+    def credentials_for(self, identifiers) -> str | None:
+        """The pairing credentials of the linked Apple TV going by any of these IDs.
+        They're good for AirPlay audio too, so music needn't pair it again."""
+        wanted = set(identifiers)
+        with self._lock:
+            return next((link.get("credentials") for link in self._links.values()
+                         if wanted & set(_identifiers(link)) and link.get("credentials")), None)
+
     def link_for(self, player: str) -> dict | None:
         with self._lock:
             return next((link for p, link in self._links.items() if p.casefold() == player.casefold()), None)

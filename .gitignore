@@ -14,3 +14,7 @@ ios/**/xcuserdata/
 ios/**/*.xcworkspace/xcuserdata/
 macos/**/xcuserdata/
 macos/**/*.xcworkspace/xcuserdata/
+# Marquee keeps these beside .plex_auth.json when run from here
+movie_cards.json
+music_assistant.json
+airplay_pairings.json

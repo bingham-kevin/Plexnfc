@@ -109,17 +109,46 @@ export interface MatchJob {
   error: string | null;
 }
 
+/** Something in Music Assistant a card can play: an album, playlist, artist, track or radio station */
+export interface MusicItem {
+  uri: string;
+  media_type: string;
+  name: string;
+  artist: string;
+  image: string | null;
+}
+
 export interface Card {
   uid: string;
   key: string;
   title: string;
   linked: number;
+  /** A music card: what it plays (``id`` if linked on the Music tab), and on which speaker */
+  music?: MusicItem & { id?: string };
+  speaker?: string;
+  speaker_name?: string;
 }
 
 export interface ScanMovie {
   key: string;
   title: string;
   year?: number | null;
+  music?: MusicItem;
+  speaker_name?: string;
+}
+
+/** How music cards reach Music Assistant: directly, or through the Marquee integration in
+ * Home Assistant */
+export interface MusicStatus {
+  connected: boolean;
+  music_assistant: boolean;
+  /** Which way music goes now */
+  via: "music_assistant" | "home_assistant" | null;
+  /** Speakers by Music Assistant player ID */
+  speakers: { id: string; name: string }[];
+  /** The direct connection's settings (the token itself is never sent) */
+  assistant: { url: string; token: boolean; connected: boolean; message: string | null };
+  home_assistant: boolean;
 }
 
 export interface Scan {
@@ -216,3 +245,56 @@ export const post = <T = { ok: boolean; message?: string; [field: string]: unkno
 
 export const posterURL = (key: string, w: number, h: number, version = "") =>
   `poster/${encodeURIComponent(key)}?w=${w}&h=${h}${version ? `&v=${encodeURIComponent(version)}` : ""}`;
+
+/** Something in the music library, from any source */
+export interface LibItem {
+  /** source|kind|ref */
+  id: string;
+  source: string;
+  kind: "artist" | "album" | "playlist" | "track" | "radio";
+  name: string;
+  artist: string;
+  album: string;
+  image: string | null;
+  duration: number | null;
+  number: number | null;
+  year?: number | null;
+}
+
+export interface MusicSources {
+  sources: { id: string; name: string; kind: string; search_only?: boolean }[];
+  folders: { id: string; name: string; path: string; tracks: number; scanning: boolean }[];
+  speakers: { airplay: boolean; cast: boolean; music_assistant: boolean };
+}
+
+export interface Speaker {
+  /** ma:…, airplay:… or cast:… */
+  id: string;
+  name: string;
+  kind: "music_assistant" | "airplay" | "cast";
+  group: boolean;
+  volume: number | null;
+  state: string | null;
+  members: string[];
+  can_group: string[];
+  synced_to: string | null;
+  limited?: boolean;
+  /** AirPlay: "needed" until it's paired with the PIN it shows, then "paired" ("linked" when
+   *  paired in the Apple TVs section instead, which is good for music too) */
+  pairing?: "needed" | "paired" | "linked" | null;
+}
+
+/** Music playing on one speaker, or a group of them */
+export interface Zone {
+  id: string;
+  kind: "music_assistant" | "marquee";
+  speakers: string[];
+  names: string[];
+  state: "playing" | "paused";
+  can_pause: boolean;
+  restarts_on_resume?: boolean;
+  track: { id?: string; name: string; artist: string; album: string; image: string | null; duration: number | null };
+  position: number | null;
+  index?: number;
+  error?: string | null;
+}

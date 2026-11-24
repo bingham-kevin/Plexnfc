@@ -13,6 +13,10 @@ WAIT = 25
 class MarqueeError(Exception):
     """The server couldn't be reached, or said no."""
 
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 class MarqueeAuthError(MarqueeError):
     """The server doesn't know this Home Assistant (any more)."""
@@ -90,6 +94,31 @@ class MarqueeAPI:
             raise MarqueeAuthError("Marquee Server doesn't know this Home Assistant any more")
         if status >= 400:
             raise MarqueeError((data or {}).get("message") or f"Marquee Server answered HTTP {status}")
+
+    # ---- music cards (see music.py) -------------------------------------------------
+
+    async def music_poll(self, speakers: list[dict], music_assistant: bool, wait: float = WAIT) -> list[dict]:
+        """Tell the server which speakers Music Assistant has; get the jobs waiting, waiting
+        up to ``wait`` seconds for one."""
+        status, data = await self._request("POST", "/ha/music/poll", timeout=wait + 10, params={"wait": str(wait)},
+                                           json={"speakers": speakers, "music_assistant": music_assistant})
+        if status == 401:
+            raise MarqueeAuthError("Marquee Server doesn't know this Home Assistant any more")
+        if status != 200 or not isinstance(data, dict):
+            raise MarqueeError(f"Marquee Server answered HTTP {status}", status)
+        return [j for j in data.get("jobs") or [] if isinstance(j, dict) and "id" in j]
+
+    async def tap(self, uid: str, reader: str | None) -> dict:
+        """A card read by an NFC reader in Home Assistant: what Marquee does with it."""
+        status, data = await self._request("POST", "/ha/tap", json={"uid": uid, "reader": reader})
+        if status == 401:
+            raise MarqueeAuthError("Marquee Server doesn't know this Home Assistant any more")
+        if status != 200 or not isinstance(data, dict):
+            raise MarqueeError(f"Marquee Server answered HTTP {status}", status)
+        return data
+
+    async def music_done(self, job_id: int, answer: dict) -> None:
+        await self._post(f"/ha/music/jobs/{int(job_id)}", answer)
 
     def poster_url(self, path: str) -> str:
         return f"{self.url}{path}"

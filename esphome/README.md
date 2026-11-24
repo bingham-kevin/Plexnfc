@@ -84,7 +84,7 @@ Don't leave the book lying flat on the reader. With many tags stacked in range, 
 ## How it works
 
 - **Pairing:** the box asks for a code with `POST /tv/pair` (`kind: remote`), then checks `/tv/pair/<id>` until you approve it. It keeps the secret it's given in flash and sends it with every request.
-- **Cards and tags:** when it reads a card, it sends the card's ID, and the URL written on it if any, to `POST /remote/tap`. Marquee Server plays the movie linked to that card (or the one in the URL) on the box's player and answers at once. Meanwhile the screen shows "Starting…" with the poster. During a card scan from the control panel's **Cards** page, the card is linked to the next movie instead, and the screen shows which movie it was linked to and which comes next.
+- **Cards and tags:** when it reads a card, it sends the card's ID, and the URL written on it if any, to `POST /remote/tap`. Marquee Server plays the movie linked to that card (or the one in the URL) on the box's player and answers at once. A music card plays through Music Assistant instead, and the screen says what's playing on which speaker. Meanwhile the screen shows "Starting…" with the poster. During a card scan from the control panel's **Cards** page, the card is linked to the next movie instead, and the screen shows which movie it was linked to and which comes next.
 - **The screen:** every 2 seconds the box asks `/remote/now` what its player is playing.
 - **Posters:** they come from `/poster/<key>?w=…&h=…` (240×360 on the CrowPanel, 96×144 on the Hosyond), resized and re-encoded as baseline JPEGs that the ESP32 can decode.
 - **The buttons:** they call `POST /remote/control` with `toggle`, `seek` or `stop`.

@@ -3,6 +3,7 @@ import { AppleTVs } from "./AppleTVs";
 import { Book } from "./Book";
 import { Cards } from "./Cards";
 import { Devices, PairingRequests } from "./Devices";
+import { Music } from "./Music";
 import { useAction, useOverview } from "./hooks";
 import { NowPlaying } from "./NowPlaying";
 import { Sources } from "./Sources";
@@ -12,6 +13,7 @@ const TABS = [
   { id: "home", label: "Now Playing" },
   { id: "devices", label: "Devices" },
   { id: "tags", label: "Tags" },
+  { id: "music", label: "Music" },
   { id: "cards", label: "Cards" },
   { id: "book", label: "Book" },
   { id: "sources", label: "Sources" },
@@ -84,6 +86,7 @@ export default function App() {
             </>
           )}
           {tab === "tags" && <Tags overview={data} />}
+          {tab === "music" && <Music overview={data} />}
           {tab === "cards" && <Cards overview={data} />}
           {tab === "book" && <Book overview={data} />}
           {tab === "sources" && <Sources overview={data} />}

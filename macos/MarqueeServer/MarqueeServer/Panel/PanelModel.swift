@@ -3,7 +3,7 @@ import Observation
 import SwiftUI
 
 enum PanelTab: String, CaseIterable, Identifiable {
-    case home, devices, tags, cards, book, sources
+    case home, devices, tags, music, cards, book, sources
     var id: String { rawValue }
 
     var label: String {
@@ -11,6 +11,7 @@ enum PanelTab: String, CaseIterable, Identifiable {
         case .home: "Now Playing"
         case .devices: "Devices"
         case .tags: "Tags"
+        case .music: "Music"
         case .cards: "Cards"
         case .book: "Book"
         case .sources: "Sources"
@@ -22,6 +23,7 @@ enum PanelTab: String, CaseIterable, Identifiable {
         case .home: "play.tv"
         case .devices: "appletv"
         case .tags: "tag"
+        case .music: "music.note.list"
         case .cards: "creditcard"
         case .book: "book"
         case .sources: "externaldrive.connected.to.line.below"

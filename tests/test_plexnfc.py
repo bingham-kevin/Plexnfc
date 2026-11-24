@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from types import SimpleNamespace as NS
@@ -1512,3 +1513,704 @@ def test_apps_start_the_plex_sign_in_with_json(plex, tmp_path):
         assert r.json == {"ok": True, "pin_id": 42, "auth_url": "https://app.plex.tv/auth#?code=x"}
         assert app.get("/plex/check?id=42").json == {"signed_in": True}
     check.assert_called_once()
+
+
+ABBEY_ROAD = {"uri": "library://album/4", "media_type": "album", "name": "Abbey Road", "artist": "The Beatles",
+              "image": "http://ma.local:8095/imageproxy/abbey"}
+
+
+def fake_home_assistant(app, ha, answers, stop):
+    """The Marquee integration's music link: poll for jobs and answer them from ``answers``."""
+    speakers = [{"entity_id": "media_player.kitchen", "name": "Kitchen", "player_id": "ma_kitchen"}]
+    while not stop.is_set():
+        jobs = app.post("/ha/music/poll?wait=0.2", json={"speakers": speakers, "music_assistant": True},
+                        headers=ha).json["jobs"]
+        for job in jobs:
+            answers.append(job)
+            if job["kind"] == "search":
+                body = {"ok": True, "result": [ABBEY_ROAD, {"uri": "bad", "media_type": "album", "name": "x"}]}
+            elif job["data"]["speaker"] == "media_player.gone":
+                body = {"ok": False, "message": "Home Assistant has no speaker media_player.gone"}
+            else:
+                body = {"ok": True}
+            app.post(f"/ha/music/jobs/{job['id']}", json=body, headers=ha)
+
+
+def test_cards_play_music_through_home_assistant(plex):
+    app = create_app(CONFIG, plex).test_client()
+    box = paired_box(plex, app)
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+
+    # without Home Assistant, the panel says so and music can't be searched
+    status = app.get("/panel/api/music").json
+    assert (status["connected"], status["music_assistant"], status["speakers"], status["via"]) == (False, False, [], None)
+    assert status["assistant"] == {"url": "", "token": False, "connected": False, "message": None}
+    assert app.get("/panel/api/music/search?q=abbey").json["items"] == []  # no music anywhere
+    assert app.post("/ha/music/poll", json={}).status_code == 401
+
+    ha = pair_home_assistant(plex, app)
+    answers: list = []
+    stop = threading.Event()
+    worker = threading.Thread(target=fake_home_assistant, args=(app, ha, answers, stop), daemon=True)
+    worker.start()
+    try:
+        for _ in range(50):
+            if app.get("/panel/api/music").json["connected"]:
+                break
+            time.sleep(0.02)
+        # speakers go by their Music Assistant player ID, which a direct connection knows too
+        assert app.get("/panel/api/music").json["speakers"] == [{"id": "ma_kitchen", "name": "Kitchen"}]
+        assert app.get("/panel/api/music").json["via"] == "home_assistant"
+
+        # search Music Assistant through Home Assistant; what isn't an item is dropped
+        found = app.get("/panel/api/music/search?q=abbey road").json["items"]
+        assert [(i["id"], i["name"], i["artist"]) for i in found] == [
+            ("ma|album|library://album/4", "Abbey Road", "The Beatles")]
+        assert answers[-1]["data"] == {"query": "abbey road"}
+
+        # link a card the box read to the album on the kitchen speaker
+        app.post("/remote/tap", json={"uid": "04-11-22-33"}, headers=box)
+        linked = app.post("/panel/api/cards/link", json={"uid": "04-11-22-33", "music": ABBEY_ROAD,
+                                                         "speaker": "ma_kitchen"}, **panel).json
+        card = linked["cards"][0]
+        assert (card["title"], card["speaker_name"], card["music"]["uri"]) == \
+            ("Abbey Road - The Beatles", "Kitchen", "library://album/4")
+        assert linked["unknown"] is None
+        assert app.post("/panel/api/cards/link", json={"uid": "04-11-22-33", "music": {"uri": "x"},
+                                                       "speaker": "media_player.kitchen"}, **panel).status_code == 400
+        # a music card isn't any movie's card
+        assert all(not m["cards"] for m in app.get("/panel/api/movies").json["movies"])
+
+        # tapping it plays the album there (Home Assistant gets its own entity), and the box
+        # shows what and where
+        with mock.patch.object(plex, "play") as play_movie:
+            tapped = app.post("/remote/tap", json={"uid": "04-11-22-33"}, headers=box)
+        assert tapped.status_code == 200 and tapped.json["result"] == "music"
+        assert tapped.json["message"] == "Playing Abbey Road - The Beatles\non Kitchen"
+        assert answers[-1]["data"] == {"uri": "library://album/4", "media_type": "album",
+                                       "speaker": "media_player.kitchen"}
+        play_movie.assert_not_called()
+
+        # a scan can link music too
+        app.post("/panel/api/cards/scan", json={"movies": [{"music": ABBEY_ROAD, "speaker": "media_player.gone"}]},
+                 **panel)
+        scanned = app.post("/remote/tap", json={"uid": "04-44-55-66"}, headers=box).json
+        assert scanned["result"] == "linked" and "Abbey Road - The Beatles" in scanned["message"]
+        app.post("/panel/api/cards/scan/stop", **panel)
+
+        # Home Assistant's error reaches the box
+        failed = app.post("/remote/tap", json={"uid": "04-44-55-66"}, headers=box)
+        assert failed.status_code == 502 and "no speaker media_player.gone" in failed.json["message"]
+    finally:
+        stop.set()
+        worker.join(2)
+
+
+def test_music_bridge_tells_a_slow_home_assistant_from_a_missing_one():
+    from plexnfc.music import MusicBridge, MusicError
+
+    bridge = MusicBridge()
+    bridge.poll([{"entity_id": "media_player.kitchen"}], True, wait=0)
+    # the job waits for Home Assistant: not done yet, but not failed either
+    assert bridge.play(ABBEY_ROAD, "media_player.kitchen", timeout=0.05) is False
+    assert [j["kind"] for j in bridge.poll([], True, wait=0)] == ["play"]
+    # a search that isn't answered fails, and is taken off the list
+    with pytest.raises(MusicError, match="in time"):
+        bridge.request("search", {"query": "x"}, timeout=0.05)
+    assert bridge.poll([], True, wait=0) == []
+    # without Music Assistant in Home Assistant
+    bridge.poll([], False, wait=0)
+    with pytest.raises(MusicError, match="Music Assistant"):
+        bridge.search("x")
+
+
+def test_cards_read_by_home_assistant_readers(plex):
+    """A Tessera screen (or a phone) reads a card in Home Assistant; the integration asks Marquee."""
+    app = create_app(CONFIG, plex).test_client()
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    assert app.post("/ha/tap", json={"uid": "A2-09-B0-9E"}).status_code == 401
+    ha = pair_home_assistant(plex, app)
+
+    # a card Marquee doesn't know: the panel offers to link it
+    unknown = app.post("/ha/tap", json={"uid": "A2-09-B0-9E", "reader": "Office_Test"}, headers=ha).json
+    assert (unknown["ok"], unknown["result"]) == (False, "unknown")
+    assert app.get("/panel/api/cards").json["unknown"]["uid"] == "A2-09-B0-9E"
+
+    # linked to music: the integration is told what to play where
+    plex.cards.link_music("A2-09-B0-9E", ABBEY_ROAD, "media_player.kitchen", "Kitchen")
+    tapped = app.post("/ha/tap", json={"uid": "a2:09:b0:9e"}, headers=ha).json
+    assert tapped["result"] == "music" and tapped["message"] == "Playing Abbey Road - The Beatles on Kitchen"
+    assert tapped["play"] == {"uri": "library://album/4", "media_type": "album", "speaker": "media_player.kitchen"}
+
+    # a movie card plays on the default player
+    with mock.patch.object(plex, "play") as play:
+        plex.cards.link("04-AA-BB-CC", "tmdb-603", "The Matrix")
+        tapped = app.post("/ha/tap", json={"uid": "04-AA-BB-CC"}, headers=ha).json
+        assert (tapped["result"], tapped["title"]) == ("movie", "The Matrix")
+        for _ in range(50):
+            if play.called:
+                break
+            time.sleep(0.02)
+        play.assert_called_with("tmdb-603", None, False)
+
+    # and a scan links cards read there too
+    app.post("/panel/api/cards/scan", json={"movies": [{"key": "tmdb-603", "title": "The Matrix"}]}, **panel)
+    scanned = app.post("/ha/tap", json={"uid": "04-77-88-99"}, headers=ha).json
+    assert scanned["scan"] and scanned["result"] == "linked"
+
+
+class FakeMusicAssistant:
+    """Music Assistant's ``POST /api``, for ``requests.post``."""
+
+    def __init__(self, token="good"):
+        self.token = token
+        self.calls: list = []
+
+    def __call__(self, url, json=None, headers=None, timeout=None):
+        assert url == "http://ma.local:8095/api"
+        if headers.get("Authorization") != f"Bearer {self.token}":
+            return mock.Mock(status_code=401, text="Authentication required")
+        self.calls.append((json["command"], json["args"]))
+        result = {
+            "players/all": [
+                {"player_id": "ma_kitchen", "display_name": "Kitchen", "available": True, "enabled": True},
+                {"player_id": "ma_attic", "name": "Attic", "available": False},
+                # Music Assistant's player for a Home Assistant speaker is named after its entity
+                {"player_id": "media_player.office", "name": "Office", "available": True},
+            ],
+            "music/search": {"albums": [{
+                "uri": "library://album/4", "media_type": "album", "name": "Abbey Road",
+                "artists": [{"name": "The Beatles"}],
+                "metadata": {"images": [{"type": "thumb", "path": "/art/4.jpg", "provider": "filesystem",
+                                         "remotely_accessible": False}]}}],
+                "artists": [{"uri": "library://artist/1", "media_type": "artist", "name": "The Beatles",
+                             "metadata": {"images": [{"type": "thumb", "path": "/art/1.jpg", "provider": "filesystem",
+                                                      "proxy_id": "f46d1a"}]}}],
+                "playlists": [{"uri": "apple_music://playlist/9", "media_type": "playlist", "name": "Essentials",
+                               "version": "2019 Mix", "metadata": {"images": [
+                                   {"type": "thumb", "path": "album/l.x", "provider": "apple_music", "remotely_accessible": False},
+                                   {"type": "thumb", "path": "https://art/9.jpg", "provider": "apple_music",
+                                    "remotely_accessible": True}]}}],
+                "tracks": [{"uri": "nope", "media_type": "track", "name": "x"}]},
+            "player_queues/play_media": None,
+        }[json["command"]]
+        return mock.Mock(status_code=200, json=mock.Mock(return_value=result))
+
+
+def test_cards_play_music_through_music_assistant_directly(plex, tmp_path):
+    from dataclasses import replace
+    plex.config = replace(plex.config, auth_file=str(tmp_path / "plex_auth.json"))
+    app = create_app(CONFIG, plex).test_client()
+    box = paired_box(plex, app)
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    fake = FakeMusicAssistant()
+    with mock.patch("plexnfc.music.requests.post", side_effect=fake):
+        # a wrong token isn't kept
+        bad = app.post("/panel/api/music/assistant", json={"url": "ma.local", "token": "bad"}, **panel)
+        assert bad.status_code == 400 and "token" in bad.json["message"]
+        assert not (tmp_path / "music_assistant.json").exists()
+
+        # the port is filled in; it's kept once it works, and lists the speakers there are
+        ok = app.post("/panel/api/music/assistant", json={"url": "ma.local", "token": "good"}, **panel).json
+        assert (ok["via"], ok["speakers"]) == ("music_assistant", [{"id": "ma_kitchen", "name": "Kitchen"},
+                                                                   {"id": "media_player.office", "name": "Office"}])
+        assert ok["assistant"] == {"url": "http://ma.local:8095", "token": True, "connected": True, "message": None}
+        saved = json.loads((tmp_path / "music_assistant.json").read_text())
+        assert saved == {"url": "http://ma.local:8095", "token": "good"}
+        assert oct((tmp_path / "music_assistant.json").stat().st_mode & 0o777) == "0o600"
+
+        # search: pictures Music Assistant has come through its image proxy
+        items = app.get("/panel/api/music/search?q=abbey").json["items"]
+        assert [(i["uri"], i["name"]) for i in items] == [("library://artist/1", "The Beatles"),
+                                                          ("library://album/4", "Abbey Road"),
+                                                          ("apple_music://playlist/9", "Essentials (2019 Mix)")]
+        assert items[0]["image"] == "http://ma.local:8095/imageproxy/f46d1a?size=256"  # Music Assistant 2.10
+        assert items[2]["image"] == "https://art/9.jpg"  # a picture on the web wins over the proxy
+        assert items[1]["image"].startswith("http://ma.local:8095/imageproxy?path=%252Fart%252F4.jpg&provider=filesystem")
+
+        # link a card and tap it: Music Assistant plays it, with no Home Assistant at all
+        app.post("/panel/api/cards/link", json={"uid": "04-11-22-33", "music": ABBEY_ROAD, "speaker": "ma_kitchen"},
+                 **panel)
+        tapped = app.post("/remote/tap", json={"uid": "04-11-22-33"}, headers=box).json
+        assert tapped["message"] == "Playing Abbey Road - The Beatles\non Kitchen"
+        assert fake.calls[-1] == ("player_queues/play_media",
+                                  {"queue_id": "ma_kitchen", "media": "library://album/4", "option": "replace"})
+
+        # a player whose ID looks like a Home Assistant entity is still Music Assistant's
+        app.post("/panel/api/cards/link", json={"uid": "04-77-88-99", "music": ABBEY_ROAD,
+                                                "speaker": "media_player.office"}, **panel)
+        assert app.post("/remote/tap", json={"uid": "04-77-88-99"}, headers=box).json["message"].endswith("on Office")
+        assert fake.calls[-1][1]["queue_id"] == "media_player.office"
+
+        # a reader in Home Assistant: played here too, so the integration isn't asked to
+        ha = pair_home_assistant(plex, app)
+        fake.calls.clear()
+        read = app.post("/ha/tap", json={"uid": "04-11-22-33"}, headers=ha).json
+        assert read["result"] == "music" and "play" not in read
+        assert fake.calls[-1][0] == "player_queues/play_media"
+
+        # a blank address stops it, and forgets the token
+        off = app.post("/panel/api/music/assistant", json={"url": ""}, **panel).json
+        assert off["assistant"]["url"] == "" and off["via"] is None
+        assert json.loads((tmp_path / "music_assistant.json").read_text()) == {}
+
+
+def write_wav(path, seconds=1):
+    import wave
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(b"\0\0" * 8000 * seconds)
+
+
+@pytest.fixture
+def music_app(plex, tmp_path):
+    """The app, with a music folder: Artist/Album/NN Title.wav, a cover and a playlist."""
+    from dataclasses import replace
+    plex.config = replace(plex.config, auth_file=str(tmp_path / "data" / "plex_auth.json"), plex_token="", plex_url="")
+    (tmp_path / "data").mkdir()
+    root = tmp_path / "Music"
+    write_wav(root / "The Beatles" / "Abbey Road" / "01 Come Together.wav")
+    write_wav(root / "The Beatles" / "Abbey Road" / "02 Something.wav", 2)
+    write_wav(root / "Nina Simone" / "Pastel Blues" / "01 Be My Husband.wav")
+    (root / "The Beatles" / "Abbey Road" / "cover.jpg").write_bytes(b"JPEGDATA")
+    (root / "mix.m3u").write_text("#EXTM3U\nNina Simone/Pastel Blues/01 Be My Husband.wav\n"
+                                  "The Beatles/Abbey Road/02 Something.wav\nmissing.wav\n")
+    app = create_app(replace(CONFIG, public_base_url="http://marquee:8080"), plex)
+    client = app.test_client()
+    client.plex = plex
+    return client, root
+
+
+def music_player(app):
+    """The MusicPlayer behind the app's routes."""
+    return app.application.extensions["marquee_music"]
+
+
+def test_music_folders_browse_and_stream(music_app):
+    app, root = music_app
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    assert app.post("/panel/api/music/folders", json={"path": str(root / "nope")}, **panel).status_code == 400
+    added = app.post("/panel/api/music/folders", json={"path": str(root), "name": "Records"}, **panel).json
+    folder = added["folders"][0]
+    assert (folder["name"], folder["kind"]) == ("Records", "folder")
+    sid = folder["id"]
+    assert [s["id"] for s in app.get("/panel/api/music/sources").json["sources"]] == [sid]
+
+    albums = app.get(f"/panel/api/music/browse?source={sid}&kind=album").json["items"]
+    assert [(a["name"], a["artist"]) for a in albums] == [("Abbey Road", "The Beatles"), ("Pastel Blues", "Nina Simone")]
+    artists = app.get(f"/panel/api/music/browse?source={sid}&kind=artist&q=nina").json["items"]
+    assert [a["name"] for a in artists] == ["Nina Simone"]
+
+    # an album's tracks, in order, from their file names
+    opened = app.get("/panel/api/music/item", query_string={"id": albums[0]["id"]}).json
+    assert [(t["number"], t["name"], t["duration"]) for t in opened["tracks"]] == [(1, "Come Together", 1),
+                                                                                    (2, "Something", 2)]
+    # its picture is the folder's cover
+    art = app.get("/" + albums[0]["image"])
+    assert art.status_code == 200 and art.data == b"JPEGDATA"
+    # an artist's albums, and the .m3u playlist (a missing file is left out)
+    nina = app.get("/panel/api/music/item", query_string={"id": artists[0]["id"]}).json
+    assert [a["name"] for a in nina["albums"]] == ["Pastel Blues"]
+    mix = app.get(f"/panel/api/music/browse?source={sid}&kind=playlist").json["items"][0]
+    tracks = app.get("/panel/api/music/item", query_string={"id": mix["id"]}).json["tracks"]
+    assert [t["name"] for t in tracks] == ["Be My Husband", "Something"]
+
+    # search finds it in every source
+    assert [i["name"] for i in app.get("/panel/api/music/search?q=something").json["items"]] == ["Something"]
+
+    # speakers get a signed address for each file (see the next test); a wrong one gets nothing
+    from plexnfc.musiclib import split_id
+    ref = split_id(opened["tracks"][1]["id"])[2]
+    url, content_type = music_player(app).library.stream(opened["tracks"][1])
+    assert content_type == "audio/wav" and app.get(url.replace("http://marquee:8080", "")).status_code == 200
+    assert app.get(f"/music/file/{sid}/{ref}/wrongtoken/track.wav").status_code == 404
+
+    # removing the folder forgets it (the files stay)
+    assert app.post(f"/panel/api/music/folders/{sid}/remove", **panel).json["folders"] == []
+    assert (root / "mix.m3u").exists()
+
+
+class FakeAirPlay:
+    available = True
+
+    def __init__(self):
+        self.played: list = []
+        self.stopped: list = []
+        self.futures: list = []
+
+    def speakers(self):
+        return [{"id": "airplay:den", "name": "Den HomePod", "kind": "airplay", "group": False}]
+
+    def name(self, ref):
+        return {"den": "Den HomePod"}.get(ref)
+
+    def play(self, ref, source, meta):
+        import concurrent.futures
+        future = concurrent.futures.Future()
+        self.played.append((ref, source, meta["name"]))
+        self.futures.append(future)
+        return future
+
+    def stop(self, ref):
+        self.stopped.append(ref)
+
+    def volume(self, ref, level):
+        self.played.append(("volume", ref, level))
+
+
+class FakeCast:
+    available = True
+
+    def __init__(self):
+        self.played: list = []
+        self.controls: list = []
+        self.state = "PLAYING"
+
+    def speakers(self):
+        return [{"id": "cast:kitchen", "name": "Kitchen speaker", "kind": "cast", "group": False},
+                {"id": "cast:home", "name": "Whole house", "kind": "cast", "group": True}]
+
+    def name(self, ref):
+        return {"kitchen": "Kitchen speaker", "home": "Whole house"}.get(ref)
+
+    def play(self, ref, url, content_type, meta):
+        self.played.append((ref, url, content_type, meta["name"], meta.get("public_image")))
+
+    def status(self, ref):
+        return {"state": self.state, "idle_reason": None, "position": 0, "duration": 1}
+
+    def control(self, ref, action):
+        self.controls.append((ref, action))
+
+    def volume(self, ref, level):
+        self.controls.append(("volume", ref, level))
+
+    def get_volume(self, ref):
+        return 40
+
+
+def wait_for(check, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if check():
+            return True
+        time.sleep(0.02)
+    return check()
+
+
+def test_music_plays_on_airplay_and_cast_speakers(music_app):
+    app, root = music_app
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    sid = app.post("/panel/api/music/folders", json={"path": str(root)}, **panel).json["folders"][0]["id"]
+    # the player behind the routes, with fake speakers
+    player = music_player(app)
+    player.airplay, player.cast = FakeAirPlay(), FakeCast()
+
+    speakers = app.get("/panel/api/music/speakers").json["speakers"]
+    assert [(s["id"], s["group"]) for s in speakers] == [("airplay:den", False), ("cast:kitchen", False),
+                                                          ("cast:home", True)]
+    album = app.get(f"/panel/api/music/browse?source={sid}&kind=album&q=abbey").json["items"][0]
+    assert app.post("/panel/api/music/play", json={"ids": [album["id"]], "speakers": []}, **panel).status_code == 400
+
+    # an album on a HomePod and a Cast speaker at once: the same track on both
+    zones = app.post("/panel/api/music/play", json={"ids": [album["id"]], "speakers": ["airplay:den", "cast:kitchen"]},
+                     **panel).json["zones"]
+    assert zones[0]["names"] == ["Den HomePod", "Kitchen speaker"] and zones[0]["restarts_on_resume"]
+    assert wait_for(lambda: player.airplay.played and player.cast.played)
+    # AirPlay gets the file itself (WAV plays as it is); Cast gets the signed address and the cover
+    assert player.airplay.played[0][1].endswith("01 Come Together.wav")
+    ref, url, content_type, name, image = player.cast.played[0]
+    assert (ref, content_type, name) == ("kitchen", "audio/wav", "Come Together")
+    assert url.startswith(f"http://marquee:8080/music/file/{sid}/")
+    played = app.get(url.replace("http://marquee:8080", ""), headers={"Range": "bytes=0-3"})
+    assert played.status_code == 206 and played.data == b"RIFF"
+    assert app.get(image.replace("http://marquee:8080", "")).data == b"JPEGDATA"
+
+    # when the first speaker finishes, the next track starts
+    player.airplay.futures[0].set_result(True)
+    assert wait_for(lambda: len(player.airplay.played) == 2)
+    assert player.airplay.played[1][2] == "Something"
+    zone = app.get("/panel/api/music/now").json["zones"][0]
+    assert (zone["index"], zone["track"]["name"], zone["state"]) == (1, "Something", "playing")
+
+    # "play next" goes after it; previous goes back; pause and play; volume; stop
+    nina = app.get(f"/panel/api/music/browse?source={sid}&kind=album&q=pastel").json["items"][0]
+    app.post("/panel/api/music/play", json={"ids": [nina["id"]], "speakers": ["airplay:den"], "option": "next"}, **panel)
+    assert [t["name"] for t in app.get("/panel/api/music/queue", query_string={"zone": zone["id"]}).json["items"]] == \
+        ["Come Together", "Something", "Be My Husband"]
+    app.post("/panel/api/music/control", json={"zone": zone["id"], "action": "previous"}, **panel)
+    assert wait_for(lambda: len(player.airplay.played) == 3 and player.airplay.played[2][2] == "Come Together")
+    app.post("/panel/api/music/control", json={"zone": zone["id"], "action": "pause"}, **panel)
+    assert app.get("/panel/api/music/now").json["zones"][0]["state"] == "paused"
+    assert ("kitchen", "pause") in player.cast.controls
+    app.post("/panel/api/music/control", json={"zone": zone["id"], "action": "play"}, **panel)
+    # AirPlay can't pause, so the track starts again
+    assert wait_for(lambda: len(player.airplay.played) == 4)
+    app.post("/panel/api/music/volume", json={"speaker": "cast:kitchen", "level": 30}, **panel)
+    assert ("volume", "kitchen", 30) in player.cast.controls
+    app.post("/panel/api/music/control", json={"zone": zone["id"], "action": "stop"}, **panel)
+    assert app.get("/panel/api/music/now").json["zones"] == []
+    assert "den" in player.airplay.stopped and ("kitchen", "stop") in player.cast.controls
+
+
+def test_music_from_any_source_plays_on_music_assistant_speakers(music_app):
+    app, root = music_app
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    sid = app.post("/panel/api/music/folders", json={"path": str(root)}, **panel).json["folders"][0]["id"]
+    fake = FakeMusicAssistant()
+
+    def answer(url, json=None, headers=None, timeout=None):
+        if json["command"] == "players/all":
+            fake.calls.append((json["command"], json["args"]))
+            return mock.Mock(status_code=200, json=mock.Mock(return_value=[
+                {"player_id": "ma_kitchen", "display_name": "Kitchen", "type": "player", "playback_state": "playing",
+                 "volume_level": 20, "group_members": ["ma_kitchen", "ma_den"], "can_group_with": ["ma_den"],
+                 "current_media": {"title": "Something", "artist": "The Beatles", "duration": 182}, "elapsed_time": 12,
+                 "elapsed_time_last_updated": time.time() - 30},
+                {"player_id": "ma_den", "display_name": "Den", "synced_to": "ma_kitchen", "playback_state": "playing"},
+                # an Apple TV paused in its own Plex app: not Music Assistant's, so not shown or controlled
+                {"player_id": "ma_tv", "display_name": "TV", "playback_state": "paused", "active_source": "com.plexapp.plex",
+                 "current_media": {"title": "Kim Possible"}}]))
+        if json["command"] in ("players/cmd/set_members", "players/cmd/volume_set", "player_queues/pause"):
+            fake.calls.append((json["command"], json["args"]))
+            return mock.Mock(status_code=200, json=mock.Mock(return_value=None))
+        return fake(url, json, headers, timeout)
+
+    with mock.patch("plexnfc.music.requests.post", side_effect=answer):
+        app.post("/panel/api/music/assistant", json={"url": "ma.local", "token": "good"}, **panel)
+        assert [s["id"] for s in app.get("/panel/api/music/sources").json["sources"]] == ["ma", sid]
+        album = app.get(f"/panel/api/music/browse?source={sid}&kind=album&q=abbey").json["items"][0]
+        # a folder album on two Music Assistant speakers: grouped, then its tracks' addresses queued
+        app.post("/panel/api/music/play", json={"ids": [album["id"]], "speakers": ["ma:ma_kitchen", "ma:ma_den"]},
+                 **panel)
+        assert ("players/cmd/set_members", {"target_player": "ma_kitchen", "player_ids_to_add": ["ma_den"]}) in fake.calls
+        def last(command):
+            return next(args for c, args in reversed(fake.calls) if c == command)
+        args = last("player_queues/play_media")
+        assert args["queue_id"] == "ma_kitchen"
+        assert [u.rsplit("/", 1)[1] for u in args["media"]] == ["track.wav", "track.wav"]
+        # Music Assistant's own music goes by its URI
+        app.post("/panel/api/music/play", json={"ids": ["ma|album|library://album/4"], "speakers": ["ma:ma_kitchen"],
+                                                "option": "add"}, **panel)
+        assert last("player_queues/play_media") == {"queue_id": "ma_kitchen", "media": ["library://album/4"],
+                                                    "option": "add"}
+        # but not on AirPlay or Cast, which Marquee streams to itself
+        refused = app.post("/panel/api/music/play", json={"ids": ["ma|album|library://album/4"],
+                                                          "speakers": ["cast:kitchen"]}, **panel)
+        assert refused.status_code == 400 and "Music Assistant's speakers" in refused.json["message"]
+        # what's playing: the group, as one
+        zones = app.get("/panel/api/music/now").json["zones"]
+        assert [(z["id"], z["names"], z["track"]["name"]) for z in zones] == [
+            ("ma:ma_kitchen", ["Kitchen", "Den"], "Something")]
+        assert 41 < zones[0]["position"] < 45  # 12 s when last updated, 30 s ago
+        app.post("/panel/api/music/control", json={"zone": "ma:ma_kitchen", "action": "pause"}, **panel)
+        assert last("player_queues/pause") == {"queue_id": "ma_kitchen"}
+        app.post("/panel/api/music/volume", json={"speaker": "ma:ma_den", "level": 15}, **panel)
+        assert last("players/cmd/volume_set") == {"player_id": "ma_den", "volume_level": 15}
+        # grouping: Den out of the Kitchen's group
+        app.post("/panel/api/music/group", json={"leader": "ma:ma_kitchen", "members": []}, **panel)
+        assert ("players/cmd/set_members", {"target_player": "ma_kitchen", "player_ids_to_add": [],
+                                            "player_ids_to_remove": ["ma_den"]}) in fake.calls
+        bad = app.post("/panel/api/music/group", json={"leader": "cast:x", "members": ["cast:y"]}, **panel)
+        assert bad.status_code == 400 and "Google Home" in bad.json["message"]
+
+
+def test_music_cards_from_the_music_tab(music_app):
+    app, root = music_app
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    sid = app.post("/panel/api/music/folders", json={"path": str(root)}, **panel).json["folders"][0]["id"]
+    player = music_player(app)
+    player.airplay, player.cast = FakeAirPlay(), FakeCast()
+    album = app.get(f"/panel/api/music/browse?source={sid}&kind=album&q=pastel").json["items"][0]
+
+    # a scan links the next card to the album on the Cast speaker
+    started = app.post("/panel/api/cards/scan", json={"movies": [{"music": album, "speaker": "cast:kitchen"}]}, **panel)
+    assert started.status_code == 200, started.json
+    box_headers = paired_box(app.plex, app)
+    linked = app.post("/remote/tap", json={"uid": "04-AA-BB-CC"}, headers=box_headers).json
+    assert linked["result"] == "linked" and "Pastel Blues - Nina Simone" in linked["message"]
+    app.post("/panel/api/cards/scan/stop", **panel)
+    card = app.get("/panel/api/cards").json["cards"][0]
+    assert (card["speaker"], card["speaker_name"], card["music"]["id"]) == ("cast:kitchen", "Kitchen speaker", album["id"])
+
+    # tapping it plays the album there
+    tapped = app.post("/remote/tap", json={"uid": "04-AA-BB-CC"}, headers=box_headers).json
+    assert tapped["result"] == "music" and tapped["message"].endswith("on Kitchen speaker")
+    assert wait_for(lambda: player.cast.played)
+    assert player.cast.played[0][3] == "Be My Husband"
+    # a speaker that isn't one is refused
+    bad = app.post("/panel/api/cards/link", json={"uid": "04-11-22-33", "music": album, "speaker": "media_player.x"},
+                   **panel)
+    assert bad.status_code == 400
+
+
+def test_jellyfin_music_source():
+    from plexnfc.musiclib import JellyfinMusicSource
+
+    client = mock.Mock(url="http://jf:8096", api_key="KEY", user_id=None)
+    responses = {
+        "/Items": lambda **p: {"Items": [
+            {"Id": "a1", "Type": "MusicAlbum", "Name": "Blue", "AlbumArtist": "Joni Mitchell", "ProductionYear": 1971,
+             "ImageTags": {"Primary": "x"}},
+        ]} if p.get("IncludeItemTypes") == "MusicAlbum" and "ParentId" not in p else {"Items": [
+            {"Id": "t2", "Type": "Audio", "Name": "River", "Album": "Blue", "AlbumArtist": "Joni Mitchell",
+             "IndexNumber": 7, "RunTimeTicks": 2_000_000_000},
+        ]} if p.get("ParentId") == "a1" else {"Items": [{"Id": "a1", "Type": "MusicAlbum", "Name": "Blue"}]},
+    }
+    client.get.side_effect = lambda path, **params: responses[path](**params)
+    source = JellyfinMusicSource(mock.Mock(id="j1", name="Jellyfin", client=client))
+    albums = source.browse("album", "blue")
+    assert [(a["id"], a["name"], a["artist"], a["year"]) for a in albums] == [("jf-j1|album|a1", "Blue", "Joni Mitchell", 1971)]
+    assert albums[0]["image"] == "panel/api/music/art?id=jf-j1%7Calbum%7Ca1"
+    assert client.get.call_args.kwargs["SearchTerm"] == "blue"
+    tracks = source.open("album", "a1")["tracks"]
+    assert [(t["number"], t["name"], t["duration"]) for t in tracks] == [(7, "River", 200)]
+    # Jellyfin makes MP3 of anything, which every kind of speaker plays
+    url, content_type = source.stream(tracks[0])
+    assert content_type == "audio/mpeg" and url.startswith("http://jf:8096/Audio/t2/stream.mp3?") and "api_key=KEY" in url
+
+
+def test_plex_music_source():
+    from plexnfc.musiclib import PlexMusicSource
+
+    track = mock.Mock(type="track", ratingKey=55, title="Hey Jude", grandparentTitle="The Beatles", originalTitle=None,
+                      parentTitle="1", thumb="/t", duration=431000, index=21)
+    track.media = [mock.Mock(parts=[mock.Mock(key="/library/parts/9/file.flac", file="/music/Hey Jude.flac")])]
+    album = mock.Mock(type="album", ratingKey=12, title="1", parentTitle="The Beatles", thumb="/a", duration=None,
+                      index=None, year=2000)
+    album.tracks.return_value = [track]
+    section = mock.Mock(type="artist")
+    section.search.return_value = [album]
+    server = mock.Mock()
+    server.library.sections.return_value = [mock.Mock(type="movie"), section]
+    server.fetchItem.side_effect = lambda key: {12: album, 55: track}[key]
+    server.url.side_effect = lambda path, includeToken=False: f"http://plex:32400{path}?X-Plex-Token=tok"
+    source = PlexMusicSource(mock.Mock(server=server))
+
+    albums = source.browse("album", "one")
+    assert [(a["id"], a["name"], a["artist"], a["year"]) for a in albums] == [("plex|album|12", "1", "The Beatles", 2000)]
+    assert section.search.call_args.kwargs["title__icontains"] == "one"
+    tracks = source.open("album", "12")["tracks"]
+    assert [(t["name"], t["artist"], t["duration"], t["number"]) for t in tracks] == [("Hey Jude", "The Beatles", 431, 21)]
+    assert source.stream(tracks[0]) == ("http://plex:32400/library/parts/9/file.flac?X-Plex-Token=tok", "audio/flac")
+
+
+class FakeRAOPService:
+    def __init__(self, mandatory):
+        from pyatv.const import PairingRequirement
+        self.pairing = PairingRequirement.Mandatory if mandatory else PairingRequirement.NotNeeded
+        self.credentials = None
+
+
+class FakeAirPlayConf:
+    def __init__(self, identifier, name, mandatory):
+        self.identifier, self.name = identifier, name
+        self.service = FakeRAOPService(mandatory)
+        self.credentials = None
+
+    def get_service(self, protocol):
+        return self.service
+
+    def set_credentials(self, protocol, credentials):
+        self.credentials = credentials
+
+
+class FakeRAOPPairing:
+    """pyatv's AirPlay pairing handler: the TV shows 1234."""
+    def __init__(self, service):
+        self.service, self.has_paired, self.began, self.closed, self._pin = service, False, False, False, None
+
+    async def begin(self):
+        self.began = True
+
+    def pin(self, pin):
+        self._pin = pin
+
+    async def finish(self):
+        if self._pin == 1234:
+            self.has_paired = True
+            self.service.credentials = "CREDS"
+
+    async def close(self):
+        self.closed = True
+
+
+def test_airplay_speakers_pair_with_the_pin_on_the_tv(music_app, tmp_path):
+    import asyncio
+    from plexnfc.speakers import AirPlay
+    app, root = music_app
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    player = music_player(app)
+    path = tmp_path / "data" / "airplay_pairings.json"
+    den = FakeAirPlayConf("DEN", "Den Apple TV", mandatory=True)
+    homepod = FakeAirPlayConf("POD", "Kitchen HomePod", mandatory=False)
+    player.airplay = airplay = AirPlay(str(path))
+    airplay._devices, airplay._scanned = {"DEN": den, "POD": homepod}, time.monotonic()
+    handlers = []
+
+    async def pair(conf, protocol, loop, **kwargs):
+        handlers.append(FakeRAOPPairing(conf.service))
+        return handlers[-1]
+
+    speakers = {s["id"]: s for s in app.get("/panel/api/music/speakers", **panel).json["speakers"]}
+    assert speakers["airplay:DEN"]["pairing"] == "needed"
+    assert speakers["airplay:POD"]["pairing"] is None
+    # an unpaired Apple TV is refused before streaming, with a hint
+    with pytest.raises(Exception, match="Pair Den Apple TV first"):
+        airplay.play("DEN", "/x.mp3", {"name": "x"})
+
+    assert app.post("/panel/api/music/airplay/pair", json={"speaker": "cast:x"}, **panel).status_code == 400
+    with mock.patch("plexnfc.speakers.pyatv.pair", pair):
+        pair_id = app.post("/panel/api/music/airplay/pair", json={"speaker": "airplay:DEN"}, **panel).json["pair_id"]
+        assert handlers[0].began
+        wrong = app.post("/panel/api/music/airplay/pair/finish", json={"pair_id": pair_id, "pin": "9999"}, **panel)
+        assert wrong.status_code == 400 and "wasn't accepted" in wrong.json["message"]
+        # a pairing is used once
+        again = app.post("/panel/api/music/airplay/pair/finish", json={"pair_id": pair_id, "pin": "1234"}, **panel)
+        assert "expired" in again.json["message"]
+        pair_id = app.post("/panel/api/music/airplay/pair", json={"speaker": "airplay:DEN"}, **panel).json["pair_id"]
+        done = app.post("/panel/api/music/airplay/pair/finish", json={"pair_id": pair_id, "pin": " 12 34 "}, **panel).json
+    assert done["name"] == "Den Apple TV" and handlers[-1].closed
+    assert {s["id"]: s for s in done["speakers"]}["airplay:DEN"]["pairing"] == "paired"
+    assert json.loads(path.read_text())["speakers"]["DEN"]["credentials"] == "CREDS"
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+    # kept across restarts, and handed to pyatv before connecting
+    airplay = AirPlay(str(path))
+    airplay._devices, airplay._scanned = {"DEN": den}, time.monotonic()
+    assert airplay.pairing_state("DEN") == "paired"
+
+    async def connect(conf, loop):
+        raise ConnectionError("not really")
+    with mock.patch("plexnfc.speakers.pyatv.connect", connect):
+        with pytest.raises(Exception):
+            airplay.play("DEN", "/x.mp3", {"name": "x"}).result(3)
+    assert den.credentials == "CREDS"
+
+    player.airplay = airplay
+    app.post("/panel/api/music/airplay/unpair", json={"speaker": "airplay:DEN"}, **panel)
+    assert airplay.pairing_state("DEN") == "needed" and json.loads(path.read_text())["speakers"] == {}
+
+
+def test_airplay_uses_the_apple_tv_pairing_from_the_apple_tvs_section(tmp_path):
+    from plexnfc.speakers import AirPlay
+    den = FakeAirPlayConf("DEN", "Den Apple TV", mandatory=True)
+    den.all_identifiers = ["DEN", "aa:bb"]
+    other = FakeAirPlayConf("GUEST", "Guest Room Apple TV", mandatory=True)
+    linked = {"aa:bb": "LINKED"}
+    airplay = AirPlay(str(tmp_path / "p.json"), lambda ids: next((linked[i] for i in ids if i in linked), None))
+    airplay._devices, airplay._scanned = {"DEN": den, "GUEST": other}, time.monotonic()
+    states = {s["id"]: s["pairing"] for s in airplay.speakers()}
+    assert states == {"airplay:DEN": "linked", "airplay:GUEST": "needed"}
+    assert airplay.credentials("DEN") == "LINKED"
+
+
+def test_apple_tv_credentials_by_identifier(tmp_path):
+    from plexnfc.appletv import AppleTVs
+    tvs = AppleTVs(str(tmp_path / "apple_tvs.json"))
+    tvs._links = {"Den": {"identifier": "X", "identifiers": ["X", "aa:bb"], "name": "Den", "credentials": "C"}}
+    assert tvs.credentials_for(["zz", "aa:bb"]) == "C"
+    assert tvs.credentials_for(["zz"]) is None

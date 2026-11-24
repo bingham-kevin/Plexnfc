@@ -162,7 +162,7 @@ You can add more steps to the same script: dim the lights, close the blinds, tur
 
 ## The Marquee integration: automations that follow the movie
 
-The **Marquee** integration (in `custom_components/marquee`) works the other way round. Home Assistant hears what Marquee plays, so automations can dim the lights when a movie starts, raise them a little on pause, and bring them back up when it stops or ends. It works with Marquee Server on a Mac, or with the plexnfc Home Assistant app once that's updated.
+The **Marquee** integration (in `custom_components/marquee`) works the other way round. Home Assistant hears what Marquee plays, so automations can dim the lights when a movie starts, raise them a little on pause, and bring them back up when it stops or ends. With Music Assistant, it also lets Movie Remote cards play music (see [Music cards](#music-cards-with-music-assistant)). It works with Marquee Server on a Mac, or with the plexnfc Home Assistant app once that's updated.
 
 ### Install
 
@@ -189,6 +189,27 @@ actions:
 ```
 
 If the server is reinstalled, or Home Assistant is removed in its control panel, Home Assistant asks you to pair again with a new code.
+
+### Music cards, with Music Assistant
+
+The **Music** tab ([docs/music.md](music.md)) is where music cards are linked now, from any music source, for AirPlay, Cast or Music Assistant speakers. This section covers how Marquee reaches Music Assistant.
+
+With [Music Assistant](https://music-assistant.io), a Movie Remote card can play music too: an album, playlist, artist, track or radio station, on a speaker you choose. Marquee reaches Music Assistant in one of two ways:
+
+- **Directly** (Home Assistant isn't needed). In Marquee's control panel, open **Music**, and under **Music settings › Music Assistant** choose **Connect**. Enter Music Assistant's address (port 8095, such as `http://homeassistant.local:8095`; it's the same when Music Assistant runs as a Home Assistant app) and a long-lived token: in Music Assistant, open **Settings › Profile**, and under **Long-lived access tokens** make one called Marquee. Marquee tries it before keeping it, and keeps the token on the server only (`music_assistant.json`, beside the cards). It can also be set with `MUSIC_ASSISTANT_URL` and `MUSIC_ASSISTANT_TOKEN`.
+- **Through Home Assistant**, with the Marquee integration and Music Assistant's integration both set up there. Nothing to set up in Marquee.
+
+When both are there, Marquee uses the direct connection, and falls back to Home Assistant if Music Assistant stops answering. A card keeps its speaker's Music Assistant player ID, so it works either way.
+
+1. In Marquee's control panel, open **Music**. Choose one speaker, and find the music.
+2. Choose **Link next card** and hold a blank card on a Movie Remote. A card a reader has just read that isn't linked gets its own button: **Link card XX-XX-XX-XX**.
+3. Tap the card on the box: the music starts on that speaker, replacing what's playing there, and the box shows what's playing where.
+
+**Any NFC reader in Home Assistant works too**, not only a Movie Remote: a screen running Tessera with a PN532, an ESPHome reader, or the Home Assistant app on a phone. The integration sends every card Home Assistant reads (its `tag_scanned` event) to Marquee: a music card plays on its speaker, a movie card plays on the default Marquee player, a scan in the control panel links the card, and a card Marquee doesn't know shows under **Card not linked**. Each one also fires a `marquee_card` event (`tag_id`, `device_id`, `result`: `music`, `movie`, `linked`, `unknown` or `error`, `title`, `message`), for a sound or a notification. Tags with their own automations in Home Assistant still run them as well.
+
+Cards read by a reader in Home Assistant need the integration, of course; with the direct connection, Marquee plays their music itself and the integration only passes the card on.
+
+Without the direct connection, Marquee Server has no Home Assistant token for music either. The integration keeps a request open to the server, telling it which Music Assistant speakers there are; when a card is tapped or the panel searches, the server hands the job to the integration, which runs Music Assistant's own `music_assistant.search` and `music_assistant.play_media` actions. Music cards then work only while Home Assistant, the integration and Music Assistant are running, and the control panel says if one of them isn't.
 
 ## Troubleshooting
 
