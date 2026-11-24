@@ -1876,8 +1876,9 @@ class FakeCast:
     def name(self, ref):
         return {"kitchen": "Kitchen speaker", "home": "Whole house"}.get(ref)
 
-    def play(self, ref, url, content_type, meta):
+    def play(self, ref, url, content_type, meta, seek=0.0):
         self.played.append((ref, url, content_type, meta["name"], meta.get("public_image")))
+        self.seeks = getattr(self, "seeks", []) + [seek]
 
     def status(self, ref):
         return {"state": self.state, "idle_reason": None, "position": 0, "duration": 1}
@@ -1918,7 +1919,9 @@ def test_music_plays_on_airplay_and_cast_speakers(music_app):
     # an album on a HomePod and a Cast speaker at once: the same track on both
     zones = app.post("/panel/api/music/play", json={"ids": [album["id"]], "speakers": ["airplay:den", "cast:kitchen"]},
                      **panel).json["zones"]
-    assert zones[0]["names"] == ["Den HomePod", "Kitchen speaker"] and zones[0]["restarts_on_resume"]
+    # AirPlay can't pause, so a track starts again on resume: where it was, given ffmpeg
+    assert zones[0]["names"] == ["Den HomePod", "Kitchen speaker"]
+    assert zones[0]["restarts_on_resume"] == (player._ffmpeg_path() is None)
     assert wait_for(lambda: player.airplay.played and player.cast.played)
     # AirPlay gets the file itself (WAV plays as it is); Cast gets the signed address and the cover
     assert player.airplay.played[0][1].endswith("01 Come Together.wav")
@@ -2214,3 +2217,248 @@ def test_apple_tv_credentials_by_identifier(tmp_path):
     tvs._links = {"Den": {"identifier": "X", "identifiers": ["X", "aa:bb"], "name": "Den", "credentials": "C"}}
     assert tvs.credentials_for(["zz", "aa:bb"]) == "C"
     assert tvs.credentials_for(["zz"]) is None
+
+
+# ---- audiobooks (Audiobookshelf) ------------------------------------------------------
+
+def abs_book(book_id, title, series=None, cover=True, seq=None):
+    """A library item the way Audiobookshelf lists one (minified)."""
+    return {"id": book_id, "mediaType": "book", "media": {
+        "metadata": {"title": title, "authorName": "Ada Author", "narratorName": "Sam Reader",
+                     "seriesName": series, "series": {"id": "s1", "name": series, "sequence": seq} if series else None,
+                     "publishedYear": "2001", "description": f"About {title}"},
+        "coverPath": "/metadata/cover.jpg" if cover else None, "duration": 270}}
+
+
+class FakeAudiobookshelf:
+    """Answers Audiobookshelf's API from memory, like the real 2.38 server, and keeps
+    the progress it's sent."""
+
+    def __init__(self):
+        self.progress = {"b1": {"currentTime": 100.5, "isFinished": False}}
+        self.saved: list = []
+        self.calls: list = []
+
+    def __call__(self, method, path, *, raw=False, timeout=15, params=None, json=None):
+        self.calls.append((method, path, params))
+        books = [abs_book("b1", "Book One", "Test Series", seq="1"), abs_book("b2", "Lonely Book", cover=False)]
+        if path == "/api/libraries":
+            return {"libraries": [{"id": "L1", "name": "Audiobooks", "mediaType": "book"},
+                                  {"id": "P1", "name": "Podcasts", "mediaType": "podcast"}]}
+        if path == "/api/me":
+            return {"username": "kevin"}
+        if path == "/api/libraries/L1/items":
+            if (params or {}).get("filter", "").startswith("series."):
+                return {"results": books[:1]}
+            return {"results": books, "total": 2}
+        if path == "/api/libraries/L1/search":
+            return {"book": [{"libraryItem": b} for b in books if params["q"].lower() in b["media"]["metadata"]["title"].lower()],
+                    "authors": [], "series": []}
+        if path == "/api/libraries/L1/authors":
+            return {"authors": [{"id": "a1", "name": "Ada Author", "lastFirst": "Author, Ada", "numBooks": 2, "imagePath": None}]}
+        if path == "/api/libraries/L1/series":
+            return {"results": [{"id": "s1", "name": "Test Series", "books": books[:1]}]}
+        if path == "/api/authors/a1":
+            return {"id": "a1", "name": "Ada Author", "libraryItems": books}
+        if path == "/api/items/b1":
+            item = abs_book("b1", "Book One", "Test Series", seq="1")
+            item["media"]["metadata"]["series"] = [{"id": "s1", "name": "Test Series", "sequence": "1"}]
+            item["media"]["tracks"] = [
+                {"index": i + 1, "ino": str(120 + i), "startOffset": i * 90, "duration": 90, "title": f"Chapter {i + 1}",
+                 "mimeType": "audio/mpeg"} for i in range(3)]
+            item["media"]["chapters"] = [{"id": i, "start": i * 90, "end": (i + 1) * 90, "title": f"Chapter {i + 1}"}
+                                         for i in range(3)]
+            return item
+        if path.startswith("/api/me/progress/"):
+            book = path.rsplit("/", 1)[1]
+            if method == "PATCH":
+                self.saved.append((book, json))
+                self.progress[book] = json
+                return {}
+            return self.progress.get(book)
+        if path.endswith("/cover"):
+            return mock.Mock(content=b"COVER", headers={"Content-Type": "image/jpeg"})
+        return None
+
+
+def books_app(music_app):
+    """The app, with Audiobookshelf connected (a fake) and fake speakers."""
+    app, root = music_app
+    player = music_player(app)
+    abs_ = player.library.audiobookshelf
+    abs_.url, abs_.token = "http://abs:13378", "KEY"
+    fake = FakeAudiobookshelf()
+    abs_.request = fake
+    player.airplay, player.cast = FakeAirPlay(), FakeCast()
+    return app, player, fake
+
+
+def test_audiobookshelf_books_authors_and_series(music_app):
+    app, player, fake = books_app(music_app)
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    state = app.get("/panel/api/books", **panel).json
+    # only the audiobook library; podcasts are left out
+    assert state["audiobookshelf"]["libraries"] == [{"id": "L1", "name": "Audiobooks"}]
+    assert [s["id"] for s in state["sources"]] == ["abs"]
+    # Audiobookshelf is a Books source, not a music one
+    assert "abs" not in [s["id"] for s in app.get("/panel/api/music/sources", **panel).json["sources"]]
+
+    books = app.get("/panel/api/music/browse?source=abs&kind=book", **panel).json["items"]
+    assert [(b["id"], b["name"], b["artist"], b["album"], b["narrator"], b["year"]) for b in books] == [
+        ("abs|book|b1", "Book One", "Ada Author", "Test Series", "Sam Reader", 2001),
+        ("abs|book|b2", "Lonely Book", "Ada Author", "", "Sam Reader", 2001)]
+    assert books[0]["image"] == "panel/api/music/art?id=abs%7Cbook%7Cb1" and books[1]["image"] is None
+    assert [b["name"] for b in app.get("/panel/api/music/browse?source=abs&kind=book&q=lonely", **panel).json["items"]] == [
+        "Lonely Book"]
+    authors = app.get("/panel/api/music/browse?source=abs&kind=author", **panel).json["items"]
+    assert [(a["name"], a["count"]) for a in authors] == [("Ada Author", 2)]
+    assert [b["name"] for b in app.get("/panel/api/music/item?id=abs|author|a1", **panel).json["albums"]] == [
+        "Book One", "Lonely Book"]
+    series = app.get("/panel/api/music/browse?source=abs&kind=series", **panel).json["items"]
+    assert [(x["name"], x["count"]) for x in series] == [("Test Series", 1)]
+    assert [b["name"] for b in app.get("/panel/api/music/item?id=abs|series|s1", **panel).json["albums"]] == ["Book One"]
+
+    # a book: its files as tracks (where each starts), its chapters, and where you are in it
+    opened = app.get("/panel/api/music/item?id=abs|book|b1", **panel).json
+    assert [(t["name"], t["offset"]) for t in opened["tracks"]] == [("Chapter 1", 0), ("Chapter 2", 90), ("Chapter 3", 180)]
+    assert [c["title"] for c in opened["chapters"]] == ["Chapter 1", "Chapter 2", "Chapter 3"]
+    assert opened["progress"] == {"position": 100.5, "finished": False}
+    assert app.get("/panel/api/music/art?id=abs|book|b1", **panel).data == b"COVER"
+    # speakers get the file with the key (as Audiobookshelf's own apps cast it)
+    url, content_type = player.library.stream(opened["tracks"][1])
+    assert url == "http://abs:13378/api/items/b1/file/121?token=KEY" and content_type == "audio/mpeg"
+
+
+def test_audiobookshelf_connection_is_tried_and_kept_private(tmp_path):
+    from plexnfc.audiobookshelf import Audiobookshelf, AudiobookshelfError
+
+    abs_ = Audiobookshelf(str(tmp_path / "audiobookshelf.json"))
+    answers = {"good": mock.Mock(ok=True, status_code=200, json=lambda: {"username": "kevin"}),
+               "bad": mock.Mock(ok=False, status_code=401)}
+    with mock.patch("plexnfc.audiobookshelf.requests.get",
+                    side_effect=lambda url, headers, timeout: answers[headers["Authorization"].split()[1]]):
+        with pytest.raises(AudiobookshelfError, match="didn't accept"):
+            abs_.set("nas.local:13378", "bad")
+        assert not abs_.configured
+        abs_.set("nas.local:13378", "good")
+    assert (abs_.url, abs_.user) == ("http://nas.local:13378", "kevin")
+    path = tmp_path / "audiobookshelf.json"
+    assert json.loads(path.read_text()) == {"url": "http://nas.local:13378", "token": "good"}
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    abs_.set("", None)
+    assert not abs_.configured and json.loads(path.read_text()) == {}
+
+
+def test_books_resume_where_you_left_off_and_report_back(music_app):
+    from plexnfc.speakers import BookProgress
+    app, player, fake = books_app(music_app)
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    player.cast.state = "PLAYING"
+
+    # Audiobookshelf says 100.5 s: that's 10.5 s into the second file
+    zones = app.post("/panel/api/music/play", json={"ids": ["abs|book|b1"], "speakers": ["cast:kitchen"]}, **panel).json["zones"]
+    assert wait_for(lambda: player.cast.played)
+    assert player.cast.played[0][1] == "http://abs:13378/api/items/b1/file/121?token=KEY"
+    assert player.cast.seeks[0] == pytest.approx(10.5)
+    zone = player.now()[0]
+    assert zone["book"]["id"] == "abs|book|b1" and zone["book"]["duration"] == 270
+    assert zone["book"]["position"] == pytest.approx(100.5, abs=1)
+    assert [t["name"] for t in zone["queue"]] == ["Chapter 2", "Chapter 3"]
+
+    # stopping reports where it got to
+    session = player.sessions[0]
+    session.started -= 20  # 20 s later
+    app.post("/panel/api/music/control", json={"zone": zones[0]["id"], "action": "stop"}, **panel)
+    book, body = fake.saved[-1]
+    assert book == "b1" and body["currentTime"] == pytest.approx(120.5, abs=1) and body["duration"] == 270
+    assert body["isFinished"] is False
+
+    # a chapter from the panel: from its start; and from the start of the book
+    player.cast.played.clear()
+    app.post("/panel/api/music/play", json={"ids": ["abs|book|b1"], "speakers": ["cast:kitchen"], "position": 180},
+             **panel)
+    assert wait_for(lambda: player.cast.played)
+    assert player.cast.played[0][1].endswith("/file/122?token=KEY") and player.cast.seeks[-1] == 0
+    # the end of the book counts as finished
+    progress = BookProgress(player)
+    tracks = player.library.books.book_tracks("b1")
+    progress._zones["z"] = {"book": "b1", "tracks": tracks, "duration": 270, "last": 268, "sent": None}
+    progress._send(progress._zones["z"])
+    assert fake.saved[-1][1]["isFinished"] is True
+    player.control(player.sessions[0].id, "stop")
+
+
+def test_book_cards_scan_tap_and_print(music_app):
+    app, player, fake = books_app(music_app)
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    book = app.get("/panel/api/music/browse?source=abs&kind=book", **panel).json["items"][0]
+    started = app.post("/panel/api/cards/scan", json={"movies": [{"music": book, "speaker": "cast:kitchen"}]}, **panel)
+    assert started.json["scan"]["current"]["title"] == "Book One - Ada Author"
+    box = paired_box(app.plex, app)
+    linked = app.post("/remote/tap", json={"uid": "04-B0-0C-01"}, headers=box).json
+    assert linked["result"] == "linked"
+    app.post("/panel/api/cards/scan/stop", **panel)
+
+    # tapping it picks the book up where it was left
+    tapped = app.post("/remote/tap", json={"uid": "04-B0-0C-01"}, headers=box).json
+    assert tapped["result"] == "music" and tapped["message"].endswith("on Kitchen speaker")
+    assert wait_for(lambda: player.cast.played) and player.cast.seeks[0] == pytest.approx(10.5)
+    player.control(player.sessions[0].id, "stop")
+
+    # the printed book: a page per book, the card's QR code and speaker on its page
+    page = app.get("/book/books?layout=grid&qr=1").get_data(as_text=True)
+    assert "Book One" in page and "Lonely Book" in page and "2 books" in page
+    assert "Plays on Kitchen speaker" in page and page.count('class="qr"') == 1
+    assert "Story Time" in page and "read by Sam Reader" in page
+    only = app.get("/book/books?cards=1").get_data(as_text=True)
+    assert "Book One" in only and "Lonely Book" not in only
+    assert "Lonely Book" not in app.get("/book/books?what=series:s1").get_data(as_text=True)
+    # the QR code's address plays the card
+    player.cast.played.clear()
+    played = app.get("/c/04-B0-0C-01")
+    assert played.status_code == 200 and "Book One" in played.get_data(as_text=True)
+    assert wait_for(lambda: player.cast.played)
+    player.control(player.sessions[0].id, "stop")
+    assert app.get("/c/04-FF-FF-FF").status_code == 404
+
+
+def test_music_book_of_albums(music_app):
+    app, root = music_app
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    sid = app.post("/panel/api/music/folders", json={"path": str(root)}, **panel).json["folders"][0]["id"]
+    player = music_player(app)
+    player.airplay, player.cast = FakeAirPlay(), FakeCast()
+    albums = {a["name"]: a for a in app.get(f"/panel/api/music/browse?source={sid}&kind=album", **panel).json["items"]}
+    app.post("/panel/api/cards/link", json={"uid": "04-AB-CD-EF", "music": albums["Abbey Road"], "speaker": "cast:kitchen"},
+             **panel)
+    # every album with a card, when no source is chosen
+    carded = app.get("/book/music?layout=full").get_data(as_text=True)
+    assert "Abbey Road" in carded and "Pastel Blues" not in carded and "Now spinning" in carded
+    # a source's albums, all of them or only those with a card
+    every = app.get(f"/book/music?source={sid}&what=album&cards=0").get_data(as_text=True)
+    assert "Abbey Road" in every and "Pastel Blues" in every and "2 albums" in every
+    assert "Pastel Blues" not in app.get(f"/book/music?source={sid}&cards=1").get_data(as_text=True)
+    assert app.get("/book/music?layout=nope").status_code == 400
+
+
+def test_books_on_music_assistant_start_partway_and_are_followed(music_app):
+    app, player, fake = books_app(music_app)
+    calls = []
+
+    def call(command, timeout=15, **args):
+        calls.append((command, args))
+        if command == "player_queues/get":
+            return {"state": "playing", "elapsed_time": 15, "current_item": {"media_item": {
+                "uri": "builtin://track/http://abs:13378/api/items/b1/file/121?token=KEY"}}}
+        return None
+    player._assistant = lambda: object()
+    player._call = call
+    player.play(["abs|book|b1"], ["ma:den"])
+    # the files from the one you're in, then a move 10 s into it once it's playing
+    media = next(a for c, a in calls if c == "player_queues/play_media")["media"]
+    assert media == ["http://abs:13378/api/items/b1/file/121?token=KEY", "http://abs:13378/api/items/b1/file/122?token=KEY"]
+    assert wait_for(lambda: ("player_queues/seek", {"queue_id": "den", "position": 10}) in calls)
+    # where it is: the file Music Assistant is on, and how far into it
+    assert player.progress.book_of("ma:den")["position"] == 105
+    player.progress.report("ma:den")
+    assert fake.saved[-1][0] == "b1" and fake.saved[-1][1]["currentTime"] == 105

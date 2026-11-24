@@ -14,17 +14,17 @@ const SPEAKER_KINDS: Record<Speaker["kind"], string> = {
   music_assistant: "Music Assistant", airplay: "AirPlay", cast: "Cast",
 };
 
-const useMusicSources = () =>
+export const useMusicSources = () =>
   useQuery({ queryKey: ["music-sources"], queryFn: () => get<MusicSources>("music/sources"),
              refetchInterval: (q) => (q.state.data?.folders.some((f) => f.scanning) ? 2000 : 30000) });
-const useSpeakers = () =>
+export const useSpeakers = () =>
   useQuery({ queryKey: ["music-speakers"], queryFn: () => get<{ speakers: Speaker[] }>("music/speakers"),
              refetchInterval: 10000 });
 const useZones = () =>
   useQuery({ queryKey: ["music-now"], queryFn: () => get<{ zones: Zone[] }>("music/now"), refetchInterval: 3000 });
 
 /** A POST from the Music tab: toasts its error, refreshes what's playing. */
-function useMusicAction<V>(path: string, body: (v: V) => object, done?: (v: V) => string) {
+export function useMusicAction<V>(path: string, body: (v: V) => object, done?: (v: V) => string) {
   const client = useQueryClient();
   const toast = useToast();
   return useMutation({
@@ -38,12 +38,15 @@ function useMusicAction<V>(path: string, body: (v: V) => object, done?: (v: V) =
   });
 }
 
-const time = (s?: number | null) =>
-  s == null ? "" : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+/** 3:07, or 7:12:05 for something over an hour */
+export const time = (s?: number | null) => {
+  if (s == null) return "";
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = String(Math.floor(s % 60)).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+};
 
-/** Music from every source, played on AirPlay, Cast and Music Assistant speakers. */
-export function Music({ overview }: { overview: Overview }) {
-  const canManage = overview.can_manage;
+/** The speakers chosen to play on, kept in the browser (shared by Music and Books). */
+export function useSpeakerSelection(): [string[], (ids: string[]) => void] {
   const [selected, setSelected] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem(SPEAKERS_KEY) ?? "[]"); } catch { return []; }
   });
@@ -51,6 +54,13 @@ export function Music({ overview }: { overview: Overview }) {
     setSelected(ids);
     try { localStorage.setItem(SPEAKERS_KEY, JSON.stringify(ids)); } catch { /* fine */ }
   };
+  return [selected, choose];
+}
+
+/** Music › Library: what's playing, the speakers, and music from every source. */
+export function MusicLibraryPage({ overview }: { overview: Overview }) {
+  const canManage = overview.can_manage;
+  const [selected, choose] = useSpeakerSelection();
   const cards = useCards();
   return (
     <>
@@ -58,14 +68,19 @@ export function Music({ overview }: { overview: Overview }) {
       <Zones canManage={canManage} />
       <Speakers selected={selected} onChange={choose} canManage={canManage} />
       <Library selected={selected} canManage={canManage} unknown={cards.data?.unknown?.uid ?? null} />
-      {canManage && <MusicSettings />}
     </>
   );
 }
 
+/** Music › Sources: music folders, Music Assistant, and the kinds of speaker. */
+export function MusicSourcesPage({ overview }: { overview: Overview }) {
+  return overview.can_manage ? <MusicSettings />
+    : <section className="card"><h2>Music sources</h2><p className="muted">Open the control panel on the server to change these.</p></section>;
+}
+
 // ---- what's playing ----------------------------------------------------------------
 
-function Zones({ canManage }: { canManage: boolean }) {
+export function Zones({ canManage }: { canManage: boolean }) {
   const zones = useZones();
   if (!zones.data?.zones.length) return null;
   return (
@@ -91,7 +106,8 @@ function ZoneView({ zone, canManage }: { zone: Zone; canManage: boolean }) {
         <div className="muted">{[zone.track.artist, zone.track.album].filter(Boolean).join(" · ")}</div>
         <div className="muted small">
           {zone.names.join(" + ")}
-          {zone.track.duration ? ` · ${time(zone.position)} / ${time(zone.track.duration)}` : ""}
+          {zone.book ? ` · ${time(zone.book.position)} of ${time(zone.book.duration)} in the book`
+            : zone.track.duration ? ` · ${time(zone.position)} / ${time(zone.track.duration)}` : ""}
           {zone.kind === "marquee" && zone.speakers.length > 1 && " · not in sync"}
         </div>
         {zone.error && <div className="err small">{zone.error}</div>}
@@ -138,7 +154,7 @@ function Queue({ zone, canManage, onJump }: { zone: Zone; canManage: boolean; on
 
 // ---- speakers ----------------------------------------------------------------------
 
-function Speakers({ selected, onChange, canManage }:
+export function Speakers({ selected, onChange, canManage }:
   { selected: string[]; onChange: (ids: string[]) => void; canManage: boolean }) {
   const speakers = useSpeakers();
   const list = speakers.data?.speakers ?? [];
@@ -160,7 +176,7 @@ function Speakers({ selected, onChange, canManage }:
       {speakers.isPending && <p className="muted">Looking for speakers…</p>}
       {speakers.data && !list.length && (
         <p className="muted">No speakers yet. AirPlay and Cast speakers on the network show up here on their own; for
-          Music Assistant's, connect it under <b>Music settings</b> below.</p>
+          Music Assistant's, connect it under <a href="#music/sources">Music › Sources</a>.</p>
       )}
       {(Object.keys(groups) as Speaker["kind"][]).map((kind) => (
         <div key={kind} className="speaker-group">
@@ -285,8 +301,9 @@ function Library({ selected, canManage, unknown }: { selected: string[]; canMana
     return (
       <section className="card">
         <h2>Library</h2>
-        <p className="muted">No music yet. Add a music folder or connect Music Assistant under <b>Music settings</b>;
-          Plex music libraries and Jellyfin servers added on the Sources tab show up here too.</p>
+        <p className="muted">No music yet. Add a music folder or connect Music Assistant under <a href="#music/sources">Music
+          › Sources</a>; Plex music libraries and Jellyfin servers added under <a href="#movies/sources">Movies › Sources</a> show
+          up here too.</p>
       </section>
     );
   }
@@ -335,13 +352,15 @@ function Library({ selected, canManage, unknown }: { selected: string[]; canMana
   );
 }
 
-function Tile({ item, onOpen, showSource }: { item: LibItem; onOpen: () => void; showSource?: string }) {
+export function Tile({ item, onOpen, showSource }: { item: LibItem; onOpen: () => void; showSource?: string }) {
   return (
-    <button className={`tile${item.kind === "artist" ? " round" : ""}`} onClick={onOpen}>
-      <Art image={item.image} className="tile-art" />
+    <button className={`tile${item.kind === "artist" || item.kind === "author" ? " round" : ""}`} onClick={onOpen}>
+      <Art image={item.image} className="tile-art" icon={iconFor(item.id)} />
       <b>{item.name}</b>
       <span className="muted small">
-        {[item.kind !== "album" && item.kind, item.artist, item.year, showSource].filter(Boolean).join(" · ")}
+        {[!["album", "book"].includes(item.kind) && item.kind, item.artist,
+          item.count != null && `${item.count} book${item.count === 1 ? "" : "s"}`, item.year, showSource]
+          .filter(Boolean).join(" · ")}
       </span>
     </button>
   );
@@ -418,7 +437,7 @@ function ItemView({ id, selected, canManage, unknown, onOpen, onBack }:
 }
 
 /** Link a card to this item on the chosen speaker: the card just read, or the next one. */
-function LinkCard({ item, selected, unknown }: { item: LibItem; selected: string[]; unknown: string | null }) {
+export function LinkCard({ item, selected, unknown }: { item: LibItem; selected: string[]; unknown: string | null }) {
   const client = useQueryClient();
   const toast = useToast();
   const music = { id: item.id, name: item.name, artist: item.artist, image: item.image };
@@ -446,7 +465,7 @@ function LinkCard({ item, selected, unknown }: { item: LibItem; selected: string
   );
 }
 
-function CardScan({ state, canManage }: { state: CardsState; canManage: boolean }) {
+export function CardScan({ state, canManage }: { state: CardsState; canManage: boolean }) {
   const client = useQueryClient();
   const stop = useMutation({
     mutationFn: () => post<CardsState>("cards/scan/stop"),
@@ -491,7 +510,7 @@ function MusicSettings() {
   const ma = status.data;
   return (
     <section className="card">
-      <h2>Music settings</h2>
+      <h2>Music sources</h2>
       <h3>Music folders</h3>
       <p className="muted">Folders of music files on this server or a mounted share. Albums come from the files' tags,
         or from Artist/Album folders; .m3u files become playlists.</p>
@@ -529,8 +548,8 @@ function MusicSettings() {
       <p className="muted">
         AirPlay: {data?.speakers.airplay ? "on" : "needs pyatv on the server"} · Cast: {data?.speakers.cast ? "on" : "needs pychromecast on the server"}.
         {" "}HomePods and Apple TVs need <b>Allow speaker access</b> set to everyone on the same network (in the Home app).
-        AirPlay can't pause a stream, so ▶ after ⏸ starts the track again. File types an AirPlay or Cast speaker can't play
-        go through ffmpeg, if the server has it.
+        AirPlay can't pause a stream, so ▶ after ⏸ starts the track again: where it was, if the server has ffmpeg. File
+        types an AirPlay or Cast speaker can't play go through ffmpeg too.
       </p>
     </section>
   );
@@ -582,12 +601,15 @@ export function MusicAssistantSetup({ status, onClose }: { status: MusicStatus; 
 }
 
 /** A picture, or a note if there isn't one (or it doesn't load). */
-export function Art({ image, className }: { image?: string | null; className: string }) {
+export function Art({ image, className, icon = "♪" }: { image?: string | null; className: string; icon?: string }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [image]);
   return image && !failed ? (
     <img className={className} src={image} alt="" loading="lazy" onError={() => setFailed(true)} />
   ) : (
-    <div className={`${className} no-art`} aria-hidden>♪</div>
+    <div className={`${className} no-art`} aria-hidden>{icon}</div>
   );
 }
+
+/** The placeholder for an item without a picture: a book for audiobooks, a note for music. */
+export const iconFor = (id?: string) => (id?.startsWith("abs|") ? "📖" : "♪");

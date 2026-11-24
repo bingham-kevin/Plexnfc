@@ -43,7 +43,7 @@ from html import escape
 from urllib.parse import parse_qs, urlsplit
 
 import requests
-from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, abort, jsonify, redirect, request, send_file, send_from_directory
 
 from . import plexauth
 from .appletv import AppleTVError
@@ -803,6 +803,75 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         )
         return Response(html, mimetype="text/html")
 
+    def music_cards_by_item() -> dict[str, dict]:
+        """Item ID -> its (first) card, for music and audiobook cards."""
+        out: dict[str, dict] = {}
+        for card in plex.cards.all():
+            item = card.get("music") or {}
+            if item.get("id") and item["id"] not in out:
+                out[item["id"]] = {"uid": card["uid"], "speaker_name": card.get("speaker_name")}
+        return out
+
+    @app.get("/book/<any(music, books):kind>")
+    def media_book_page(kind):
+        """The printable book of albums (``kind`` music) or audiobooks (books).
+
+        Music: a ``source``'s albums or playlists (``what``), or, with ``cards=1`` and no
+        source, everything with a card. Books: every audiobook, or an author's or a series'
+        (``what`` = ``author:<ID>`` or ``series:<ID>``)."""
+        from .book import LAYOUTS
+        from .mediabook import render
+
+        args = request.args
+        layout = args.get("layout", "full")
+        if layout not in LAYOUTS:
+            abort(400)
+        cards = music_cards_by_item()
+        only_cards = args.get("cards") == "1"
+        what = args.get("what", "")
+        try:
+            if kind == "books":
+                if what.startswith(("author:", "series:")):
+                    kind_, ref = what.split(":", 1)
+                    items = music_library.books.open(kind_, ref).get("albums") or []
+                else:
+                    items = music_library.books.browse("book", limit=2000)
+            elif args.get("source"):
+                items = music_library.browse(args["source"], what if what in ("album", "playlist") else "album",
+                                             limit=2000)
+            else:
+                items = [c["music"] for c in plex.cards.all() if c.get("music", {}).get("id")
+                         and not c["music"]["id"].startswith("abs|")]
+                only_cards = True
+        except (MusicSourceError, SpeakerError) as e:
+            return page("Book", f'<h1 class="err">Couldn\'t load {kind}</h1><p>{escape(str(e))}</p>', 500)
+        if only_cards:
+            items = [i for i in items if i["id"] in cards]
+        seen: set = set()
+        items = [i for i in items if not (i["id"] in seen or seen.add(i["id"]))]
+        html = render(items, kind, layout, title=args.get("title") or "", qr=args.get("qr", "1") == "1",
+                      page_size=args.get("page_size") or "letter", cards=cards, base_url=config.public_base_url,
+                      art_src=lambda i: public_art(i) if i.get("image") else None)
+        return Response(html, mimetype="text/html")
+
+    @app.get("/c/<uid>")
+    def play_card_page(uid):
+        """What a card plays, started from its QR code in a printed book."""
+        card = plex.cards.card(uid)
+        if card is None:
+            return page("Unknown card", '<h1 class="err">That card isn\'t linked to anything</h1>', 404)
+        if "music" not in card:
+            return redirect(f"/m/{card['key']}")
+        if "id" not in card["music"]:
+            return page("Can't play", '<h1 class="err">Link this card again on the Music page</h1>', 400)
+        try:
+            message = play_card_music(card)
+        except MusicError as e:
+            return page("Can't play", f'<h1 class="err">Can\'t play that</h1><p>{escape(str(e))}</p>', 502)
+        title, _, where = message.partition("\n")
+        return page(title, f"<h1>{escape(music_title(card['music']))}</h1><p>{escape(title.split(' ')[0])} "
+                           f"{escape(where)}</p>")
+
     @app.get("/tags.csv")
     def tags_csv():
         from .book import tag_rows, write_csv
@@ -1260,6 +1329,24 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         return jsonify(sources=music_library.public(), folders=[f.public() for f in music_library.folders],
                        speakers=player.status())
 
+    # ---- the Books section: audiobooks from Audiobookshelf ----
+    # (browsing, pictures and playing go through the music routes, with source ``abs``)
+
+    @panel_route("/books")
+    def panel_books():
+        """Whether Audiobookshelf is connected, and its libraries."""
+        return jsonify(audiobookshelf=music_library.audiobookshelf.public(),
+                       sources=music_library.public("books"), speakers=player.status())
+
+    @panel_route("/books/audiobookshelf", methods=["POST"])
+    def panel_books_audiobookshelf():
+        """Connect Audiobookshelf: ``url`` (blank to disconnect) and ``token`` (an API key; left
+        out to keep the one there is). It's tried before it's kept."""
+        body = panel_body()
+        token = body.get("token")
+        return music_reply(lambda: (music_library.audiobookshelf.set(
+            str(body.get("url") or ""), None if token in (None, "") else str(token)), panel_books())[1])
+
     @panel_route("/music/folders", methods=["POST"])
     def panel_music_folder_add():
         body = panel_body()
@@ -1325,8 +1412,10 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         body = panel_body()
         ids = [str(i) for i in body.get("ids") or [] if i]
         speakers = [str(s) for s in body.get("speakers") or [] if s]
+        position = body.get("position")
         return music_reply(lambda: jsonify(ok=True, zones=player.play(
-            ids, speakers, str(body.get("option") or "replace"), int(body.get("start") or 0))))
+            ids, speakers, str(body.get("option") or "replace"), int(body.get("start") or 0),
+            float(position) if isinstance(position, (int, float)) else None)))
 
     @panel_route("/music/control", methods=["POST"])
     def panel_music_control():

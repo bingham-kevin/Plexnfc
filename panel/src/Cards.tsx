@@ -1,14 +1,20 @@
 import { useMemo, useState } from "react";
-import { posterURL, type CardsState, type Movie, type MusicItem, type Overview,
+import { posterURL, type Card, type CardsState, type Movie, type MusicItem, type Overview,
   type Scan } from "./api";
-import { Art } from "./Music";
+import { MediaScanSetup } from "./MediaCards";
+import { Art, iconFor } from "./Music";
 import { useCardAction, useCards, useFilters, useMovies } from "./hooks";
 
 type Source = "collection" | "label" | "source" | "manual";
+export type Section = "movies" | "music" | "books";
 
-/** Blank NFC cards linked to movies by their ID: nothing is written on the cards. Choose the
- * movies, start a scan, and hold each movie's card on a Movie Remote in turn. */
-export function Cards({ overview }: { overview: Overview }) {
+/** Which section a card belongs to: a movie, music, or an audiobook. */
+export const sectionOf = (c: Card): Section =>
+  !c.music ? "movies" : c.music.id?.startsWith("abs|") ? "books" : "music";
+
+/** Blank NFC cards linked by their ID: nothing is written on the cards. Choose the movies,
+ * albums or books, start a scan, and hold each one's card on a Movie Remote in turn. */
+export function Cards({ overview, section = "movies" }: { overview: Overview; section?: Section }) {
   const cards = useCards();
   const state = cards.data;
   return (
@@ -18,10 +24,10 @@ export function Cards({ overview }: { overview: Overview }) {
         <ScanView scan={state.scan} canManage={overview.can_manage} />
       ) : (
         <>
-          {state?.unknown && overview.can_manage && <UnknownCard uid={state.unknown.uid} />}
-          <ScanSetup canManage={overview.can_manage} />
-          <MusicCards />
-          {state && <LinkedCards state={state} canManage={overview.can_manage} />}
+          {state?.unknown && overview.can_manage && <UnknownCard uid={state.unknown.uid} section={section} />}
+          {section === "movies" ? <ScanSetup canManage={overview.can_manage} />
+            : <MediaScanSetup section={section} canManage={overview.can_manage} cards={state?.cards ?? []} />}
+          {state && <LinkedCards state={state} canManage={overview.can_manage} section={section} />}
         </>
       )}
     </>
@@ -176,7 +182,8 @@ function ScanView({ scan, canManage }: { scan: Scan; canManage: boolean }) {
             <img key={scan.current.key} className="scan-poster" src={posterURL(scan.current.key, 300, 450)} alt="" />
           )}
           <div>
-            <p className="muted">Hold this {scan.current.music ? "music" : "movie"}'s card on a Movie Remote or an NFC reader in Home Assistant</p>
+            <p className="muted">Hold this {!scan.current.music ? "movie" : scan.current.music.id?.startsWith("abs|") ? "book"
+              : "music"}'s card on a Movie Remote or an NFC reader in Home Assistant</p>
             <h3 className="scan-title">{scan.current.title}</h3>
             {scan.current.music && <p className="muted">Plays on {scan.current.speaker_name}</p>}
             {scan.next && <p className="muted">Next: {scan.next.title}</p>}
@@ -218,10 +225,11 @@ function ScanView({ scan, canManage }: { scan: Scan; canManage: boolean }) {
 }
 
 /** A card was read that isn't linked to anything: pick its movie. */
-function UnknownCard({ uid }: { uid: string }) {
+function UnknownCard({ uid, section }: { uid: string; section: Section }) {
   const movies = useMovies("");
   const [search, setSearch] = useState("");
-  const [kind, setKind] = useState<"movie" | "music">("movie");
+  const [kind, setKind] = useState<"movie" | "music" | "book">(
+    section === "music" ? "music" : section === "books" ? "book" : "movie");
   const link = useCardAction<string>(() => "cards/link", (key) => ({ uid, key }));
   const matches = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -234,17 +242,18 @@ function UnknownCard({ uid }: { uid: string }) {
       <p>A reader just read card <code>{uid}</code>, which isn't linked to anything. Find what it should play:</p>
       {(
         <div className="segmented" role="radiogroup" aria-label="Link it to">
-          {(["movie", "music"] as const).map((k) => (
+          {(["movie", "music", "book"] as const).map((k) => (
             <button key={k} role="radio" aria-checked={kind === k} className={kind === k ? "on" : ""}
                     onClick={() => setKind(k)}>
-              {k === "movie" ? "A movie" : "Music"}
+              {{ movie: "A movie", music: "Music", book: "An audiobook" }[k]}
             </button>
           ))}
         </div>
       )}
-      {kind === "music" ? (
-        <p className="muted">Find the music on the <a href="#music">Music tab</a>, choose one speaker, and use
-          <b> Link card {uid}</b>.</p>
+      {kind !== "movie" ? (
+        <p className="muted">Find the {kind === "music" ? "music" : "book"} under{" "}
+          <a href={kind === "music" ? "#music/library" : "#books/library"}>{kind === "music" ? "Music" : "Books"} ›
+          Library</a>, choose one speaker, and use <b>Link card {uid}</b>.</p>
       ) : (
         <>
       <input type="search" placeholder="Search titles" value={search} autoFocus
@@ -263,23 +272,24 @@ function UnknownCard({ uid }: { uid: string }) {
   );
 }
 
-function LinkedCards({ state, canManage }: { state: CardsState; canManage: boolean }) {
+function LinkedCards({ state, canManage, section }: { state: CardsState; canManage: boolean; section: Section }) {
   const [search, setSearch] = useState("");
   const remove = useCardAction<string>((uid) => `cards/${encodeURIComponent(uid)}/remove`);
   const q = search.trim().toLowerCase();
-  const shown = state.cards.filter((c) => !q || `${c.title} ${c.uid}`.toLowerCase().includes(q));
+  const mine = state.cards.filter((c) => sectionOf(c) === section);
+  const shown = mine.filter((c) => !q || `${c.title} ${c.uid}`.toLowerCase().includes(q));
 
   return (
     <section className="card">
       <h2>Linked cards</h2>
-      {!state.cards.length ? (
-        <p className="muted">No cards linked yet.</p>
+      {!mine.length ? (
+        <p className="muted">No {section === "movies" ? "movie" : section === "music" ? "music" : "audiobook"} cards linked yet.</p>
       ) : (
         <>
           <div className="toolbar">
             <input type="search" placeholder="Search titles or card IDs" value={search}
                    onChange={(e) => setSearch(e.target.value)} aria-label="Search linked cards" />
-            <span className="muted">{state.cards.length} card{state.cards.length === 1 ? "" : "s"}</span>
+            <span className="muted">{mine.length} card{mine.length === 1 ? "" : "s"}</span>
           </div>
           <div className="table-wrap">
             <table>
@@ -292,7 +302,7 @@ function LinkedCards({ state, canManage }: { state: CardsState; canManage: boole
                     </td>
                     <td>
                       <b>{c.title}</b>
-                      {c.music && <div className="muted">♪ {c.music.media_type} on {c.speaker_name}</div>}
+                      {c.music && <div className="muted">{section === "books" ? "📖" : "♪"} {c.music.media_type} on {c.speaker_name}</div>}
                     </td>
                     <td><code>{c.uid}</code></td>
                     <td className="row end">
@@ -314,18 +324,7 @@ function LinkedCards({ state, canManage }: { state: CardsState; canManage: boole
   );
 }
 
-/** Music cards are linked from the Music tab, where all the music is. */
-function MusicCards() {
-  return (
-    <section className="card">
-      <h2>Music cards</h2>
-      <p className="muted">A card can play an album, playlist, artist or track instead, from any music source, on any
-        speaker. Find the music on the <a href="#music">Music tab</a>, choose a speaker, and use <b>Link next card</b>.</p>
-    </section>
-  );
-}
-
 /** Music Assistant's artwork for an item, or a note if it has none. */
 function MusicArt({ item, className }: { item: MusicItem; className: string }) {
-  return <Art image={item.image} className={className} />;
+  return <Art image={item.image} className={className} icon={iconFor(item.id)} />;
 }

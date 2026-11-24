@@ -84,13 +84,13 @@ If you serve plexnfc over HTTPS, Chrome on Android gets a **Write tag** button o
 
 With a [Movie Remote](esphome/README.md), nothing has to be written on the cards. Every NFC card has a fixed ID, and Marquee Server keeps a list of which ID plays which movie:
 
-1. In the control panel, open **Cards** and choose the movies: a Plex **collection**, a **label**, or **Pick movies** by hand. Leave **Skip movies that already have a card** on to fill in only the ones that are missing.
+1. In the control panel, open **Movies › Cards** and choose the movies: a Plex **collection**, a **label**, or **Pick movies** by hand. Leave **Skip movies that already have a card** on to fill in only the ones that are missing.
 2. Tap **Scan cards**. The first movie comes up; hold a blank card on the Movie Remote. The card is linked, and the next movie comes up. **Skip** and **Back** move through the list.
 3. Stick each card onto its movie's page as you go.
 
-To link one card, use **Link card** next to the movie under **Tags**. If the Movie Remote reads a card that isn't linked, the **Cards** page offers to link it. While a scan is going, cards held on a Movie Remote are linked instead of played.
+To link one card, use **Link card** next to the movie under **Movies › Tags**. If the Movie Remote reads a card that isn't linked, the **Cards** page offers to link it. While a scan is going, cards held on a Movie Remote are linked instead of played.
 
-A card can play music instead: on the **Music** tab, any album, artist, playlist or track can be linked to a card, to play on a chosen speaker ([music](docs/music.md#music-cards)).
+A card can play music or an audiobook instead. **Music › Cards** and **Books › Cards** scan cards for albums, playlists and audiobooks the same way, to play on a chosen speaker; a book card picks up where you left off ([music](docs/music.md#music-cards), [books](docs/books.md#book-cards)). **Music › Book** and **Books › Book** print matching books of covers.
 
 Phones can't read these cards on their own, since there's no address on them. For phones, write the tag URLs as above; a written tag works on the Movie Remote too.
 
@@ -112,7 +112,7 @@ Movies can come from Plex, from Jellyfin servers, and from folders of movie file
 **Matching folder movies with TMDB.** A folder movie named loosely, or with no `.nfo`, can be matched with TMDB (The Movie Database, which Plex and Jellyfin use) for its proper title, year, summary, IDs, collection and poster. Paste a free TMDB API key (or read access token) from themoviedb.org's **Settings → API** with **Set up** beside *Matching folder movies with TMDB* on the **Sources** tab, then:
 
 - **Match all** beside a folder matches its movies that have no ID yet, in the background, taking only sure matches: the same title and a year within one (or, with no year, the only movie of that title). The rest are left alone.
-- **Match…** (or **Edit**) beside a movie on the **Tags** tab searches TMDB to pick its match yourself, or changes its title, year, summary, collections, labels or TMDB ID by hand. **Reset to the file** forgets it all.
+- **Match…** (or **Edit**) beside a movie under **Movies › Tags** searches TMDB to pick its match yourself, or changes its title, year, summary, collections, labels or TMDB ID by hand. **Reset to the file** forgets it all.
 
 Matches and changes are kept in `folder_metadata.json` in the data folder, never written to the share. A match gives the movie its TMDB ID, so its tag address becomes `tmdb-…`; it's still found by the key its file name gave (`t-…`), so tags and cards made before keep working. A movie matched by hand shows TMDB's poster; one matched automatically keeps a poster file beside it, if it has one.
 
@@ -134,9 +134,13 @@ Where they play:
 - **Jellyfin players** (Swiftfin) play the Jellyfin server's own copy, else find a Plex copy there by title and ID. With no `JELLYFIN_URL` set, the first Jellyfin source's players are used.
 - **Plex players** and Home Assistant's Plex integration play Plex's copy, whatever the order; a movie Plex doesn't have can't play there.
 
-## Music: AirPlay, Cast and Music Assistant
+## Music and books: AirPlay, Cast and Music Assistant
 
-The control panel's **Music** tab browses and searches music from Music Assistant, Plex, Jellyfin and folders of audio files, and plays it on AirPlay speakers, Cast speakers and Music Assistant's players, with a queue, volume and grouping. See [docs/music.md](docs/music.md).
+The control panel has three sections, **Movies**, **Music** and **Books**, each with **Cards**, **Book** and **Sources** pages beside its library (**Tags** for movies).
+
+The **Music** section browses and searches music from Music Assistant, Plex, Jellyfin and folders of audio files, and plays it on AirPlay speakers, Cast speakers and Music Assistant's players, with a queue, volume and grouping. See [docs/music.md](docs/music.md).
+
+The **Books** section plays audiobooks from Audiobookshelf on the same speakers, resumes where you left off and reports progress back. See [docs/books.md](docs/books.md).
 
 ## Optional: play on Jellyfin
 

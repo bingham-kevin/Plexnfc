@@ -8,15 +8,25 @@ struct PanelWindow: View {
 
     var body: some View {
         NavigationSplitView {
-            List(PanelTab.allCases, selection: $model.selection) { tab in
-                Label(tab.label, systemImage: tab.symbol)
-                    .badge(tab == .devices ? model.overview?.pairingRequests.count ?? 0 : 0)
-                    .tag(tab)
+            List(selection: $model.selection) {
+                Label(PanelTab.home.label, systemImage: PanelTab.home.symbol).tag(PanelTab.home)
+                ForEach(MediaSection.allCases) { section in
+                    Section(section.label) {
+                        ForEach(PanelTab.pages(section)) { tab in
+                            Label(tab.label, systemImage: tab.symbol).tag(tab)
+                        }
+                    }
+                }
+                Section("Setup") {
+                    Label(PanelTab.devices.label, systemImage: PanelTab.devices.symbol)
+                        .badge(model.overview?.pairingRequests.count ?? 0)
+                        .tag(PanelTab.devices)
+                }
             }
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
         } detail: {
             detail
-                .navigationTitle(model.tab.label)
+                .navigationTitle(model.tab.title)
                 .toolbar {
                     ToolbarItem(placement: .automatic) {
                         if server.state == .running {
@@ -96,11 +106,18 @@ struct PanelWindow: View {
                         PairingRequestsView(model: model, overview: overview)
                         DevicesView(model: model, overview: overview)
                         AppleTVsView(model: model, overview: overview)
-                    case .music: MusicView(model: model, overview: overview)
                     case .cards: CardsView(model: model, overview: overview)
                     case .book: BookView(model: model, overview: overview)
                     case .sources: SourcesView(model: model, overview: overview)
                     case .tags: EmptyView()
+                    case .music: MusicView(model: model, overview: overview)
+                    case .musicCards: CardsView(model: model, overview: overview, section: .music)
+                    case .musicBook: MediaBookView(model: model, kind: .music)
+                    case .musicSources: MusicSettingsView(model: model, canManage: overview.canManage)
+                    case .books: BooksView(model: model, overview: overview)
+                    case .bookCards: CardsView(model: model, overview: overview, section: .books)
+                    case .booksBook: MediaBookView(model: model, kind: .books)
+                    case .bookSources: BooksSourcesView(model: model, canManage: overview.canManage)
                     }
                 }
                 .padding(20)

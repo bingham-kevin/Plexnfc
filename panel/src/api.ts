@@ -111,6 +111,8 @@ export interface MatchJob {
 
 /** Something in Music Assistant a card can play: an album, playlist, artist, track or radio station */
 export interface MusicItem {
+  /** source|kind|ref, for music (and audiobooks) linked from the Music and Books pages */
+  id?: string;
   uri: string;
   media_type: string;
   name: string;
@@ -251,14 +253,43 @@ export interface LibItem {
   /** source|kind|ref */
   id: string;
   source: string;
-  kind: "artist" | "album" | "playlist" | "track" | "radio";
+  /** Audiobooks (source ``abs``): book, author or series; their tracks are files */
+  kind: "artist" | "album" | "playlist" | "track" | "radio" | "book" | "author" | "series" | "file";
   name: string;
+  /** The artist, or a book's author */
   artist: string;
+  /** The album, or a book's series */
   album: string;
   image: string | null;
   duration: number | null;
   number: number | null;
   year?: number | null;
+  narrator?: string;
+  subtitle?: string;
+  description?: string;
+  /** How many books an author or a series has */
+  count?: number | null;
+  /** A book's file: where it starts in the book */
+  offset?: number;
+}
+
+export interface Chapter { title: string; start: number; end: number }
+
+/** An opened item: an artist's albums (an author's or series' books), an album's tracks, a book's files */
+export interface OpenedItem {
+  item: LibItem;
+  albums?: LibItem[];
+  tracks?: LibItem[];
+  chapters?: Chapter[];
+  /** Where you are in a book, from Audiobookshelf */
+  progress?: { position: number; finished: boolean } | null;
+}
+
+export interface BooksState {
+  audiobookshelf: { configured: boolean; url: string; user: string | null; message: string | null;
+                    libraries: { id: string; name: string }[] };
+  sources: { id: string; name: string; kind: string }[];
+  speakers: { airplay: boolean; cast: boolean; music_assistant: boolean };
 }
 
 export interface MusicSources {
@@ -297,4 +328,6 @@ export interface Zone {
   position: number | null;
   index?: number;
   error?: string | null;
+  /** An audiobook: where it's got to in the whole book */
+  book?: { id: string; position: number | null; duration: number } | null;
 }

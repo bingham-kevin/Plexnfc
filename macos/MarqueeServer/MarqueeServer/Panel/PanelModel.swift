@@ -2,31 +2,64 @@ import AppKit
 import Observation
 import SwiftUI
 
+/// Movies, Music and Books each have the same pages: Library, Cards, Book and Sources.
+enum MediaSection: String, CaseIterable, Identifiable {
+    case movies, music, books
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+}
+
 enum PanelTab: String, CaseIterable, Identifiable {
-    case home, devices, tags, music, cards, book, sources
+    case home, devices
+    // Movies (the library is the tag list)
+    case tags, cards, book, sources
+    case music, musicCards, musicBook, musicSources
+    case books, bookCards, booksBook, bookSources
     var id: String { rawValue }
 
+    /// The section a page belongs to (none for Now Playing and Devices)
+    var section: MediaSection? {
+        switch self {
+        case .home, .devices: nil
+        case .tags, .cards, .book, .sources: .movies
+        case .music, .musicCards, .musicBook, .musicSources: .music
+        case .books, .bookCards, .booksBook, .bookSources: .books
+        }
+    }
+
+    static func pages(_ section: MediaSection) -> [PanelTab] {
+        switch section {
+        case .movies: [.tags, .cards, .book, .sources]
+        case .music: [.music, .musicCards, .musicBook, .musicSources]
+        case .books: [.books, .bookCards, .booksBook, .bookSources]
+        }
+    }
+
+    /// Its name in the sidebar, under its section
     var label: String {
         switch self {
         case .home: "Now Playing"
         case .devices: "Devices"
-        case .tags: "Tags"
-        case .music: "Music"
-        case .cards: "Cards"
-        case .book: "Book"
-        case .sources: "Sources"
+        case .tags, .music, .books: "Library"
+        case .cards, .musicCards, .bookCards: "Cards"
+        case .book, .musicBook, .booksBook: "Book"
+        case .sources, .musicSources, .bookSources: "Sources"
         }
     }
+
+    /// The window's title: "Music · Cards"
+    var title: String { section.map { "\($0.label) · \(label)" } ?? label }
 
     var symbol: String {
         switch self {
         case .home: "play.tv"
         case .devices: "appletv"
-        case .tags: "tag"
+        case .tags: "film.stack"
         case .music: "music.note.list"
-        case .cards: "creditcard"
-        case .book: "book"
-        case .sources: "externaldrive.connected.to.line.below"
+        case .books: "books.vertical"
+        case .cards, .musicCards, .bookCards: "creditcard"
+        case .book, .musicBook, .booksBook: "book"
+        case .sources, .musicSources, .bookSources: "externaldrive.connected.to.line.below"
         }
     }
 }
