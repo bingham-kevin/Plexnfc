@@ -30,8 +30,9 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     cg.add(var.set_base_url(config[CONF_URL].rstrip("/")))
-    # Posters are decoded here too, with the JPEG library ESPHome's images use
-    cg.add_library("JPEGDEC", "1.8.4", "https://github.com/bitbank2/JPEGDEC#1.8.4")
+    # Posters are decoded here too, with the same JPEG library build as ESPHome's own images
+    # (its runtime_image asks for this one; two builds of it won't link)
+    cg.add_library("JPEGDEC", "1.8.4", "https://github.com/esphome-libs/JPEGDEC#1.8.4-esphome.4")
     if conf := config.get(CONF_ON_RESPONSE):
         await automation.build_automation(
             var.get_response_trigger(),

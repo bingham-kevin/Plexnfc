@@ -19,7 +19,7 @@ from .const import CONF_SECRET
 from .coordinator import MarqueeCoordinator
 from .music import MusicLink
 
-PLATFORMS = [Platform.MEDIA_PLAYER]
+PLATFORMS = [Platform.MEDIA_PLAYER, Platform.SWITCH, Platform.BUTTON]
 
 type MarqueeConfigEntry = ConfigEntry[MarqueeCoordinator]
 

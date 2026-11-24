@@ -137,9 +137,21 @@ When both are there, Marquee uses the direct connection, and falls back to Home 
 2. Choose **Link next card** and hold a blank card on a Movie Remote. A card a reader has just read that isn't linked gets its own button: **Link card XX-XX-XX-XX**.
 3. Tap the card on the box: the music starts on that speaker, replacing what's playing there, and the box shows what's playing where.
 
-**Any NFC reader in Home Assistant works too**, not only a Movie Remote: a screen running Tessera with a PN532, an ESPHome reader, or the Home Assistant app on a phone. The integration sends every card Home Assistant reads (its `tag_scanned` event) to Marquee: a music card plays on its speaker, a movie card plays on the default Marquee player, a scan in the control panel links the card, and a card Marquee doesn't know shows under **Card not linked**. Each one also fires a `marquee_card` event (`tag_id`, `device_id`, `result`: `music`, `movie`, `linked`, `unknown` or `error`, `title`, `message`), for a sound or a notification. Tags with their own automations in Home Assistant still run them as well.
+**Any NFC reader in Home Assistant works too**, not only a Movie Remote: a screen running Tessera with a PN532, an ESPHome reader, or the Home Assistant app on a phone. The integration sends every card Home Assistant reads (its `tag_scanned` event) to Marquee: a music or book card plays on the reader's speakers (see [Readers](#readers-a-default-output-and-controls-in-the-room) below), else on the card's own speaker; a movie card plays on the reader's Marquee player, else the default one; a scan in the control panel links the card, and a card Marquee doesn't know shows under **Card not linked**. Each one also fires a `marquee_card` event (`tag_id`, `device_id`, `result`: `music`, `movie`, `linked`, `unknown` or `error`, `title`, `message`), for a sound or a notification. Tags with their own automations in Home Assistant still run them as well.
 
 Cards read by a reader in Home Assistant need the integration, of course; with the direct connection, Marquee plays their music itself and the integration only passes the card on.
+
+### Readers: a default output, and controls in the room
+
+Every NFC reader has a **default output**: the speakers, one or several played together, that music and book cards held to it play on, whatever speaker the card was linked with. So a card plays in the room where it's held. Choose it in Marquee's control panel under **Devices › Readers**. A reader in Home Assistant shows up there once it has read a card; a Movie Remote, once it's paired. The same place chooses which Marquee player its movie cards start on.
+
+For each reader in Home Assistant, the integration adds a device, *<reader> Marquee*, with:
+
+- **A media player**: what's playing on the reader's speakers (music or a book), with pause, play, next, previous, stop and volume. Its `speakers` attribute names the speakers it plays on now, and `is_default` says whether they're the default.
+- **A switch for each speaker**: on means the reader plays there too. Turning one on or off moves what's playing as well (Music Assistant's queue moves; a book carries on from where it was). The choice is remembered for the next card.
+- **Restore default speakers** and **Make these speakers the default** buttons.
+
+**A Tessera screen** can show these on a page of its own. Add a page to the screen's Tessera configuration with the media player, the switches and the two buttons, and enter that page's number for the reader under **Devices › Readers › Tessera page**. When a card is read there, Marquee opens that page (with the screen's `esphome.<node>_show_page` action), so whoever's holding the card can change the speakers and control the music on the same screen. The node name is the one in the screen's ESPHome configuration, which can differ from its device name in Home Assistant.
 
 Without the direct connection, Marquee Server has no Home Assistant token for music either. The integration keeps a request open to the server, telling it which Music Assistant speakers there are; when a card is tapped or the panel searches, the server hands the job to the integration, which runs Music Assistant's own `music_assistant.search` and `music_assistant.play_media` actions. Music cards then work only while Home Assistant, the integration and Music Assistant are running, and the control panel says if one of them isn't.
 

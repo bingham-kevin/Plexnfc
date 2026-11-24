@@ -344,3 +344,30 @@ export interface Zone {
   /** An audiobook: where it's got to in the whole book */
   book?: { id: string; position: number | null; duration: number } | null;
 }
+
+/** An NFC reader (a Movie Remote, or a reader in Home Assistant such as a Tessera screen) and where it plays. */
+export interface Reader {
+  id: string;
+  kind: "remote" | "homeassistant";
+  name: string;
+  /** The speakers music and book cards play on when held to it, by default */
+  default: string[];
+  default_names: string[];
+  /** The speakers it uses now: the default, or what was last chosen on the reader */
+  speakers: string[];
+  speaker_names: string[];
+  is_default: boolean;
+  /** The Marquee player its movie cards go to (null: the default player) */
+  movie_player: string | null;
+  /** The Tessera page that shows its controls, opened when it reads a card */
+  page: number | null;
+  seen: number | null;
+  now: { title: string; artist: string; state: string } | null;
+}
+
+export interface ReadersState {
+  readers: Reader[];
+  speakers: { id: string; name: string; kind: string; group: boolean }[];
+  players: Player[];
+  default_player: string;
+}

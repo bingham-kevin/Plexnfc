@@ -136,6 +136,8 @@ The **Music** section browses and searches music from Music Assistant, Plex, Jel
 
 The **Books** section plays audiobooks from Audiobookshelf on the same speakers, resumes where you left off and reports progress back. See [docs/books.md](docs/books.md).
 
+Each NFC reader (a Movie Remote, or a reader in Home Assistant such as a Tessera screen) has a **default output**, chosen under **Devices › Readers**: the speakers its music and book cards play on, so a card plays in the room where it's held. On the reader itself (the Movie Remote's speaker screen, or the controls the Home Assistant integration adds for a Tessera screen) you can add or take away speakers, control what's playing, put back the default or make the current speakers the new default. What's chosen there is remembered for the next card.
+
 ## Optional: a "Movie Remote" with a screen
 
 [esphome/](esphome/) has firmware for a 4" ESP32 touchscreen (the Hosyond ESP32-32E) with a PN532 NFC reader. Hold a page to the box and the movie starts on your Marquee player. The screen then shows the poster, the progress, and play/pause, ±30 s and stop buttons. The box pairs with Marquee Server like Marquee does, and you choose its player in the control panel. The parts list and wiring are in [esphome/README.md](esphome/README.md).

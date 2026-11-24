@@ -3,7 +3,8 @@
 #
 # A board's file (movie-remote.yaml, movie-remote-crowpanel.yaml) includes this and
 # adds the chip, the screen, touch, the backlight light "backlight", the online_image
-# "poster" and the LVGL pages, using the widget IDs the scripts below update. It also
+# "poster" and the LVGL pages, using the widget IDs the scripts below update (the
+# speakers page: speakers_page, spk_now_lbl, spk_list and spk_play_icon). It also
 # sets these substitutions: name, friendly_name, marquee_url, screen_timeout,
 # poster_w, poster_h (the poster's size in pixels) and wifi_name_width.
 
@@ -139,6 +140,10 @@ marquee_link:
           id(now_message) = message;
           id(hold_until) = millis() + (scan ? 4000 : 6000);  // until the screen goes back
           id(render).execute();
+        } else if (tag == "reader") {
+          // The speakers screen: the speakers music and book cards play on from this box
+          if (status == 401) { id(forget_pairing).execute(); return; }
+          id(show_reader)->execute(status, body);
         } else if (tag == "unpair") {
           id(factory_reset_btn).press();
         }
@@ -241,6 +246,10 @@ globals:
   - id: hold_until
     type: uint32_t
     initial_value: '0'
+  # Whether the speakers screen is showing (it keeps itself up to date)
+  - id: speakers_open
+    type: bool
+    initial_value: 'false'
 
 interval:
   # Count the seconds while playing, between the player's reports
@@ -257,6 +266,9 @@ interval:
             lambda: 'return !id(secret).state.empty();'
           then:
             - script.execute: refresh
+            - lambda: |-
+                if (id(speakers_open) && !id(marquee).pending("reader"))
+                  id(marquee).request("reader", "GET", "/remote/reader");
           else:
             - script.execute: pair_poll
 
@@ -397,6 +409,109 @@ script:
     then:
       - delay: ${screen_timeout}
       - light.turn_off: backlight
+
+  # ---- speakers screen -----------------------------------------------------------------
+  # Which speakers this box's music and book cards play on (one, or several together),
+  # chosen here and remembered; Restore default puts back the ones chosen in the control
+  # panel, and Make default keeps these. The buttons control what's playing on them.
+
+  - id: show_speakers
+    then:
+      - lambda: |-
+          id(speakers_open) = true;
+          lv_label_set_text(id(spk_now_lbl), "Looking for speakers...");
+          lv_obj_clean(id(spk_list));
+          id(marquee).request("reader", "GET", "/remote/reader");
+      - lvgl.page.show: speakers_page
+
+  - id: hide_speakers
+    then:
+      - lambda: 'id(speakers_open) = false;'
+      - lvgl.page.show: main_page
+
+  # A speaker toggled, Restore default, Make default, or a music control
+  - id: reader_send
+    parameters:
+      body: string
+    then:
+      - lambda: |-
+          id(hold_until) = 0;
+          id(marquee).request("reader", "POST", "/remote/reader", body, false);
+
+  # The server's answer: what's playing on the speakers, and a row for every speaker
+  - id: show_reader
+    parameters:
+      status: int
+      body: string
+    then:
+      - lambda: |-
+          if (status < 0) {
+            lv_label_set_text(id(spk_now_lbl), "Can't reach Marquee Server");
+            return;
+          }
+          std::string text;
+          if (status != 200) {
+            json::parse_json(body, [&text](JsonObject root) -> bool {
+              text = root["message"] | "";
+              return true;
+            });
+            id(feedback)->execute(std::string("error"));
+            lv_label_set_text(id(spk_now_lbl), (text.empty() ? std::string("That didn't work") : text).c_str());
+            return;  // the list is as it was
+          }
+          lv_obj_t *list = id(spk_list);
+          lv_obj_clean(list);
+          lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+          lv_obj_set_style_pad_row(list, 6, 0);
+          bool playing = false;
+          json::parse_json(body, [&](JsonObject root) -> bool {
+            JsonObject now = root["now"];
+            std::string message = root["message"] | "";
+            if (!now.isNull()) {
+              std::string state = now["state"] | "";
+              playing = state == "playing";
+              std::string title = now["title"] | "";
+              std::string artist = now["artist"] | "";
+              text = std::string(playing ? "Playing: " : "Paused: ") + title + (artist.empty() ? "" : " - " + artist);
+            } else {
+              text = "Nothing playing";
+            }
+            bool is_default = root["is_default"] | true;
+            text += is_default ? "\nThe default speakers" : "\nChosen here (not the default)";
+            if (!message.empty()) text = message;
+            for (JsonObject choice : root["choices"].as<JsonArray>()) {
+              std::string speaker = choice["id"] | "";
+              std::string name = choice["name"] | "";
+              bool on = choice["on"] | false;
+              lv_obj_t *row = lv_button_create(list);
+              lv_obj_set_size(row, lv_pct(100), 48);
+              lv_obj_set_style_radius(row, 10, 0);
+              lv_obj_set_style_bg_color(row, lv_color_hex(on ? 0xE5A00D : 0x2A2A2A), 0);
+              lv_obj_t *label = lv_label_create(row);
+              lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
+              lv_obj_set_width(label, lv_pct(85));
+              lv_label_set_text(label, name.c_str());
+              lv_obj_set_style_text_color(label, lv_color_hex(on ? 0x101010 : 0xFFFFFF), 0);
+              lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
+              lv_obj_t *mark = lv_label_create(row);
+              lv_label_set_text(mark, on ? LV_SYMBOL_OK : "");
+              lv_obj_set_style_text_color(mark, lv_color_hex(0x101010), 0);
+              lv_obj_align(mark, LV_ALIGN_RIGHT_MID, 0, 0);
+              // the speaker, after a 1 (on now) or 0, freed with the row
+              char *data = strdup(((on ? "1" : "0") + speaker).c_str());
+              lv_obj_add_event_cb(row, [](lv_event_t *e) {
+                const char *data = (const char *) lv_event_get_user_data(e);
+                id(reader_send)->execute("{\"action\": \"speaker\", \"speaker\": " +
+                                         marquee_link::MarqueeLink::quote(data + 1) +
+                                         ", \"on\": " + (data[0] == '1' ? "false" : "true") + "}");
+              }, LV_EVENT_CLICKED, data);
+              lv_obj_add_event_cb(row, [](lv_event_t *e) { free(lv_event_get_user_data(e)); }, LV_EVENT_DELETE, data);
+            }
+            return true;
+          });
+          if (lv_obj_get_child_count(list) == 0) text += "\n\nNo speakers found";
+          lv_label_set_text(id(spk_now_lbl), text.c_str());
+          lv_label_set_text(id(spk_play_icon), playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
 
   # ---- settings screen ----------------------------------------------------------------
 

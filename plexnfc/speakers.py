@@ -1096,6 +1096,51 @@ class MusicPlayer:
         else:
             raise SpeakerError("Pause, play, next, previous or stop")
 
+    def move(self, zone_id: str, speaker_ids: list[str]) -> None:
+        """Carry on what a zone plays on other speakers (a reader's speakers were changed while
+        it played): a book from where it's got to, Marquee's own queue from the track it's on,
+        and Music Assistant's queue on other Music Assistant speakers."""
+        if not speaker_ids:
+            raise SpeakerError("Choose a speaker")
+        if any(kind_of(s) not in ("ma", "airplay", "cast") for s in speaker_ids):
+            raise SpeakerError("That isn't a speaker")
+        book = self.progress.book_of(zone_id)
+        if book and book.get("position") is not None:
+            self.control(zone_id, "stop")  # tells Audiobookshelf where it got to
+            self.play([book["id"]], speaker_ids, position=book["position"])
+            return
+        if kind_of(zone_id) == "ma":
+            if any(kind_of(s) != "ma" for s in speaker_ids):
+                raise SpeakerError("Music playing through Music Assistant can only move to Music Assistant's "
+                                   "speakers. The next card plays on the new ones.")
+            leader = speaker_ids[0]
+            if leader != zone_id:
+                self._call("player_queues/transfer", source_queue_id=ref_of(zone_id),
+                           target_queue_id=ref_of(leader), auto_play=True)
+            self.group(leader, speaker_ids[1:])
+            return
+        session = self._session(zone_id)
+        tracks, seek = session.tracks[session.index:], session.position
+        if not tracks:
+            raise SpeakerError("That isn't playing any more")
+        own = [s for s in speaker_ids if kind_of(s) != "ma"]
+        if len(own) == len(speaker_ids):
+            with self._lock:
+                if session in self.sessions and not set(own) & set(session.speakers):
+                    self.sessions.remove(session)
+                    session.stop()
+            self._play_own(tracks, own, "replace", seek)
+            return
+        session.stop()
+        self._ended(session)
+        ids = [t["id"] for t in tracks if t.get("id")]
+        self.play(ids, speaker_ids, "replace")
+
+    def zone_for(self, speaker_ids: list[str]) -> dict | None:
+        """What's playing on any of these speakers (a reader's), if anything."""
+        wanted = set(speaker_ids)
+        return next((z for z in self.now() if wanted & set(z["speakers"])), None) if wanted else None
+
     def volume(self, speaker_id: str, level: int) -> None:
         level = max(0, min(100, int(level)))
         kind, ref = kind_of(speaker_id), ref_of(speaker_id)

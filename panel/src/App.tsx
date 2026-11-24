@@ -4,6 +4,7 @@ import { Book } from "./Book";
 import { BooksLibraryPage, BooksSourcesPage } from "./Books";
 import { Cards } from "./Cards";
 import { Devices, PairingRequests } from "./Devices";
+import { Readers } from "./Readers";
 import { MediaBook } from "./MediaBook";
 import { MusicLibraryPage, MusicSourcesPage } from "./Music";
 import { useAction, useOverview } from "./hooks";
@@ -111,6 +112,7 @@ export default function App() {
             <>
               <PairingRequests overview={data} />
               <Devices overview={data} />
+              <Readers overview={data} />
               <AppleTVs overview={data} />
             </>
           )}

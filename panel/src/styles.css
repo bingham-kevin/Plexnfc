@@ -308,3 +308,14 @@ details.help summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; 
 .plex-server { justify-content: space-between; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; }
 .reprint { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); display: grid; gap: 8px; }
 .reprint input[type=search] { max-width: 320px; }
+
+/* Readers and their default output */
+.readers { display: grid; gap: 12px; }
+.reader { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; }
+.reader fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; }
+.reader legend { padding: 0; margin-bottom: 4px; }
+.row.between { justify-content: space-between; align-items: flex-start; }
+.speaker-pick { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px 10px; background: var(--surface-2); margin: 0; }
+.speaker-pick.on { border-color: var(--gold); }
+.speaker-pick input { margin: 0; width: auto; }
