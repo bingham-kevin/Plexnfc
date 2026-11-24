@@ -146,7 +146,7 @@ private struct ReaderRow: View {
         return screens
     }
 
-    private var path: String { reader.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? reader.id }
+    private var path: String { reader.id }  // the API escapes it (appendingPathComponent)
 
     private var summary: String {
         var text = reader.kind == "assistant"
