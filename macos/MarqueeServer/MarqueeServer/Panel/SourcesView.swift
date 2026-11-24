@@ -233,7 +233,7 @@ private enum SourceKind: String, CaseIterable, Identifiable {
         switch self {
         case .folder: "Network or local folder"
         case .jellyfin: "Jellyfin server"
-        case .plex: "Plex"
+        case .plex: "Plex server"
         }
     }
 }
@@ -411,34 +411,107 @@ private struct AddJellyfinForm: View {
     }
 }
 
+/// Plex servers: the one signed in to (added back if it was removed), others on the Plex
+/// account (its own and ones shared with it), or any server by its address and token.
 private struct AddPlexForm: View {
     let model: PanelModel
     let plex: PlexSource
     let update: (SourcesState) -> Void
+    @State private var servers: [PlexServerChoice]?
+    @State private var error: String?
+    @State private var library = ""
+    @State private var name = ""
+    @State private var url = ""
+    @State private var token = ""
+    @State private var adding: String?  // the machine ID being added, or "address"
+    @State private var byAddress = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if plex.enabled && plex.signedIn {
-                Text("Plex is already a source (library \(plex.library)). Marquee Server uses one Plex account.")
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Movies from the Plex library **\(plex.library)**. Change the library in Settings.")
-                    .foregroundStyle(.secondary)
+            if !plex.signedIn {
                 HStack {
-                    if !plex.enabled {
-                        Button("Add Plex") {
-                            Task {
-                                if let state = await sourceAction(model, "sources/plex", ["enabled": true],
-                                                                  done: "Using Plex's movies", update: { _ in }) {
-                                    update(state)
-                                }
-                            }
-                        }
+                    PlexSignInButton(model: model)
+                    Text("to choose from your Plex servers").foregroundStyle(.secondary)
+                }
+            } else if !plex.enabled {
+                HStack {
+                    Button("Add Plex Back") { send(["enabled": true], path: "sources/plex", done: "Using Plex's movies") }
                         .buttonStyle(.borderedProminent)
-                    }
-                    if !plex.signedIn { PlexSignInButton(model: model) }
+                    Text("the server you're signed in to (library \(plex.library))").foregroundStyle(.secondary)
                 }
             }
+            if let error { ErrorText(error) }
+            if plex.signedIn && servers == nil && error == nil {
+                HStack { ProgressView().controlSize(.small); Text("Asking plex.tv for your servers…").foregroundStyle(.secondary) }
+            }
+            ForEach(servers ?? []) { server in
+                HStack {
+                    Text(server.name).bold()
+                    Text(server.owned ? "yours" : "shared with you").foregroundStyle(.secondary)
+                    Spacer()
+                    if server.signedIn {
+                        Pill(text: "Signed in (Plex)", tone: .good)
+                    } else if server.added {
+                        Pill(text: "Added", tone: .good)
+                    } else {
+                        Button(adding == server.machine ? "Connecting…" : "Add") {
+                            adding = server.machine
+                            send(["kind": "plex", "machine": server.machine, "library": library, "name": name],
+                                 done: "Added \(server.name)")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(adding != nil)
+                    }
+                }
+                .padding(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(nsColor: .separatorColor)))
+            }
+            LabeledContent("Library") {
+                TextField("Library", text: $library, prompt: Text("Every movie library")).labelsHidden()
+            }
+            LabeledContent("Name") {
+                TextField("Name", text: $name, prompt: Text("The server's name")).labelsHidden()
+            }
+            DisclosureGroup("Add a server by its address", isExpanded: $byAddress) {
+                VStack(alignment: .leading, spacing: 8) {
+                    LabeledContent("Address") {
+                        TextField("Address", text: $url, prompt: Text("http://192.168.1.20:32400")).labelsHidden()
+                    }
+                    LabeledContent("Token") {
+                        TextField("Token", text: $token, prompt: Text("The server's X-Plex-Token")).labelsHidden()
+                    }
+                    Button(adding == "address" ? "Connecting…" : "Add") {
+                        adding = "address"
+                        send(["kind": "plex", "url": url, "token": token, "library": library, "name": name],
+                             done: "Added the Plex server")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(adding != nil || url.isEmpty || token.isEmpty)
+                }
+                .padding(.top, 6)
+            }
+            Text("Movies from another Plex server play in Marquee, streamed straight from that server, so the Apple TV has to be able to reach it.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .textFieldStyle(.roundedBorder)
+        .task(id: plex.signedIn) {
+            guard plex.signedIn else { return }
+            struct Answer: Decodable { let servers: [PlexServerChoice] }
+            do {
+                let answer: Answer = try await model.api.get("plex/servers")
+                servers = answer.servers
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func send(_ body: [String: Any], path: String = "sources", done: String) {
+        Task {
+            if let state = await sourceAction(model, path, body, done: done, update: { _ in }) {
+                update(state)
+            }
+            adding = nil
         }
     }
 }

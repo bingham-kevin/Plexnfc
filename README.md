@@ -61,6 +61,10 @@ The book can also be made from the control panel (**Movies › Book**). The comm
 
 Each page has a dashed **NFC** circle where the sticker goes, in the same spot on every page. There's also a QR code with the same link, for phones without NFC (`--no-qr` leaves it out). The last page holds **Pause / Resume / Stop** control tags, which work well on the back cover.
 
+The control panel's **Book** tab makes the same book in the browser, and **Only movies with a card linked** leaves out movies with no card (handy for a book of the cards you've made). It's `/book?cards=1`.
+
+**Reprint a page** on the same tab prints just one page again, if one gets damaged: find its movie, or give the number at the foot of the page (1 is the cover; the remote control page is last). The page comes out as it is in the book, with the same page number and, at 4 per page, the same movies beside it, as long as the book settings are the ones the book was made with. It's `/book?…&movie=KEY` or `/book?…&page=N`.
+
 A tip: make a Plex collection called "Poster Book" with only the movies you want. A 300-movie library makes a very thick book.
 
 ## 3. Write the tags
@@ -97,8 +101,9 @@ The **Marquee** integration (`custom_components/marquee`, installable with HACS)
 
 ## Movie sources: Plex, Jellyfin and folders
 
-Movies can come from Plex, from Jellyfin servers, and from folders of movie files, all at once. Add them with **Add source** on the control panel's **Sources** tab (choose Network or local folder, Jellyfin server, or Plex); they're saved in `sources.json`, next to the Plex sign-in. Their movies show up in the tag list, the card scan, the book and Marquee's library alongside Plex's, and **Remove** beside Plex leaves it out if you don't use it.
+Movies can come from Plex, from Jellyfin servers, and from folders of movie files, all at once. Add them with **Add source** on the control panel's **Sources** tab (choose Network or local folder, Jellyfin server, or Plex server); they're saved in `sources.json`, next to the Plex sign-in. Their movies show up in the tag list, the card scan, the book and Marquee's library alongside Plex's, and **Remove** beside Plex leaves it out if you don't use it.
 
+- **Plex server**: more Plex servers besides the one you're signed in to. Once signed in with Plex, **Add source → Plex server** lists every server your Plex account can reach, your own and ones shared with you; choose **Add**. Or give any server's address and X-Plex-Token. Optionally name one library; otherwise every movie library is used. Marquee Server keeps the token Plex gives for that server. Its movies play in Marquee, streamed straight from that server (so the Apple TV must reach it).
 - **Jellyfin**: the server's address, then sign in with a Jellyfin user (the password goes to Jellyfin and isn't kept; Marquee Server keeps the sign-in token Jellyfin hands back) or paste an API key from Jellyfin's **Dashboard → API Keys**. Optionally name one library; otherwise every movie library is used. Collections and tags come from Jellyfin.
 - **Folder**: a path on the machine Marquee Server runs on, read with the folders inside it. For a network share (SMB or NFS), mount it first and give the mount's path: `/Volumes/Movies` on a Mac, or wherever Docker or Linux mounts it. Movies are named from their files or folders, `Alien (1979)/Alien (1979).mkv` or `Alien.1979.1080p.mkv`; a Kodi/Jellyfin-style `movie.nfo` (or `<file name>.nfo`) beside a movie gives its title, year, plot, collection (`<set>`) and tags. Trailers, extras folders and second parts (`cd2`) are skipped. Posters come from `poster.jpg`/`folder.jpg`/`cover.jpg` in the movie's own folder, `<file name>-poster.jpg`, or the cover art inside the file; a movie with none gets a plain card with its title. On a Mac, macOS asks once whether Marquee Server may read a folder in Documents, Desktop or Downloads, or on a network volume. **Browse…** beside the path picks a folder on the server, starting from its mounted shares and disks.
 

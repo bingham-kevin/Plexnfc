@@ -56,7 +56,7 @@ from .speakers import MusicPlayer, SpeakerError
 from .plex import Plex, PlexNFCError, app_movie, movie_key
 from .screen_text import box_json
 from .filestream import DIRECT_TYPES
-from .sources import FolderSource, SourceError, SourceMovie, source_name
+from .sources import FolderSource, SourceError, SourceMovie, connect_plex_server, source_name
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -791,16 +791,27 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         try:
             movies = list(plex.movies(request.args.get("collection") or None, request.args.get("label") or None,
                                       request.args.get("source") or None))
+            if request.args.get("cards") == "1":  # only movies with a card linked
+                with_cards = plex.cards.by_movie()
+                movies = [m for m in movies if movie_key(m) in with_cards]
+            # Reprinting one page: the page a movie is on (found by any of its keys), or a page number
+            reprint = request.args.get("movie") or None
+            if reprint:
+                reprint = plex.find_library_movie(reprint).key
         except Exception as e:
             return page("Book", f'<h1 class="err">Couldn\'t load movies</h1><p>{escape(str(e))}</p>', 500)
-        html = render_html(
-            plex, config.public_base_url, movies, layout,
-            title=request.args.get("title") or "Movie Night",
-            qr=request.args.get("qr", "1") == "1",
-            page_size=request.args.get("page_size") or "letter",
-            # Relative, so it works under any address
-            poster_src=lambda m: f"poster/{movie_key(m)}?w=1200&h=1800",
-        )
+        try:
+            html = render_html(
+                plex, config.public_base_url, movies, layout,
+                title=request.args.get("title") or "Movie Night",
+                qr=request.args.get("qr", "1") == "1",
+                page_size=request.args.get("page_size") or "letter",
+                # Relative, so it works under any address
+                poster_src=lambda m: f"poster/{movie_key(m)}?w=1200&h=1800",
+                page=request.args.get("page", type=int), page_of_movie=reprint,
+            )
+        except ValueError as e:
+            return page("Book", f'<h1 class="err">Can\'t reprint that page</h1><p>{escape(str(e))}</p>', 404)
         return Response(html, mimetype="text/html")
 
     def music_cards_by_item() -> dict[str, dict]:
@@ -1046,6 +1057,15 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         try:
             if kind == "folder":
                 settings["path"] = str(body.get("path") or "")
+            elif kind == "plex":
+                settings["library"] = str(body.get("library") or "")
+                if body.get("machine"):  # one of the Plex account's servers
+                    if not config.plex_token:
+                        return jsonify(ok=False, message="Sign in with Plex first to choose its servers"), 400
+                    settings.update(connect_plex_server(config.plex_token, str(body["machine"])))
+                else:  # an address and a token typed in
+                    settings.update(url=str(body.get("url") or "").strip().rstrip("/"),
+                                    token=str(body.get("token") or "").strip())
             elif kind == "jellyfin":
                 url = str(body.get("url") or "").strip().rstrip("/")
                 settings.update(url=url, library=str(body.get("library") or ""))
@@ -1057,6 +1077,27 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         except (SourceError, JellyfinError) as e:
             return jsonify(ok=False, message=str(e)), 400
         return jsonify(ok=True, source=source.public(), **plex.library.public())
+
+    @panel_route("/plex/servers")
+    def panel_plex_servers():
+        """The Plex servers the signed-in Plex account can reach, to add as sources."""
+        from .sources import plex_account_servers
+
+        if not config.plex_token:
+            return jsonify(ok=False, message="Sign in with Plex first to list its servers"), 400
+        try:
+            servers = plex_account_servers(config.plex_token)
+        except SourceError as e:
+            return jsonify(ok=False, message=str(e)), 502
+        added = {s.settings.get("machine") for s in plex.library.sources}
+        try:
+            signed_in = plex.server.machineIdentifier if plex.library.use_plex else None
+        except Exception:  # noqa: BLE001 - only to mark it
+            signed_in = None
+        return jsonify(ok=True, servers=[
+            {"machine": r.clientIdentifier, "name": r.name, "owned": bool(r.owned),
+             "added": r.clientIdentifier in added, "signed_in": r.clientIdentifier == signed_in}
+            for r in sorted(servers, key=lambda r: (not r.owned, r.name.casefold()))])
 
     @panel_route("/browse")
     def panel_browse():

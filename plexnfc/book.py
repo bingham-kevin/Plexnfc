@@ -202,11 +202,16 @@ def meta_line(movie) -> str:
 
 
 def render_html(plex: Plex, base_url: str, movies, layout: str = "full", title: str = "Movie Night",
-                qr: bool = True, page_size: str = "letter", poster_src=None) -> str:
+                qr: bool = True, page_size: str = "letter", poster_src=None,
+                page: int | None = None, page_of_movie: str | None = None) -> str:
     """The printable book as one HTML page.
 
     ``poster_src(movie)`` gives each <img> src: a data: URI for a standalone
     file, or a URL when the page is served by Marquee Server.
+
+    To reprint a damaged page, ``page`` (the number at its foot; 1 is the cover) or
+    ``page_of_movie`` (a movie's key: the page it's on) gives just that page of the
+    same book. Raises ValueError if the book has no such page.
     """
     from string import Template
 
@@ -249,7 +254,7 @@ def render_html(plex: Plex, base_url: str, movies, layout: str = "full", title: 
         '<div><b>3</b>Open the link that pops up. The movie starts on the TV.</div></div></section>'
     )
     ordered = sorted(enumerate(movies), key=lambda im: im[1].title.casefold())
-    contents = "".join(
+    contents = [
         f'<section class="contents"><div class="frame"></div>'
         f'<h2 class="display">Program</h2><div class="sub caps">Feature presentations</div><ol>'
         + "".join(f'<li><span class="t">{escape(m.title)}</span><span class="dots"></span>'
@@ -257,11 +262,11 @@ def render_html(plex: Plex, base_url: str, movies, layout: str = "full", title: 
                   for i, m in ordered[p * CONTENTS_PER_PAGE:(p + 1) * CONTENTS_PER_PAGE])
         + f"</ol>{folio(2 + p)}</section>"
         for p in range(contents_pages)
-    )
-    sheets = "".join(
+    ]
+    sheets = [
         f'<section class="sheet">{"".join(cards[i:i + per_sheet])}{folio(page_of(i))}</section>'
         for i in range(0, len(cards), per_sheet)
-    )
+    ]
     tickets = "".join(
         f'<div class="ticket">{tap_target()}<div><div class="label">{label}</div>'
         f'<small>{escape(base_url)}/{action}</small></div></div>'
@@ -272,13 +277,24 @@ def render_html(plex: Plex, base_url: str, movies, layout: str = "full", title: 
         f'<div class="sub">Tap a ticket to control whatever is playing.</div>'
         f'<div class="tickets">{tickets}</div></section>'
     )
+    pages = [cover, *contents, *sheets, remote]  # pages[n - 1] is page n
+    if page_of_movie is not None:
+        found = next((i for i, m in enumerate(movies) if movie_key(m) == page_of_movie), None)
+        if found is None:
+            raise ValueError("That movie isn't in this book. Choose the same collection and settings the book was "
+                             "made with.")
+        page = page_of(found)
+    if page is not None:
+        if not 1 <= page <= len(pages):
+            raise ValueError(f"This book has pages 1 to {len(pages)}")
+        pages = [pages[page - 1]]
     width, height = PAPER.get(page_size.casefold(), PAPER["letter"])
     css = Template(CSS).substitute({k: v for k, v in spec.items() if k != "summary"},
                                    page_width=width, page_height=height, margin=MARGIN)
     return (
         f"<!doctype html><html><head><meta charset='utf-8'><title>{escape(title)}</title>"
         f"<link rel='stylesheet' href='{FONTS}'><style>{css}</style></head><body>"
-        + cover + contents + sheets + remote + "</body></html>"
+        + "".join(pages) + "</body></html>"
     )
 
 
