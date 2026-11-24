@@ -28,7 +28,7 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from .musiclib import MusicSourceError, split_id
+from .musiclib import MusicSourceError, item_id, split_id
 
 log = logging.getLogger(__name__)
 
@@ -394,7 +394,7 @@ class Cast:
             self._casts[uuid] = cast
         return cast
 
-    def play(self, uuid: str, url: str, content_type: str, metadata: dict) -> None:
+    def play(self, uuid: str, url: str, content_type: str, metadata: dict, seek: float = 0.0) -> None:
         cast = self._cast(uuid)
         mc = cast.media_controller
         meta = {"metadataType": 3, "title": metadata.get("name"), "artist": metadata.get("artist"),
@@ -402,7 +402,7 @@ class Cast:
         if metadata.get("public_image"):
             meta["images"] = [{"url": metadata["public_image"]}]
         mc.play_media(url, content_type, title=metadata.get("name"), thumb=metadata.get("public_image"),
-                      stream_type="BUFFERED", metadata=meta)
+                      stream_type="BUFFERED", metadata=meta, current_time=seek or None)
         mc.block_until_active(timeout=10)
 
     def status(self, uuid: str) -> dict:
@@ -431,8 +431,10 @@ class Session:
 
     _ids = itertools.count(1)
 
-    def __init__(self, player: "MusicPlayer", speakers: list[str], tracks: list[dict], start: int = 0):
+    def __init__(self, player: "MusicPlayer", speakers: list[str], tracks: list[dict], start: int = 0,
+                 seek: float = 0.0):
         self.id = f"session:{next(self._ids)}"
+        self._seek = seek  # seconds into the first track (a book picked up where it was left)
         self.player = player
         self.speakers = speakers
         self.tracks = tracks
@@ -453,19 +455,26 @@ class Session:
     def current(self) -> dict | None:
         return self.tracks[self.index] if 0 <= self.index < len(self.tracks) else None
 
+    @property
+    def position(self) -> float:
+        """Seconds into the current track."""
+        return max(0.0, (self.paused_at or time.monotonic()) - self.started) if self.started else 0.0
+
     def _run(self) -> None:
         while not self._stopped.is_set() and 0 <= self.index < len(self.tracks):
             track = self.tracks[self.index]
             self._jump.clear()
+            seek, self._seek = self._seek, 0.0
             try:
-                waits = self.player._start_track(self.speakers, track)
+                waits = self.player._start_track(self.speakers, track, seek)
             except (SpeakerError, MusicSourceError) as e:
                 log.warning("Couldn't play %s: %s", track.get("name"), e)
                 self.error = str(e)
                 self.index += 1
                 continue
             self.error = None
-            self.started = time.monotonic()
+            self.started = time.monotonic() - seek
+            self.paused_at = None
             try:
                 finished = self._wait(waits)
             except SpeakerError as e:
@@ -485,7 +494,9 @@ class Session:
                     if self._stopped.is_set():
                         break
                 else:
-                    continue  # AirPlay can't pause: start the track again
+                    # AirPlay can't pause: start the track again, where it was (with ffmpeg)
+                    self._seek = self._paused_position
+                    continue
             if finished and not self._jump.is_set():
                 self.index += 1
         if not self._stopped.is_set():
@@ -517,10 +528,13 @@ class Session:
             self._resume.set()
         self._jump.set()
 
+    _paused_position = 0.0
+
     def pause(self) -> None:
         if self.state == "playing":
             self.state = "paused"
             self.paused_at = time.monotonic()
+            self._paused_position = self.position
             self.player._pause(self.speakers)
             self._jump.set()
 
@@ -544,6 +558,105 @@ class Session:
             self.tracks += tracks
 
 
+# ---- where you are in an audiobook --------------------------------------------------
+
+class BookProgress:
+    """Reports where each playing audiobook has got to back to Audiobookshelf: every
+    ``EVERY`` seconds while it plays, and when it's paused, stopped or replaced."""
+
+    EVERY = 15
+
+    def __init__(self, player: "MusicPlayer"):
+        self.player = player
+        self._lock = threading.Lock()
+        self._zones: dict[str, dict] = {}  # zone ID -> {"book", "tracks", "duration", "last", "sent"}
+        self._thread: threading.Thread | None = None
+
+    def watch(self, zone_id: str, book_id: str, tracks: list[dict]) -> None:
+        duration = sum(t.get("duration") or 0 for t in tracks) or tracks[0].get("book_duration") or 0
+        with self._lock:
+            self._zones[zone_id] = {"book": book_id, "tracks": tracks, "duration": duration,
+                                    "last": None, "sent": None}
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, name="book-progress", daemon=True)
+                self._thread.start()
+
+    def book_of(self, zone_id: str) -> dict | None:
+        """``{"id", "position", "duration"}`` of the book a zone is playing, for the panel."""
+        with self._lock:
+            z = self._zones.get(zone_id)
+        if not z:
+            return None
+        position = self._position(zone_id, z)
+        return {"id": item_id("abs", "book", z["book"]), "duration": z["duration"],
+                "position": position if position is not None else z["last"]}
+
+    def _position(self, zone_id: str, z: dict) -> float | None:
+        """Where in the book a zone is, or None if it isn't playing the book any more."""
+        if kind_of(zone_id) == "ma":
+            try:
+                queue = self.player._call("player_queues/get", queue_id=ref_of(zone_id)) or {}
+            except SpeakerError:
+                return None
+            current = queue.get("current_item") or {}
+            uri = str((current.get("media_item") or {}).get("uri") or current.get("uri") or "")
+            track = next((t for t in z["tracks"]
+                          if f"/api/items/{z['book']}/file/{split_id(t['id'])[2].partition('/')[2]}" in uri), None)
+            if track is None or queue.get("state") not in ("playing", "paused"):
+                return None
+            return (track.get("offset") or 0) + float(queue.get("elapsed_time") or 0)
+        session = next((s for s in self.player.sessions if s.id == zone_id), None)
+        if session is None or session.state == "stopped":
+            return None
+        track = session.current or {}
+        if track.get("book") != z["book"]:
+            return None
+        return (track.get("offset") or 0) + session.position
+
+    def report(self, zone_id: str) -> None:
+        """Send where a zone is in its book now (before it's paused, stopped or replaced)."""
+        with self._lock:
+            z = self._zones.get(zone_id)
+        if z:
+            position = self._position(zone_id, z)
+            if position is not None:
+                z["last"] = position
+            self._send(z)
+
+    def _send(self, z: dict) -> None:
+        if z["last"] is None or (z["sent"] is not None and abs(z["sent"] - z["last"]) < 3):
+            return
+        finished = bool(z["duration"]) and z["last"] >= z["duration"] - 5
+        try:
+            self.player.library.audiobookshelf.save_progress(z["book"], z["last"], z["duration"], finished)
+            z["sent"] = z["last"]
+        except MusicSourceError as e:
+            log.info("Couldn't tell Audiobookshelf where %s got to: %s", z["book"], e)
+
+    def _run(self) -> None:
+        while True:
+            time.sleep(self.EVERY)
+            with self._lock:
+                zones = list(self._zones.items())
+            if not zones:
+                with self._lock:
+                    if not self._zones:
+                        self._thread = None
+                        return
+                continue
+            for zone_id, z in zones:
+                position = self._position(zone_id, z)
+                if position is None:
+                    # It ended, or something else plays there now: the last place is final
+                    self._send(z)
+                    with self._lock:
+                        if self._zones.get(zone_id) is z:
+                            del self._zones[zone_id]
+                    continue
+                z["last"] = position
+                self._send(z)
+
+
 # ---- all of them --------------------------------------------------------------------
 
 class MusicPlayer:
@@ -557,6 +670,7 @@ class MusicPlayer:
         self.cast = Cast()
         self._lock = threading.Lock()
         self.sessions: list[Session] = []
+        self.progress = BookProgress(self)
 
     # ---- speakers ----
 
@@ -617,9 +731,13 @@ class MusicPlayer:
 
     # ---- playing ----
 
-    def play(self, ids: list[str], speaker_ids: list[str], option: str = "replace", start: int = 0) -> dict:
+    def play(self, ids: list[str], speaker_ids: list[str], option: str = "replace", start: int = 0,
+             position: float | None = None) -> dict:
         """Play items (albums, playlists, tracks...) on speakers. ``option`` is ``replace``,
-        ``next`` (after what's playing) or ``add`` (at the end)."""
+        ``next`` (after what's playing) or ``add`` (at the end).
+
+        An audiobook on its own starts at ``position`` (seconds into the book), or where
+        Audiobookshelf says it was left, and where it's got to is reported back as it plays."""
         if not ids:
             raise SpeakerError("Choose something to play")
         if not speaker_ids:
@@ -633,6 +751,9 @@ class MusicPlayer:
         if own and any(split_id(i)[0] == "ma" for i in ids):
             raise SpeakerError("Music Assistant's music plays on Music Assistant's speakers. "
                                "Choose one of those, or music from another source.")
+        if len(ids) == 1 and option == "replace" and split_id(ids[0])[:2] == ("abs", "book"):
+            self._play_book(split_id(ids[0])[2], assistant, own, position)
+            return self.now()
         if assistant:
             self._play_assistant(ids, assistant, option, start)
         if own:
@@ -645,6 +766,41 @@ class MusicPlayer:
                 raise SpeakerError("There's nothing in that to play")
             self._play_own(tracks, own, option)
         return self.now()
+
+    def _play_book(self, book_id: str, assistant: list[str], own: list[str], position: float | None) -> None:
+        from .audiobookshelf import locate
+        books = self.library.books
+        tracks = books.book_tracks(book_id)
+        if not tracks:
+            raise SpeakerError("That book has no audio")
+        if position is None:
+            position = books.resume_point(book_id)
+        index, seek = locate(tracks, max(0.0, float(position)))
+        if seek < 2:
+            seek = 0.0
+        if assistant:
+            leader = ref_of(assistant[0])
+            self._play_assistant([item_id("abs", "book", book_id)], assistant, "replace", index)
+            if seek:
+                threading.Thread(target=self._assistant_seek, args=(leader, seek), daemon=True).start()
+            self.progress.watch(f"ma:{leader}", book_id, tracks)
+        if own:
+            session = self._play_own(tracks[index:], own, "replace", seek)
+            self.progress.watch(session.id, book_id, tracks)
+
+    def _assistant_seek(self, queue_id: str, seek: float) -> None:
+        """Music Assistant starts at the top of a file: move into it once it's playing."""
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                queue = self._call("player_queues/get", queue_id=queue_id) or {}
+                if queue.get("state") == "playing":
+                    self._call("player_queues/seek", queue_id=queue_id, position=int(seek))
+                    return
+            except SpeakerError:
+                pass
+            time.sleep(0.5)
+        log.info("Couldn't move %s into the book: it didn't start playing", queue_id)
 
     def _media(self, ident: str) -> list[str]:
         """What Music Assistant is given for an item: its URI, or the tracks' addresses."""
@@ -687,17 +843,20 @@ class MusicPlayer:
         except MusicError as e:
             raise SpeakerError(str(e)) from None
 
-    def _play_own(self, tracks: list[dict], speakers: list[str], option: str) -> None:
+    def _play_own(self, tracks: list[dict], speakers: list[str], option: str, seek: float = 0.0) -> Session:
         with self._lock:
             current = next((s for s in self.sessions if set(speakers) & set(s.speakers)), None)
             if current and option != "replace" and current.state != "stopped":
                 current.add(tracks, option == "next")
-                return
-            for s in [s for s in self.sessions if set(speakers) & set(s.speakers)]:
-                s.stop()
-            session = Session(self, speakers, tracks)
+                return current
+            stopping = [s for s in self.sessions if set(speakers) & set(s.speakers)]
+            session = Session(self, speakers, tracks, seek=seek)
             self.sessions = [s for s in self.sessions if not set(speakers) & set(s.speakers)] + [session]
+        for s in stopping:
+            self.progress.report(s.id)
+            s.stop()
         session.start()
+        return session
 
     def _ended(self, session: Session) -> None:
         with self._lock:
@@ -706,9 +865,9 @@ class MusicPlayer:
 
     # The session's way to its speakers
 
-    def _start_track(self, speakers: list[str], track: dict):
-        """Start a track on every speaker; returns a function saying whether the first has
-        finished it."""
+    def _start_track(self, speakers: list[str], track: dict, seek: float = 0.0):
+        """Start a track on every speaker, ``seek`` seconds in; returns a function saying
+        whether the first has finished it."""
         url, content_type = self.library.stream(track)
         local = None
         if track["source"].startswith("mf-"):
@@ -720,9 +879,9 @@ class MusicPlayer:
             kind, ref = kind_of(speaker), ref_of(speaker)
             try:
                 if kind == "airplay":
-                    waits.append(self._airplay_track(ref, url, content_type, local, meta))
+                    waits.append(self._airplay_track(ref, url, content_type, local, meta, seek))
                 else:
-                    waits.append(self._cast_track(ref, url, content_type, local, track, meta))
+                    waits.append(self._cast_track(ref, url, content_type, local, track, meta, seek))
             except SpeakerError as e:
                 errors.append(f"{self.speaker_name(speaker)}: {e}")
         if not waits:
@@ -730,9 +889,11 @@ class MusicPlayer:
         first = waits[0]
         return first
 
-    def _airplay_track(self, ref, url, content_type, local, meta):
+    def _airplay_track(self, ref, url, content_type, local, meta, seek: float = 0.0):
         ext = os.path.splitext(local or "")[1].lower()
-        if local and ext in AIRPLAY_DIRECT:
+        if seek and self._ffmpeg_path():
+            source = self._ffmpeg(local or url, seek)  # only ffmpeg can start partway in
+        elif local and ext in AIRPLAY_DIRECT:
             source = local
         elif content_type in AIRPLAY_DIRECT_TYPES:
             source = url
@@ -748,10 +909,10 @@ class MusicPlayer:
             return True
         return finished
 
-    def _cast_track(self, ref, url, content_type, local, track, meta):
+    def _cast_track(self, ref, url, content_type, local, track, meta, seek: float = 0.0):
         if content_type not in CAST_TYPES:
             url, content_type = self.library.transcoded(track), "audio/mpeg"
-        self.cast.play(ref, url, content_type, meta)
+        self.cast.play(ref, url, content_type, meta, seek)
         seen = {"playing": False}
 
         def finished():
@@ -765,12 +926,17 @@ class MusicPlayer:
         return finished
 
     @staticmethod
-    def _ffmpeg(source: str) -> list[str]:
-        ffmpeg = shutil.which("ffmpeg") or next((p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
-                                                 if os.path.exists(p)), None)
+    def _ffmpeg_path() -> str | None:
+        return shutil.which("ffmpeg") or next((p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
+                                               if os.path.exists(p)), None)
+
+    def _ffmpeg(self, source: str, seek: float = 0.0) -> list[str]:
+        ffmpeg = self._ffmpeg_path()
         if not ffmpeg:
             raise SpeakerError("This file needs ffmpeg to play over AirPlay (brew install ffmpeg)")
-        return [ffmpeg, "-nostdin", "-loglevel", "error", "-i", source, "-vn", "-f", "mp3", "-b:a", "320k", "pipe:1"]
+        start = ["-ss", f"{seek:.1f}"] if seek else []
+        return [ffmpeg, "-nostdin", "-loglevel", "error", *start, "-i", source, "-vn", "-f", "mp3", "-b:a", "320k",
+                "pipe:1"]
 
     def _waits(self, speakers: list[str]):
         ref = ref_of(speakers[0])
@@ -842,9 +1008,10 @@ class MusicPlayer:
             zones.append({
                 "id": s.id, "kind": "marquee", "speakers": list(s.speakers),
                 "names": [self.speaker_name(x) for x in s.speakers], "state": s.state,
-                "can_pause": True, "restarts_on_resume": any(kind_of(x) == "airplay" for x in s.speakers),
+                "can_pause": True,
+                "restarts_on_resume": any(kind_of(x) == "airplay" for x in s.speakers) and not self._ffmpeg_path(),
                 "track": {k: track.get(k) for k in ("id", "name", "artist", "album", "image", "duration")},
-                "position": (s.paused_at or time.monotonic()) - s.started if s.started else 0,
+                "position": s.position, "book": self.progress.book_of(s.id),
                 "index": s.index, "error": s.error,
                 "queue": [{k: t.get(k) for k in ("id", "name", "artist", "duration")} for t in s.tracks],
             })
@@ -906,6 +1073,8 @@ class MusicPlayer:
                 return
             if action not in commands:
                 raise SpeakerError("Pause, play, next, previous or stop")
+            if action in ("pause", "stop"):
+                self.progress.report(zone_id)
             command, args = commands[action]
             self._call(command, **args)
             return
@@ -919,6 +1088,7 @@ class MusicPlayer:
         elif action == "previous":
             session.skip(-1)
         elif action == "stop":
+            self.progress.report(session.id)
             session.stop()
             self._ended(session)
         elif action == "jump":

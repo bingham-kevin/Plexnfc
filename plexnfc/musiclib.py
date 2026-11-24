@@ -703,6 +703,12 @@ class MusicLibrary:
                 continue
         self.plex_music = PlexMusicSource(plex)
         self.assistant = AssistantSource(music)
+        # Audiobooks, for the Books section
+        from .audiobookshelf import Audiobookshelf, AudiobookshelfSource
+        self.audiobookshelf = Audiobookshelf(os.path.join(data_dir, "audiobookshelf.json"),
+                                             os.environ.get("AUDIOBOOKSHELF_URL", ""),
+                                             os.environ.get("AUDIOBOOKSHELF_TOKEN", ""))
+        self.books = AudiobookshelfSource(self.audiobookshelf)
         self._plex_has_music: tuple[float, bool] | None = None
 
     def _folder(self, settings: dict) -> FolderMusicSource:
@@ -729,7 +735,16 @@ class MusicLibrary:
         self._plex_has_music = (time.monotonic(), ok)
         return ok
 
-    def sources(self) -> list[MusicSource]:
+    def sources(self, section: str | None = None) -> list[MusicSource]:
+        """Where music (``section="music"``) or audiobooks (``"books"``) come from; both
+        if ``section`` is None."""
+        books = [self.books] if self.audiobookshelf.configured else []
+        if section == "books":
+            return books
+        music = self._music_sources()
+        return music if section == "music" else music + books
+
+    def _music_sources(self) -> list[MusicSource]:
         out: list[MusicSource] = []
         if self.music._direct() is not None or self.music.bridge.status()["music_assistant"]:
             out.append(self.assistant)
@@ -746,13 +761,17 @@ class MusicLibrary:
             return self.assistant
         if source_id == "plex":
             return self.plex_music
+        if source_id == "abs":
+            if not self.audiobookshelf.configured:
+                raise MusicSourceError("Connect Audiobookshelf under Books › Sources")
+            return self.books
         for s in self.sources():
             if s.id == source_id:
                 return s
         raise MusicSourceError("That music source isn't there any more")
 
-    def public(self) -> list[dict]:
-        out = [s.public() for s in self.sources()]
+    def public(self, section: str | None = "music") -> list[dict]:
+        out = [{"section": "music", **s.public()} for s in self.sources(section)]
         for s in out:
             if s["id"] == "ma" and self.music._direct() is None:
                 s["search_only"] = True  # through Home Assistant
@@ -803,8 +822,8 @@ class MusicLibrary:
     def browse(self, source_id: str, kind: str, query: str = "", offset: int = 0, limit: int = 100) -> list[dict]:
         return self.source(source_id).browse(kind, query, offset, limit)
 
-    def search(self, query: str, source_id: str | None = None) -> list[dict]:
-        sources = [self.source(source_id)] if source_id else self.sources()
+    def search(self, query: str, source_id: str | None = None, section: str = "music") -> list[dict]:
+        sources = [self.source(source_id)] if source_id else self.sources(section)
         out = []
         for s in sources:
             try:

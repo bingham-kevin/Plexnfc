@@ -1,13 +1,13 @@
 # Music
 
-The control panel's **Music** tab plays music from all your sources on AirPlay, Cast and Music Assistant speakers, and links NFC cards to music.
+The control panel's **Music** section plays music from all your sources on AirPlay, Cast and Music Assistant speakers, and links NFC cards to albums and playlists. Like **Movies**, it has four pages: **Library**, **Cards**, **Book** and **Sources**. Audiobooks have their own **Books** section: see [docs/books.md](books.md).
 
 ## Where music comes from
 
-- **Music Assistant**: your library and every provider it has (Apple Music, Spotify, Tidal…). Connect it under **Music settings › Music Assistant** with its address (port 8095, such as `http://homeassistant.local:8095`) and a long-lived token. To make the token, open **Settings › Profile** in Music Assistant, and under **Long-lived access tokens** make one called Marquee. Through the Marquee integration in Home Assistant alone, Music Assistant can only be searched, not browsed.
+- **Music Assistant**: your library and every provider it has (Apple Music, Spotify, Tidal…). Connect it under **Music › Sources › Music Assistant** with its address (port 8095, such as `http://homeassistant.local:8095`) and a long-lived token. To make the token, open **Settings › Profile** in Music Assistant, and under **Long-lived access tokens** make one called Marquee. Through the Marquee integration in Home Assistant alone, Music Assistant can only be searched, not browsed.
 - **Plex**: the music libraries on the Plex server Marquee uses for movies. Nothing to set up.
-- **Jellyfin**: the music on each Jellyfin server added on the **Sources** tab.
-- **Music folders**: folders of audio files on the server, or on a mounted network share. Add them under **Music settings › Music folders**.
+- **Jellyfin**: the music on each Jellyfin server added under **Movies › Sources**.
+- **Music folders**: folders of audio files on the server, or on a mounted network share. Add them under **Music › Sources › Music folders**.
   - Albums come from the files' tags (MP3, M4A, FLAC, Ogg and WAV, read with mutagen), or from `Artist/Album/01 Title.mp3` folders when there are no tags.
   - The pictures come from a `cover.jpg` or `folder.jpg` in the album's folder, or from the files themselves.
   - `.m3u` and `.m3u8` files become playlists.
@@ -22,7 +22,7 @@ Pick one or more speakers under **Speakers**, then use **Play**, **Play next** o
 | Speakers | Played by | In sync when grouped | Notes |
 |---|---|---|---|
 | **Music Assistant** players | Music Assistant | Yes: choosing several makes a Music Assistant group | Plays music from every source. Music from Plex, Jellyfin and folders is passed to it as addresses on this server. **Ungroup** splits a group. |
-| **AirPlay** (HomePods, Apple TVs, AirPlay speakers, Macs) | Marquee, with pyatv | No | HomePods and Apple TVs need **Allow speaker access** set to everyone on the same network (Home app › Home settings › Speakers & TV). Apple TVs and Macs also ask to be paired once: see [Pairing Apple TVs](#pairing-apple-tvs). AirPlay can't pause a stream: ▶ after ⏸ starts the track again. |
+| **AirPlay** (HomePods, Apple TVs, AirPlay speakers, Macs) | Marquee, with pyatv | No | HomePods and Apple TVs need **Allow speaker access** set to everyone on the same network (Home app › Home settings › Speakers & TV). Apple TVs and Macs also ask to be paired once: see [Pairing Apple TVs](#pairing-apple-tvs). AirPlay can't pause a stream: ▶ after ⏸ starts the track again, where it was if the server has ffmpeg. |
 | **Cast** (Chromecast, Google/Nest speakers, Cast groups) | Marquee, with pychromecast | Use a speaker group made in Google Home: it shows up as one speaker | |
 
 Music Assistant's own music (Apple Music and so on) plays only on Music Assistant's speakers.
@@ -40,12 +40,22 @@ Speakers fetch files and pictures from the server's public address (`PUBLIC_BASE
 
 ## Music cards
 
-On any album, artist, playlist or track, with **one** speaker chosen:
+**Music › Cards** links a whole shelf of albums at once, the way **Movies › Cards** does for movies:
 
-- **Link next card**, then hold a blank card on a Movie Remote, or on an NFC reader in Home Assistant (a Tessera screen, the Home Assistant app…).
+1. Choose a source, then **Albums**, **Playlists** or **An artist's albums**. Everything in the list is picked; untick what you don't want.
+2. Choose the speaker the cards play on, and leave **Skip albums that already have a card** on to fill in only the missing ones.
+3. Click **Scan cards**. Each album comes up in turn; hold a blank card on a Movie Remote (or an NFC reader in Home Assistant) and it moves on to the next. **Skip** and **Back** move through the list.
+
+To link one card from **Music › Library**, open any album, artist, playlist or track with **one** speaker chosen:
+
+- **Link next card**, then hold a blank card on a reader.
 - **Link card XX-XX-XX-XX** links the card a reader has just read, if it isn't linked to anything.
 
-Tapping the card later plays that music on that speaker, replacing what's playing there. Linked cards are listed on the **Cards** tab with the movie cards. Cards linked to Music Assistant music before the Music tab existed keep working.
+Tapping the card later plays that music on that speaker, replacing what's playing there. **Music › Cards** lists the music cards; movie cards stay under **Movies › Cards**. Cards linked to Music Assistant music before the Music section existed keep working.
+
+## A printable book of albums
+
+**Music › Book** makes a book like the movie book: one or four covers to a page, each with a gold circle where its card goes. Choose **Everything with a card** or a source's albums or playlists, the layout and the paper, then **Open printable book** and print at 100% with background graphics on. With **QR code** on, each page with a card gets a code that plays it from a phone (it opens `/c/<card>` on the server).
 
 ## Pairing Apple TVs
 

@@ -63,6 +63,15 @@ code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, monospace; background: v
 .tabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted);
                padding: 10px 14px; font-weight: 600; white-space: nowrap; }
 .tabs button.on { color: var(--text); border-bottom-color: var(--gold); }
+/* A section's pages: Library, Cards, Book, Sources */
+.subtabs { display: flex; gap: 6px; margin: -8px 0 18px; overflow-x: auto; }
+.subtabs button { background: none; border: 1px solid var(--line); border-radius: 99px; color: var(--muted);
+                  padding: 5px 14px; font-weight: 600; white-space: nowrap; }
+.subtabs button.on { color: var(--gold-text); background: var(--gold); border-color: var(--gold); }
+.book-progress { display: flex; align-items: center; gap: 10px; margin-top: 8px; max-width: 420px; }
+.book-progress .progress { flex: 1; margin: 0; }
+.book-description { max-width: 60ch; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.tracks li.on { background: color-mix(in srgb, var(--gold) 12%, transparent); border-radius: 6px; }
 .badge { background: var(--gold); color: var(--gold-text); border-radius: 99px; padding: 0 7px; margin-left: 6px;
          font-size: 0.8rem; }
 

@@ -209,6 +209,9 @@ struct MusicItem: Decodable, Sendable, Equatable {
     let name: String
     let artist: String
     let image: String?
+
+    /// An audiobook from Audiobookshelf
+    var isBook: Bool { id?.hasPrefix("abs|") == true }
 }
 
 /// How music cards reach Music Assistant: directly, or through the Marquee integration in
@@ -236,6 +239,9 @@ struct Card: Decodable, Sendable, Identifiable {
     let music: MusicItem?
     let speakerName: String?
     var id: String { uid }
+
+    /// Which section it belongs to: a movie, music, or an audiobook
+    var section: MediaSection { music == nil ? .movies : music!.isBook ? .books : .music }
 }
 
 struct ScanMovie: Decodable, Sendable, Equatable {

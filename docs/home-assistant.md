@@ -192,7 +192,7 @@ If the server is reinstalled, or Home Assistant is removed in its control panel,
 
 ### Music cards, with Music Assistant
 
-The **Music** tab ([docs/music.md](music.md)) is where music cards are linked now, from any music source, for AirPlay, Cast or Music Assistant speakers. This section covers how Marquee reaches Music Assistant.
+The **Music** section ([docs/music.md](music.md)) is where music cards are linked now, from any music source, for AirPlay, Cast or Music Assistant speakers. This section covers how Marquee reaches Music Assistant.
 
 With [Music Assistant](https://music-assistant.io), a Movie Remote card can play music too: an album, playlist, artist, track or radio station, on a speaker you choose. Marquee reaches Music Assistant in one of two ways:
 

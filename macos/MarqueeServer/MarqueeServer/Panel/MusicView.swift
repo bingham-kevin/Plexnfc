@@ -18,6 +18,16 @@ struct LibItem: Decodable, Sendable, Identifiable, Hashable {
     let duration: Double?
     let number: Int?
     let year: Int?
+    // Audiobooks
+    var narrator: String?
+    var subtitle: String?
+    var description: String?
+    /// How many books an author or a series has
+    var count: Int?
+    /// A book's file: where it starts in the book
+    var offset: Double?
+
+    var isBook: Bool { source == "abs" }
 
     /// As a music card keeps it
     var cardBody: [String: Any] {
@@ -57,6 +67,10 @@ struct MusicZone: Decodable, Sendable, Identifiable {
     let track: Track
     let position: Double?
     let error: String?
+    /// An audiobook: where it's got to in the whole book
+    let book: BookPlace?
+
+    struct BookPlace: Decodable, Sendable { let id: String; let position: Double?; let duration: Double }
 }
 
 struct MusicQueue: Decodable, Sendable {
@@ -65,9 +79,17 @@ struct MusicQueue: Decodable, Sendable {
     let items: [Item]
 }
 
-private struct Items: Decodable, Sendable { let items: [LibItem] }
-private struct Opened: Decodable, Sendable { let item: LibItem; let albums: [LibItem]?; let tracks: [LibItem]? }
-private struct Speakers: Decodable, Sendable { let speakers: [MusicSpeaker] }
+struct Items: Decodable, Sendable { let items: [LibItem] }
+struct Opened: Decodable, Sendable {
+    struct Chapter: Decodable, Sendable { let title: String; let start: Double; let end: Double }
+    struct Progress: Decodable, Sendable { let position: Double; let finished: Bool }
+    let item: LibItem
+    let albums: [LibItem]?
+    let tracks: [LibItem]?
+    let chapters: [Chapter]?
+    let progress: Progress?
+}
+struct Speakers: Decodable, Sendable { let speakers: [MusicSpeaker] }
 private struct Zones: Decodable, Sendable { let zones: [MusicZone] }
 
 extension PanelModel {
@@ -81,7 +103,7 @@ extension PanelModel {
 /// POST from the Music tab; says what went wrong. True if it worked.
 @MainActor
 @discardableResult
-private func musicAction(_ model: PanelModel, _ path: String, _ body: [String: Any] = [:], done: String? = nil) async -> Bool {
+func musicAction(_ model: PanelModel, _ path: String, _ body: [String: Any] = [:], done: String? = nil) async -> Bool {
     do {
         try await model.api.post(path, body)
         if let done { model.say(done) }
@@ -95,6 +117,13 @@ private func musicAction(_ model: PanelModel, _ path: String, _ body: [String: A
 private func clock(_ seconds: Double?) -> String {
     guard let seconds, seconds >= 0 else { return "" }
     return String(format: "%d:%02d", Int(seconds) / 60, Int(seconds) % 60)
+}
+
+/// 3:07, or 7:12:05 for something over an hour
+func longClock(_ seconds: Double?) -> String {
+    guard let seconds, seconds >= 0 else { return "" }
+    let s = Int(seconds)
+    return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s % 3600 / 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
 }
 
 private let kindLabels: [(String, String)] = [("album", "Albums"), ("artist", "Artists"), ("playlist", "Playlists"), ("track", "Tracks")]
@@ -126,7 +155,6 @@ struct MusicView: View {
             SpeakersView(model: model, selected: selected, canManage: overview.canManage, choose: choose)
             LibraryView(model: model, selected: selected, canManage: overview.canManage, unknown: cards?.unknown?.uid,
                         played: { zonesVersion += 1 }, cardsChanged: { cards = $0 })
-            if overview.canManage { MusicSettingsView(model: model) }
         }
         .task {
             while !Task.isCancelled {
@@ -139,7 +167,7 @@ struct MusicView: View {
 
 // MARK: - What's playing
 
-private struct ZonesView: View {
+struct ZonesView: View {
     let model: PanelModel
     let canManage: Bool
     let version: Int
@@ -181,7 +209,8 @@ private struct ZoneRow: View {
                 Text([zone.track.artist, zone.track.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
                     .foregroundStyle(.secondary)
                 Text(zone.names.joined(separator: " + ")
-                     + (zone.track.duration != nil ? " · \(clock(zone.position)) / \(clock(zone.track.duration))" : "")
+                     + (zone.book.map { " · \(longClock($0.position)) of \(longClock($0.duration)) in the book" }
+                        ?? (zone.track.duration != nil ? " · \(clock(zone.position)) / \(clock(zone.track.duration))" : ""))
                      + (zone.kind == "marquee" && zone.speakers.count > 1 ? " · not in sync" : ""))
                     .font(.callout).foregroundStyle(.secondary)
                 if let error = zone.error { Text(error).font(.callout).foregroundStyle(.red) }
@@ -243,7 +272,7 @@ private struct ZoneRow: View {
 
 // MARK: - Speakers
 
-private struct SpeakersView: View {
+struct SpeakersView: View {
     let model: PanelModel
     let selected: [String]
     let canManage: Bool
@@ -420,8 +449,8 @@ private struct LibraryView: View {
     var body: some View {
         PanelSection("Library") {
             if let sources, sources.isEmpty {
-                Text("No music yet. Add a music folder or connect Music Assistant under Music Settings; Plex music libraries "
-                     + "and Jellyfin servers added on the Sources tab show up here too.").foregroundStyle(.secondary)
+                Text("No music yet. Add a music folder or connect Music Assistant under Music › Sources; Plex music libraries "
+                     + "and Jellyfin servers added under Movies › Sources show up here too.").foregroundStyle(.secondary)
             } else if let top = path.last {
                 ItemDetailView(model: model, id: top, selected: selected, canManage: canManage, unknown: unknown,
                                open: { path.append($0) }, back: { path.removeLast() }, played: played,
@@ -482,7 +511,7 @@ private struct LibraryView: View {
     }
 }
 
-private struct Tile: View {
+struct Tile: View {
     let model: PanelModel
     let item: LibItem
     var sourceName: String?
@@ -491,10 +520,12 @@ private struct Tile: View {
     var body: some View {
         Button(action: open) {
             VStack(alignment: .leading, spacing: 3) {
-                MusicArtwork(url: model.musicArt(item.image), size: 130, round: item.kind == "artist")
+                MusicArtwork(url: model.musicArt(item.image), size: 130, round: item.kind == "artist" || item.kind == "author",
+                             symbol: item.isBook ? "book.closed" : "music.note")
                 Text(item.name).fontWeight(.semibold).lineLimit(2)
-                Text([item.kind == "album" ? nil : item.kind, item.artist.isEmpty ? nil : item.artist,
-                      item.year.map(String.init), sourceName].compactMap { $0 }.joined(separator: " · "))
+                Text([item.kind == "album" || item.kind == "book" ? nil : item.kind, item.artist.isEmpty ? nil : item.artist,
+                      item.count.map { "\($0) book\($0 == 1 ? "" : "s")" }, item.year.map(String.init), sourceName]
+                    .compactMap { $0 }.joined(separator: " · "))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
             .frame(width: 130, alignment: .leading)
@@ -622,7 +653,7 @@ private struct ItemDetailView: View {
     }
 }
 
-private struct CardScanView: View {
+struct CardScanView: View {
     let model: PanelModel
     let scan: Scan
     let canManage: Bool
@@ -647,14 +678,16 @@ private struct CardScanView: View {
 
 // MARK: - Settings
 
-private struct MusicSettingsView: View {
+/// Music › Sources: music folders, Music Assistant, and the kinds of speaker.
+struct MusicSettingsView: View {
     let model: PanelModel
+    var canManage = true
     @State private var state: MusicSourcesState?
     @State private var status: MusicStatus?
     @State private var connecting = false
 
     var body: some View {
-        PanelSection("Music settings") {
+        PanelSection("Music sources") {
             Text("Music folders").font(.headline)
             Text("Folders of music files on this Mac or a mounted share. Albums come from the files' tags, or from "
                  + "Artist/Album folders; .m3u files become playlists.").foregroundStyle(.secondary)
@@ -702,10 +735,11 @@ private struct MusicSettingsView: View {
             Text("AirPlay and Cast").font(.headline)
             Text("AirPlay: \(state?.speakers.airplay == true ? "on" : "needs pyatv") · Cast: \(state?.speakers.cast == true ? "on" : "needs pychromecast"). "
                  + "HomePods and Apple TVs need **Allow speaker access** set to everyone on the same network (in the Home "
-                 + "app). AirPlay can't pause a stream, so Play after Pause starts the track again. File types an AirPlay or "
-                 + "Cast speaker can't play go through ffmpeg, if this Mac has it.")
+                 + "app). AirPlay can't pause a stream, so Play after Pause starts the track again: where it was, if this "
+                 + "Mac has ffmpeg. File types an AirPlay or Cast speaker can't play go through ffmpeg too.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
+        .disabled(!canManage)
         .task {
             while !Task.isCancelled {
                 state = (try? await model.api.get("music/sources")) ?? state
@@ -817,13 +851,14 @@ struct MusicArtwork: View {
     let url: URL?
     let size: CGFloat
     var round = false
+    var symbol = "music.note"
 
     var body: some View {
         AsyncImage(url: url) { phase in
             if let image = phase.image {
                 image.resizable().aspectRatio(contentMode: .fill)
             } else {
-                Rectangle().fill(.quaternary).overlay { Image(systemName: "music.note").foregroundStyle(.secondary) }
+                Rectangle().fill(.quaternary).overlay { Image(systemName: symbol).foregroundStyle(.secondary) }
             }
         }
         .frame(width: size, height: size)

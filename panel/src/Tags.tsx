@@ -82,7 +82,7 @@ export function Tags({ overview }: { overview: Overview }) {
           {overview.can_manage && (
             <button disabled={linkCard.isPending} title={row.original.cards.length
                       ? `Has card ${row.original.cards.join(", ")}` : "Link a blank card with a Movie Remote"}
-                    onClick={() => linkCard.mutate(row.original, { onSuccess: () => { location.hash = "cards"; } })}>
+                    onClick={() => linkCard.mutate(row.original, { onSuccess: () => { location.hash = "movies/cards"; } })}>
               {row.original.cards.length ? "✓ Card" : "Link card"}
             </button>
           )}

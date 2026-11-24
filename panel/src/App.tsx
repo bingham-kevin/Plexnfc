@@ -1,42 +1,63 @@
 import { useEffect, useState } from "react";
 import { AppleTVs } from "./AppleTVs";
 import { Book } from "./Book";
+import { BooksLibraryPage, BooksSourcesPage } from "./Books";
 import { Cards } from "./Cards";
 import { Devices, PairingRequests } from "./Devices";
-import { Music } from "./Music";
+import { MediaBook } from "./MediaBook";
+import { MusicLibraryPage, MusicSourcesPage } from "./Music";
 import { useAction, useOverview } from "./hooks";
 import { NowPlaying } from "./NowPlaying";
 import { Sources } from "./Sources";
 import { Tags } from "./Tags";
 
-const TABS = [
+/** Movies, Music and Books each have the same pages: Library, Cards, Book and Sources. */
+const SECTIONS = [
   { id: "home", label: "Now Playing" },
-  { id: "devices", label: "Devices" },
-  { id: "tags", label: "Tags" },
+  { id: "movies", label: "Movies" },
   { id: "music", label: "Music" },
+  { id: "books", label: "Books" },
+  { id: "devices", label: "Devices" },
+] as const;
+type Section = (typeof SECTIONS)[number]["id"];
+const PAGES = [
+  { id: "library", label: "Library" },
   { id: "cards", label: "Cards" },
   { id: "book", label: "Book" },
   { id: "sources", label: "Sources" },
 ] as const;
-type Tab = (typeof TABS)[number]["id"];
+type Page = (typeof PAGES)[number]["id"];
+type Place = { section: Section; page: Page };
 
-/** The tab in the address (#devices), so a reload or a bookmark comes back to it. */
-function useTab(): [Tab, (t: Tab) => void] {
-  const read = () => (TABS.find((t) => `#${t.id}` === location.hash)?.id ?? "home") as Tab;
-  const [tab, setTab] = useState<Tab>(read);
+// Addresses from before the sections, so bookmarks still land somewhere sensible
+const OLD: Record<string, string> = {
+  tags: "movies/library", cards: "movies/cards", book: "movies/book", sources: "movies/sources", music: "music/library",
+};
+
+/** Where the panel is, in the address (#music/cards), so a reload or a bookmark comes back to it. */
+function usePlace(): [Place, (section: Section, page?: Page) => void] {
+  const read = (): Place => {
+    const raw = location.hash.slice(1);
+    const [section, page] = (OLD[raw] ?? raw).split("/");
+    const s = SECTIONS.find((x) => x.id === section)?.id ?? "home";
+    return { section: s, page: PAGES.find((x) => x.id === page)?.id ?? "library" };
+  };
+  const [place, setPlace] = useState<Place>(read);
   useEffect(() => {
-    const onHash = () => setTab(read());
+    const onHash = () => setPlace(read());
     addEventListener("hashchange", onHash);
     return () => removeEventListener("hashchange", onHash);
   }, []);
-  return [tab, (t) => (location.hash = t)];
+  return [place, (section, page = "library") =>
+    (location.hash = section === "home" || section === "devices" ? section : `${section}/${page}`)];
 }
 
 export default function App() {
-  const [tab, setTab] = useTab();
+  const [{ section, page }, go] = usePlace();
   const overview = useOverview();
   const data = overview.data;
   const waiting = data?.pairing_requests.length ?? 0;
+  const media = section === "movies" || section === "music" || section === "books";
 
   return (
     <div className="app">
@@ -52,14 +73,22 @@ export default function App() {
       </header>
 
       <nav className="tabs" role="tablist">
-        {TABS.map((t) => (
-          <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""}
-                  onClick={() => setTab(t.id)}>
+        {SECTIONS.map((t) => (
+          <button key={t.id} role="tab" aria-selected={section === t.id} className={section === t.id ? "on" : ""}
+                  onClick={() => go(t.id, page)}>
             {t.label}
             {t.id === "devices" && waiting > 0 && <span className="badge">{waiting}</span>}
           </button>
         ))}
       </nav>
+      {media && (
+        <nav className="subtabs" role="tablist" aria-label={`${section} pages`}>
+          {PAGES.map((p) => (
+            <button key={p.id} role="tab" aria-selected={page === p.id} className={page === p.id ? "on" : ""}
+                    onClick={() => go(section, p.id)}>{p.label}</button>
+          ))}
+        </nav>
+      )}
 
       {overview.isPending && <p className="muted">Loading…</p>}
       {overview.isError && !data && <p className="err">Can't reach the server: {overview.error.message}</p>}
@@ -70,26 +99,45 @@ export default function App() {
             <p className="note">You can look around from here. To pair devices or change anything, open the control panel
               on the server itself, or in Home Assistant.</p>
           )}
-          {/* Pairing requests are waiting on someone, so they show on every tab */}
-          {tab !== "devices" && <PairingRequests overview={data} />}
-          {tab === "home" && (
+          {/* Pairing requests are waiting on someone, so they show everywhere */}
+          {section !== "devices" && <PairingRequests overview={data} />}
+          {section === "home" && (
             <>
               <Status />
               <NowPlaying overview={data} />
             </>
           )}
-          {tab === "devices" && (
+          {section === "devices" && (
             <>
               <PairingRequests overview={data} />
               <Devices overview={data} />
               <AppleTVs overview={data} />
             </>
           )}
-          {tab === "tags" && <Tags overview={data} />}
-          {tab === "music" && <Music overview={data} />}
-          {tab === "cards" && <Cards overview={data} />}
-          {tab === "book" && <Book overview={data} />}
-          {tab === "sources" && <Sources overview={data} />}
+          {section === "movies" && (
+            <>
+              {page === "library" && <Tags overview={data} />}
+              {page === "cards" && <Cards overview={data} section="movies" />}
+              {page === "book" && <Book overview={data} />}
+              {page === "sources" && <Sources overview={data} />}
+            </>
+          )}
+          {section === "music" && (
+            <>
+              {page === "library" && <MusicLibraryPage overview={data} />}
+              {page === "cards" && <Cards overview={data} section="music" />}
+              {page === "book" && <MediaBook overview={data} kind="music" />}
+              {page === "sources" && <MusicSourcesPage overview={data} />}
+            </>
+          )}
+          {section === "books" && (
+            <>
+              {page === "library" && <BooksLibraryPage overview={data} />}
+              {page === "cards" && <Cards overview={data} section="books" />}
+              {page === "book" && <MediaBook overview={data} kind="books" />}
+              {page === "sources" && <BooksSourcesPage overview={data} />}
+            </>
+          )}
         </main>
       )}
     </div>
@@ -113,7 +161,7 @@ function Status() {
     <section className="card">
       <h2>Server</h2>
       <dl className="facts">
-        <dt>Plex <a className="muted" href="#sources" title="Plex, Jellyfin and folders">· sources</a></dt>
+        <dt>Plex <a className="muted" href="#movies/sources" title="Plex, Jellyfin and folders">· sources</a></dt>
         <dd>
           {data.plex.signed_in ? (
             <>
