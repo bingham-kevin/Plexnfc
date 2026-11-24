@@ -25,6 +25,7 @@ struct MovieBookApp: App {
             RootView()
                 .environmentObject(app)
                 .environmentObject(app.player)
+                .environmentObject(app.player.nowPlaying)
                 .environmentObject(app.library)
                 .onOpenURL { app.player.handle(url: $0) }
         }

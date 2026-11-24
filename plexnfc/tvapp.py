@@ -29,28 +29,41 @@ STATUS_TTL = 30  # the app reports every few seconds while it's open
 
 
 class AppInbox:
+    """Commands waiting for each Marquee, and what each one last said it's playing.
+
+    Commands go in channels: the movie (``play``, ``pause``, ``resume``, ``stop``, ``seek``),
+    music Marquee plays itself (``audio``, ``audio_pause``, ``audio_resume``, ``audio_stop``)
+    and Now Playing (``nowplaying``: show what a reader's speakers play). A new command
+    replaces the one waiting in its channel, so a stale one never runs; the app takes
+    whatever is waiting, oldest first."""
+
     def __init__(self):
         self._lock = threading.Lock()
         self._ids = itertools.count(int(time.time()))  # stays ahead of the app's last ID after a restart
-        self._commands: dict[str, dict] = {}
+        self._commands: dict[str, dict[str, dict]] = {}  # player -> channel -> {"sent", "command"}
         self._status: dict[str, tuple[float, dict]] = {}
         self._changed = threading.Condition(self._lock)  # a player started, paused or stopped
+
+    @staticmethod
+    def channel(action: str) -> str:
+        if action.startswith("audio"):
+            return "audio"
+        return "show" if action == "nowplaying" else "movie"
 
     def send(self, player: str, action: str, **fields) -> dict:
         command = {"id": next(self._ids), "action": action, **fields}
         with self._lock:
-            self._commands[player.casefold()] = {"sent": time.monotonic(), "command": command}
+            self._commands.setdefault(player.casefold(), {})[self.channel(action)] = {
+                "sent": time.monotonic(), "command": command}
         return command
 
     def next(self, player: str, after: int) -> dict | None:
         with self._lock:
-            entry = self._commands.get(player.casefold())
-        if not entry or entry["command"]["id"] <= after:
-            return None
-        ttl = PLAY_TTL if entry["command"]["action"] == "play" else CONTROL_TTL
-        if time.monotonic() - entry["sent"] > ttl:
-            return None
-        return entry["command"]
+            waiting = list((self._commands.get(player.casefold()) or {}).values())
+        now = time.monotonic()
+        fresh = [e["command"] for e in waiting if e["command"]["id"] > after
+                 and now - e["sent"] <= (PLAY_TTL if e["command"]["action"] in ("play", "audio") else CONTROL_TTL)]
+        return min(fresh, key=lambda c: c["id"]) if fresh else None
 
     def set_status(self, player: str, status: dict) -> None:
         with self._lock:

@@ -90,6 +90,20 @@ function ReaderCard({ reader, state, canManage }: { reader: Reader; state: Reade
               {state.players.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </label>
+          <label className="row">Shows Now Playing on
+            <select value={reader.screen ?? ""} aria-label={`Now Playing screen for ${reader.name}`}
+                    onChange={(e) => save.mutate({ screen: e.target.value || null })}>
+              <option value="">No screen</option>
+              {state.screens.map((s) => <option key={s} value={s}>{s}</option>)}
+              {reader.screen && !state.screens.includes(reader.screen) && <option value={reader.screen}>{reader.screen} (away)</option>}
+            </select>
+          </label>
+          {reader.screen && (
+            <label className="row" title="Else Now Playing shows only when Marquee is already open">
+              <input type="checkbox" checked={reader.wake} onChange={(e) => save.mutate({ wake: e.target.checked })} />
+              Turn the TV on for it
+            </label>
+          )}
           {reader.kind === "homeassistant" && (
             <form className="row" onSubmit={(e) => { e.preventDefault(); save.mutate({ page: page ? Number(page) : null }); }}>
               <label className="row">Tessera page

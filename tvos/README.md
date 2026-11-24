@@ -54,6 +54,10 @@ With a free Apple ID, Apple lets the app run for 7 days before it has to be inst
 
 A single tag can pick an app with `?client=app:NAME`.
 
+## Music and books
+
+Marquee is also a speaker. Once it's paired as a TV, it shows up in the control panel's speakers as "<name> (Marquee)". It plays music and audiobooks itself, and keeps playing in the background on iPhone and iPad. While it plays, it shows **Now Playing**: the cover, a timeline (with chapters for a book), the track list and synced lyrics. The Siri Remote's play/pause button and Menu (back) work on that screen. The Now Playing button opens the screen for music playing on other speakers too. See [docs/music.md](../docs/music.md#now-playing-on-the-tv).
+
 ## Notes
 
 - The stream address includes your Plex token or Jellyfin API key, and the app collects it from plexnfc over your home network. That's the same trust plexnfc already places in your network: don't expose its port to the internet.

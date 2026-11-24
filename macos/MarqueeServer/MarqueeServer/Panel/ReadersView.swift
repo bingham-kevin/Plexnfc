@@ -14,6 +14,8 @@ struct ReaderInfo: Decodable, Sendable, Identifiable {
     let isDefault: Bool
     let moviePlayer: String?
     let page: Int?
+    let screen: String?
+    let wake: Bool?
     let now: Now?
 }
 
@@ -22,6 +24,7 @@ struct ReadersState: Decodable, Sendable {
     let readers: [ReaderInfo]
     let speakers: [Speaker]
     let players: [Player]
+    let screens: [String]?
 }
 
 struct ReadersView: View {
@@ -106,6 +109,20 @@ private struct ReaderRow: View {
                     ForEach(state.players) { Text($0.name).tag($0.id) }
                 }
                 .frame(maxWidth: 320)
+                Picker("Shows Now Playing on", selection: Binding(
+                    get: { reader.screen ?? "" },
+                    set: { send("readers/\(path)", ["screen": $0.isEmpty ? NSNull() : $0], done: "\(reader.name) saved") })) {
+                    Text("No screen").tag("")
+                    ForEach(screenChoices, id: \.self) { Text($0).tag($0) }
+                }
+                .frame(maxWidth: 320)
+                if reader.screen != nil {
+                    Toggle("Turn the TV on for it", isOn: Binding(
+                        get: { reader.wake ?? false },
+                        set: { send("readers/\(path)", ["wake": $0], done: "\(reader.name) saved") }))
+                    .toggleStyle(.checkbox)
+                    .help("Else Now Playing shows only when Marquee is already open")
+                }
                 if reader.kind == "homeassistant" {
                     HStack {
                         Text("Tessera page")
@@ -121,6 +138,12 @@ private struct ReaderRow: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
         .onAppear { page = reader.page.map(String.init) ?? "" }
         .onChange(of: reader.page) { page = reader.page.map(String.init) ?? "" }
+    }
+
+    private var screenChoices: [String] {
+        let screens = state.screens ?? []
+        if let screen = reader.screen, !screens.contains(screen) { return screens + [screen] }
+        return screens
     }
 
     private var path: String { reader.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? reader.id }

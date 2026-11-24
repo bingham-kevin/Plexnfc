@@ -1,14 +1,16 @@
 """Speakers music plays on, and what's playing on them.
 
-Three kinds, all with IDs like ``kind:ref``:
+Four kinds, all with IDs like ``kind:ref``:
 
 - ``ma:<player_id>``: Music Assistant's players (AirPlay, Cast, Sonos, Snapcast...).
   Music Assistant keeps their queues and groups them in sync.
 - ``airplay:<identifier>``: AirPlay speakers, streamed to by Marquee itself with pyatv.
 - ``cast:<uuid>``: Chromecast and Google Cast speakers, and the speaker groups made in
   Google Home, streamed to by Marquee itself with pychromecast.
+- ``marquee:<name>``: the Marquee app on an Apple TV, which plays through the TV and shows
+  the cover, the timeline and the lyrics while it does (sent each track through its inbox).
 
-For AirPlay and Cast, Marquee keeps the queue (a ``Session``): it sends one track at a
+For AirPlay, Cast and Marquee, Marquee Server keeps the queue (a ``Session``): it sends one track at a
 time and moves on when the first speaker finishes it. Playing to several of them at once
 sends each the same track; they aren't in sync to the millisecond the way a Cast group
 or a Music Assistant group is.
@@ -48,12 +50,19 @@ except ImportError:
 AIRPLAY_DIRECT = (".mp3", ".flac", ".wav", ".ogg")
 AIRPLAY_DIRECT_TYPES = ("audio/mpeg", "audio/flac", "audio/wav", "audio/ogg")
 CAST_TYPES = ("audio/mpeg", "audio/mp4", "audio/aac", "audio/flac", "audio/ogg", "audio/wav")
+MARQUEE_TYPES = ("audio/mpeg", "audio/mp4", "audio/aac", "audio/flac", "audio/wav", "audio/aiff")  # AVPlayer's
+OWN_KINDS = ("airplay", "cast", "marquee")  # the speakers Marquee Server keeps the queue for
 SCAN_EVERY = 120
 PAIRING_TTL = 300  # seconds a PIN on the TV stays good for
 
 
 class SpeakerError(Exception):
     pass
+
+
+class SpeakerGone(SpeakerError):
+    """A speaker went away mid-queue (Marquee was closed): the queue stops rather than
+    running through every track."""
 
 
 def kind_of(speaker_id: str) -> str:
@@ -424,7 +433,83 @@ class Cast:
         return round(status.volume_level * 100) if status else None
 
 
-# ---- Marquee's own queues (AirPlay and Cast) ---------------------------------------
+# ---- Marquee on an Apple TV --------------------------------------------------------
+
+class MarqueeSpeakers:
+    """The Marquee app on each paired Apple TV, as a speaker.
+
+    A track is sent to the app's inbox (``audio``, with its address, details and a ``play``
+    token); the app plays it with its own player, shows Now Playing, and reports the token
+    back as ``audio.ended`` in its status (``/tv/status``) when the track ends. If Marquee
+    isn't open, it's opened on the Apple TV first (which turns the TV on)."""
+
+    # How long the app has to report back after a track is sent: opening Marquee on an Apple
+    # TV that's asleep takes a while
+    GRACE = 45
+
+    def __init__(self, inbox=None, devices=None, open_app=None):
+        self.inbox = inbox            # tvapp.AppInbox
+        self.devices = devices        # () -> the names of the paired Marquee Apple TVs
+        self.open_app = open_app      # (name) -> open Marquee on that Apple TV
+
+    @property
+    def available(self) -> bool:
+        return self.inbox is not None and self.devices is not None
+
+    def speakers(self) -> list[dict]:
+        if not self.available:
+            return []
+        return [{"id": f"marquee:{name}", "name": f"{name} (Marquee)", "kind": "marquee", "group": False}
+                for name in self.devices()]
+
+    def name(self, ref: str) -> str | None:
+        return f"{ref} (Marquee)" if self.available and ref in self.devices() else None
+
+    def _send(self, ref: str, action: str, **fields) -> None:
+        if not self.available or ref not in self.devices():
+            raise SpeakerError(f"Marquee on {ref} isn't paired with this server any more")
+        self.inbox.send(ref, action, **fields)
+
+    def play(self, ref: str, url: str, content_type: str, meta: dict, seek: float = 0.0):
+        """Send a track; returns a function saying whether it's finished."""
+        token = secrets.token_hex(6)
+        opened = self.inbox.status(ref) is not None
+        self._send(ref, "audio", play=token, url=url, type=content_type, track=meta.get("id"),
+                   title=meta.get("name") or "", artist=meta.get("artist") or "", album=meta.get("album") or "",
+                   image=meta.get("public_image"), duration=meta.get("duration"), start=round(seek, 1))
+        if not opened and self.open_app:
+            threading.Thread(target=self.open_app, args=(ref,), daemon=True).start()
+        sent = time.monotonic()
+        seen = {"playing": False}
+
+        def finished() -> bool:
+            status = self.inbox.status(ref)
+            audio = (status or {}).get("audio") or {}
+            if audio.get("ended") == token:
+                return True
+            if audio.get("play") == token:
+                seen["playing"] = True
+                if audio.get("state") == "stopped":
+                    raise SpeakerGone(f"Marquee on {ref} stopped playing")
+                return False
+            if time.monotonic() - sent > self.GRACE and (status is None or seen["playing"]):
+                # Marquee was closed (no word from it), or it plays something else now
+                raise SpeakerGone(f"Marquee on {ref} isn't playing it")
+            return False
+        return finished
+
+    def pause(self, ref: str) -> None:
+        self._send(ref, "audio_pause")
+
+    def resume(self, ref: str) -> None:
+        self._send(ref, "audio_resume")
+
+    def stop(self, ref: str) -> None:
+        if self.available and ref in self.devices():
+            self.inbox.send(ref, "audio_stop")
+
+
+# ---- Marquee's own queues (AirPlay, Cast and Marquee) -------------------------------
 
 class Session:
     """A queue Marquee plays on one or more AirPlay and Cast speakers."""
@@ -444,6 +529,8 @@ class Session:
         self.started = 0.0
         self.paused_at: float | None = None
         self._jump = threading.Event()
+        self._skipped = False  # a skip, jump or seek (not a pause) since the track started
+        self._pauses = 0  # pauses so far
         self._stopped = threading.Event()
         self._resume = threading.Event()
         self._thread = threading.Thread(target=self._run, name=self.id, daemon=True)
@@ -464,6 +551,8 @@ class Session:
         while not self._stopped.is_set() and 0 <= self.index < len(self.tracks):
             track = self.tracks[self.index]
             self._jump.clear()
+            self._skipped = False
+            handled = self._pauses
             seek, self._seek = self._seek, 0.0
             try:
                 waits = self.player._start_track(self.speakers, track, seek)
@@ -477,6 +566,10 @@ class Session:
             self.paused_at = None
             try:
                 finished = self._wait(waits)
+            except SpeakerGone as e:
+                log.info("%s", e)
+                self.error = str(e)
+                break
             except SpeakerError as e:
                 log.warning("%s stopped playing %s: %s", self.speakers[0], track.get("name"), e)
                 self.error = str(e)
@@ -484,19 +577,35 @@ class Session:
                 continue
             if self._stopped.is_set():
                 break
-            if self.state == "paused":
+            restart = gone = False
+            # Paused (perhaps more than once, and perhaps resumed already): carry on where it
+            # was when it's resumed
+            while self._pauses != handled and not self._stopped.is_set():
+                handled = self._pauses
                 self._resume.wait()
                 self._resume.clear()
-                if self._stopped.is_set():
-                    break
-                if self.player._resume(self.speakers):
-                    finished = self._wait(self.player._waits(self.speakers))
-                    if self._stopped.is_set():
-                        break
-                else:
+                if self._stopped.is_set() or self._skipped:
+                    break  # stopped, or a skip or seek while paused: the loop above plays it
+                if not self.player._resume(self.speakers):
                     # AirPlay can't pause: start the track again, where it was (with ffmpeg)
                     self._seek = self._paused_position
-                    continue
+                    restart = True
+                    break
+                self._jump.clear()  # the pause's
+                try:
+                    finished = self._wait(self.player._waits(self.speakers))
+                except SpeakerGone as e:
+                    log.info("%s", e)
+                    self.error = str(e)
+                    gone = True
+                    break
+                except SpeakerError as e:
+                    log.warning("%s stopped playing %s: %s", self.speakers[0], track.get("name"), e)
+                    finished = True  # on to the next track
+            if self._stopped.is_set() or gone:
+                break
+            if restart:
+                continue
             if finished and not self._jump.is_set():
                 self.index += 1
         if not self._stopped.is_set():
@@ -515,6 +624,7 @@ class Session:
     # ---- controls ----
 
     def skip(self, step: int) -> None:
+        self._skipped = True
         if self.state == "paused":
             self.state = "playing"
             self._resume.set()
@@ -522,7 +632,19 @@ class Session:
         self._jump.set()
 
     def jump(self, index: int) -> None:
+        self._skipped = True
         self.index = max(0, min(index, len(self.tracks) - 1))
+        if self.state == "paused":
+            self.state = "playing"
+            self._resume.set()
+        self._jump.set()
+
+    def seek(self, position: float, index: int | None = None) -> None:
+        """Play from ``position`` seconds into the current track (or track ``index``)."""
+        if index is not None:
+            self.index = max(0, min(index, len(self.tracks) - 1))
+        self._seek = max(0.0, float(position))
+        self._skipped = True
         if self.state == "paused":
             self.state = "playing"
             self._resume.set()
@@ -532,6 +654,7 @@ class Session:
 
     def pause(self) -> None:
         if self.state == "playing":
+            self._pauses += 1
             self.state = "paused"
             self.paused_at = time.monotonic()
             self._paused_position = self.position
@@ -668,6 +791,8 @@ class MusicPlayer:
         self.public_art = art_url  # item ID -> a picture address speakers can fetch
         self.airplay = AirPlay(airplay_pairings, linked_credentials)
         self.cast = Cast()
+        self.marquee = MarqueeSpeakers()  # given the app's inbox by the server
+        self._marquee_waits: dict[str, object] = {}
         self._lock = threading.Lock()
         self.sessions: list[Session] = []
         self.progress = BookProgress(self)
@@ -706,7 +831,7 @@ class MusicPlayer:
                      "volume": None, "state": None, "members": [], "can_group": [], "synced_to": None,
                      "limited": True} for s in bridge.speakers()]
         busy = {s: z for z in self.sessions for s in z.speakers}
-        for s in self.airplay.speakers() + self.cast.speakers():
+        for s in self.airplay.speakers() + self.cast.speakers() + self.marquee.speakers():
             ref = ref_of(s["id"])
             volume = self.cast.get_volume(ref) if s["kind"] == "cast" else None
             session = busy.get(s["id"])
@@ -723,11 +848,13 @@ class MusicPlayer:
             name = self.cast.name(ref) if self.cast.available else None
         elif kind == "ma":
             name = self.music.speaker_name(ref)
+        elif kind == "marquee":
+            name = self.marquee.name(ref)
         return name or ref
 
     def status(self) -> dict:
         return {"airplay": self.airplay.available, "cast": self.cast.available,
-                "music_assistant": self._assistant() is not None}
+                "marquee": self.marquee.available, "music_assistant": self._assistant() is not None}
 
     # ---- playing ----
 
@@ -745,7 +872,7 @@ class MusicPlayer:
         if option not in ("replace", "next", "add"):
             raise SpeakerError("Play, play next or add to the queue")
         assistant = [s for s in speaker_ids if kind_of(s) == "ma"]
-        own = [s for s in speaker_ids if kind_of(s) in ("airplay", "cast")]
+        own = [s for s in speaker_ids if kind_of(s) in OWN_KINDS]
         if len(assistant) + len(own) != len(speaker_ids):
             raise SpeakerError("That isn't a speaker")
         if own and any(split_id(i)[0] == "ma" for i in ids):
@@ -880,6 +1007,12 @@ class MusicPlayer:
             try:
                 if kind == "airplay":
                     waits.append(self._airplay_track(ref, url, content_type, local, meta, seek))
+                elif kind == "marquee":
+                    marquee_url, marquee_type = url, content_type
+                    if content_type not in MARQUEE_TYPES:
+                        marquee_url, marquee_type = self.library.transcoded(track), "audio/mpeg"
+                    waits.append(self.marquee.play(ref, marquee_url, marquee_type, meta, seek))
+                    self._marquee_waits[ref] = waits[-1]  # the same track, after a pause
                 else:
                     waits.append(self._cast_track(ref, url, content_type, local, track, meta, seek))
             except SpeakerError as e:
@@ -940,6 +1073,8 @@ class MusicPlayer:
 
     def _waits(self, speakers: list[str]):
         ref = ref_of(speakers[0])
+        if kind_of(speakers[0]) == "marquee":
+            return self._marquee_waits.get(ref, lambda: True)
         if kind_of(speakers[0]) == "cast":
             seen = {"playing": False}
 
@@ -954,7 +1089,9 @@ class MusicPlayer:
     def _pause(self, speakers: list[str]) -> None:
         for s in speakers:
             try:
-                if kind_of(s) == "cast":
+                if kind_of(s) == "marquee":
+                    self.marquee.pause(ref_of(s))
+                elif kind_of(s) == "cast":
                     self.cast.control(ref_of(s), "pause")
                 else:
                     self.airplay.stop(ref_of(s))  # AirPlay streams can't pause: the track starts again
@@ -963,9 +1100,12 @@ class MusicPlayer:
 
     def _resume(self, speakers: list[str]) -> bool:
         """Carry on after a pause. False if the track has to start again (AirPlay)."""
-        if all(kind_of(s) == "cast" for s in speakers):
+        if all(kind_of(s) in ("cast", "marquee") for s in speakers):
             for s in speakers:
                 try:
+                    if kind_of(s) == "marquee":
+                        self.marquee.resume(ref_of(s))
+                        continue
                     self.cast.control(ref_of(s), "play")
                 except SpeakerError:
                     continue
@@ -977,6 +1117,8 @@ class MusicPlayer:
             try:
                 if kind_of(s) == "cast":
                     self.cast.control(ref_of(s), "stop")
+                elif kind_of(s) == "marquee":
+                    self.marquee.stop(ref_of(s))
                 else:
                     self.airplay.stop(ref_of(s))
             except (SpeakerError, Exception) as e:  # noqa: BLE001 - stopping is best effort
@@ -1060,7 +1202,26 @@ class MusicPlayer:
         return session
 
     def control(self, zone_id: str, action: str, value=None) -> None:
-        """``pause``, ``play``, ``next``, ``previous``, ``stop`` or ``jump`` (to queue index ``value``)."""
+        """``pause``, ``play``, ``next``, ``previous``, ``stop``, ``jump`` (to queue index
+        ``value``), ``seek`` (to ``value`` seconds into the track) or ``book`` (to ``value``
+        seconds into the audiobook playing, a chapter's start, say)."""
+        if action == "book":
+            book = self.progress.book_of(zone_id)
+            zone = next((z for z in self.now() if z["id"] == zone_id), None)
+            if not book or zone is None:
+                raise SpeakerError("No audiobook is playing there")
+            position = max(0.0, min(float(value), float(book["duration"] or value)))
+            self.progress.report(zone_id)
+            self.play([book["id"]], zone["speakers"], position=position)
+            return
+        if action == "seek":
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise SpeakerError("Seek to a number of seconds")
+            if kind_of(zone_id) == "ma":
+                self._call("player_queues/seek", queue_id=ref_of(zone_id), position=int(max(0, value)))
+            else:
+                self._session(zone_id).seek(float(value))
+            return
         if kind_of(zone_id) == "ma":
             pid = ref_of(zone_id)
             commands = {"pause": ("player_queues/pause", {"queue_id": pid}),
@@ -1102,7 +1263,7 @@ class MusicPlayer:
         and Music Assistant's queue on other Music Assistant speakers."""
         if not speaker_ids:
             raise SpeakerError("Choose a speaker")
-        if any(kind_of(s) not in ("ma", "airplay", "cast") for s in speaker_ids):
+        if any(kind_of(s) not in ("ma", *OWN_KINDS) for s in speaker_ids):
             raise SpeakerError("That isn't a speaker")
         book = self.progress.book_of(zone_id)
         if book and book.get("position") is not None:
@@ -1150,6 +1311,8 @@ class MusicPlayer:
             self.cast.volume(ref, level)
         elif kind == "airplay":
             self.airplay.volume(ref, level)
+        elif kind == "marquee":
+            raise SpeakerError("Marquee plays at the TV's own volume: use the TV's remote")
         else:
             raise SpeakerError("That isn't a speaker")
 

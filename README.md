@@ -132,11 +132,13 @@ Marquee plays movies from every source, from the first one in the order that has
 
 The control panel has three sections, **Movies**, **Music** and **Books**, each with **Cards**, **Book** and **Sources** pages beside its library (**Tags** for movies).
 
-The **Music** section browses and searches music from Music Assistant, Plex, Jellyfin and folders of audio files, and plays it on AirPlay speakers, Cast speakers and Music Assistant's players, with a queue, volume and grouping. See [docs/music.md](docs/music.md).
+The **Music** section browses and searches music from Music Assistant, Plex, Jellyfin and folders of audio files, and plays it on AirPlay speakers, Cast speakers, Music Assistant's players and the Marquee app itself, with a queue, volume and grouping. See [docs/music.md](docs/music.md).
 
 The **Books** section plays audiobooks from Audiobookshelf on the same speakers, resumes where you left off and reports progress back. See [docs/books.md](docs/books.md).
 
 Each NFC reader (a Movie Remote, or a reader in Home Assistant such as a Tessera screen) has a **default output**, chosen under **Devices › Readers**: the speakers its music and book cards play on, so a card plays in the room where it's held. On the reader itself (the Movie Remote's speaker screen, or the controls the Home Assistant integration adds for a Tessera screen) you can add or take away speakers, control what's playing, put back the default or make the current speakers the new default. What's chosen there is remembered for the next card.
+
+The Marquee app has a **Now Playing** screen for music and books: the cover, a timeline (with chapters for books), the track list and synced lyrics. A reader can also put it on the TV in its room each time a card is held to it. See [Now Playing on the TV](docs/music.md#now-playing-on-the-tv).
 
 ## Optional: a "Movie Remote" with a screen
 
