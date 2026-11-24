@@ -1,46 +1,37 @@
-# Plexnfc
+# Plexnfc: Marquee and the movie book
 
-A physical book of movie posters. Tap a page with your phone and the movie starts playing on your TV through Plex.
+A physical book of movie posters. Tap a page with your phone, or hold it to a Movie Remote, and the movie starts playing on your TV in **Marquee**, the Apple TV app in [tvos/](tvos/).
 
 ```
- phone taps NFC sticker ──► opens http://<plexnfc>/m/tmdb-603 ──► plexnfc tells Plex ──► TV plays The Matrix
+ tap ──► Marquee Server ──► movie waits in Marquee's inbox
+                        └─► wakes the Apple TV, opens Marquee ──► Marquee streams it from Plex, Jellyfin or a folder
 ```
 
 No app is needed on the phone. iPhones (XS and newer) and Android phones read URL tags on their own: tap, then open the link from the notification.
 
 ## What you need
 
-- A Plex Media Server, and a Plex player that can be remote-controlled (Apple TV, Roku, Fire TV, Android TV, Shield, Plex HTPC, a smart TV app…). In the player's settings, turn on **Advertise as player** / **Allow remote control**.
-- An always-on machine on the same network to run plexnfc: a Raspberry Pi, a NAS, or the Plex server itself. Give it a **fixed IP or hostname**, because that address gets written onto every tag.
+- An **Apple TV** with Marquee ([tvos/README.md](tvos/README.md)).
+- Movies in **Plex**, **Jellyfin**, or **folders** of movie files, in any mix.
+- **Marquee Server**, always on, on the same network:
+  - the **Mac app** ([macos/README.md](macos/README.md)), which is the easiest, or
+  - **Docker** or **Python** on another always-on machine: a Raspberry Pi, a NAS, or the Plex server itself.
 - **NFC stickers**: NTAG213 or NTAG215, about 25 mm round. They're cheap in packs of 50 or 100. Avoid "on-metal" tags and foil-backed paper.
-- An NFC writing app: **NFC Tools** (free, iOS and Android).
+- An NFC writing app: **NFC Tools** (free, iOS and Android). You don't need one for Movie Remote cards.
 - A printer, plus a binder, photo album or bookbinding service.
-
-## Run it as a Home Assistant app (easiest)
-
-If you have Home Assistant OS or Supervised, plexnfc can run as an app, which older versions of Home Assistant call an add-on. It runs on the Home Assistant machine, so you don't need a separate server. You make the book and get the tag URLs from a **Movie Book** panel in the sidebar. It talks to Home Assistant without a token.
-
-**If this repository is public:** go to **Settings → Apps** (Add-ons in older versions) **→ App store → ⋮ → Repositories**, add `https://github.com/bingham-kevin/Plexnfc`, then install **plexnfc**.
-
-**If it's private:** Home Assistant can only add public repositories, so install it as a local app instead:
-1. Install the **Samba share** or **Advanced SSH & Web Terminal** app.
-2. Copy this whole repository into the `addons` share, so that `addons/plexnfc/config.yaml` exists.
-3. In **Settings → Apps → App store**, choose **⋮ → Check for updates**. **plexnfc** appears under *Local apps*.
-
-Then fill in the **Configuration** tab and start the app. The app's **Documentation** tab walks you through the rest. To update a local app, copy the new files over and bump `version` in `config.yaml`.
-
-The rest of this section covers running plexnfc on another machine instead, with Docker or Python.
 
 ## 1. Set up
 
+**On a Mac**, install and run the Marquee Server app, as [macos/README.md](macos/README.md) describes. It serves the tags at `http://marquee.local:8080`, so the Mac doesn't need a fixed address.
+
+**With Docker or Python**, give the machine a **fixed IP or hostname**, because that address is written onto every tag. Then:
+
 ```bash
 git clone <this repo> && cd Plexnfc
-cp .env.example .env      # then fill in your Plex URL, token, library and player name
+cp .env.example .env      # then fill in your Plex library, Marquee player and tag address
 ```
 
-You can leave `PLEX_TOKEN` out: open `http://<that-machine>:8080/` and choose **Sign in with Plex**, which saves the token to `.plex_auth.json`. To set it by hand instead, follow [Finding an authentication token](https://support.plex.tv/articles/204059436). `PLEX_CLIENT` is the player's name as it appears in Plex.
-
-Run it with Docker:
+Then run it with Docker:
 
 ```bash
 docker compose up -d
@@ -54,7 +45,9 @@ pip install -r requirements.txt
 python -m plexnfc.server
 ```
 
-Open `http://<that-machine>:8080/tags` to see every movie and the URL for its tag.
+**Connect Marquee.** Open the control panel (`http://<that-machine>:8080/`) and choose **Sign in with Plex**, if you use Plex. Then open Marquee on the Apple TV, and approve the code it shows under **Devices**, naming it after its room. That name is the player taps go to: choose the default one in the panel (or with `APP_PLAYER`). To have the server wake the Apple TV and open Marquee by itself, pair the Apple TV too, under **Devices › Open Marquee automatically**.
+
+**Movies › Tags** lists every movie with the URL for its tag.
 
 ## 2. Make the book
 
@@ -64,7 +57,7 @@ python -m plexnfc.book --collection "Poster Book"   # only a Plex collection (re
 python -m plexnfc.book --layout grid --page-size A4 # four per page, A4 paper
 ```
 
-This writes `out/book.html` and `out/tags.csv`. Open `book.html` in Chrome, then **Print** at 100% scale with *Background graphics* on. The book sets its own margins. Print straight to paper or save as a PDF for a print shop.
+The book can also be made from the control panel (**Movies › Book**). The command writes `out/book.html` and `out/tags.csv`. Open `book.html` in Chrome, then **Print** at 100% scale with *Background graphics* on. The book sets its own margins. Print straight to paper or save as a PDF for a print shop.
 
 Each page has a dashed **NFC** circle where the sticker goes, in the same spot on every page. There's also a QR code with the same link, for phones without NFC (`--no-qr` leaves it out). The last page holds **Pause / Resume / Stop** control tags, which work well on the back cover.
 
@@ -78,7 +71,7 @@ For each movie in `out/tags.csv`:
 2. Tap **Write** and hold the phone on a blank sticker.
 3. Stick it over that movie's NFC circle.
 
-If you serve plexnfc over HTTPS, Chrome on Android gets a **Write tag** button on `/tags`, which makes this step much faster.
+If you serve Marquee Server over HTTPS, Chrome on Android gets a **Write tag** button on `/tags`, which makes this step much faster.
 
 ### Or link blank cards, for the Movie Remote
 
@@ -98,7 +91,7 @@ Put the stickers on the **back** of the page, or between pages in a page protect
 
 ## Optional: Home Assistant
 
-plexnfc can run a Home Assistant script before every movie. The script can turn the TV on, switch to the right HDMI input and open Plex, so one tap goes from a dark TV to the movie playing. Home Assistant can also start the movie itself through its Plex integration, which is the recommended setup for Apple TV. See [docs/home-assistant.md](docs/home-assistant.md) for setup and example scripts for Apple TV, Shield, LG, Samsung and Google TV.
+For an Apple TV paired under **Devices**, Marquee Server wakes it and opens Marquee itself. For anything else in the way, such as a TV that has to be switched on and set to the right HDMI input, Marquee Server can run a Home Assistant script before every movie (`HA_SCRIPT`, or one per player with `PLAYER_SCRIPTS`). See [docs/home-assistant.md](docs/home-assistant.md) for setup and example scripts.
 
 The **Marquee** integration (`custom_components/marquee`, installable with HACS) works the other way round. Each Marquee player becomes a media player in Home Assistant, with *Movie started*, *paused*, *resumed* and *stopped* triggers for automations, such as dimming the lights. It also passes on cards read by NFC readers in Home Assistant, and can carry music cards to Music Assistant when Marquee isn't connected to it directly. See [the integration's section](docs/home-assistant.md#the-marquee-integration-automations-that-follow-the-movie).
 
@@ -107,7 +100,7 @@ The **Marquee** integration (`custom_components/marquee`, installable with HACS)
 Movies can come from Plex, from Jellyfin servers, and from folders of movie files, all at once. Add them with **Add source** on the control panel's **Sources** tab (choose Network or local folder, Jellyfin server, or Plex); they're saved in `sources.json`, next to the Plex sign-in. Their movies show up in the tag list, the card scan, the book and Marquee's library alongside Plex's, and **Remove** beside Plex leaves it out if you don't use it.
 
 - **Jellyfin**: the server's address, then sign in with a Jellyfin user (the password goes to Jellyfin and isn't kept; Marquee Server keeps the sign-in token Jellyfin hands back) or paste an API key from Jellyfin's **Dashboard → API Keys**. Optionally name one library; otherwise every movie library is used. Collections and tags come from Jellyfin.
-- **Folder**: a path on the machine Marquee Server runs on, read with the folders inside it. For a network share (SMB or NFS), mount it first and give the mount's path: `/Volumes/Movies` on a Mac, `/media/...` or `/share/...` in the Home Assistant app (add the share under **Settings → System → Storage**). Movies are named from their files or folders, `Alien (1979)/Alien (1979).mkv` or `Alien.1979.1080p.mkv`; a Kodi/Jellyfin-style `movie.nfo` (or `<file name>.nfo`) beside a movie gives its title, year, plot, collection (`<set>`) and tags. Trailers, extras folders and second parts (`cd2`) are skipped. Posters come from `poster.jpg`/`folder.jpg`/`cover.jpg` in the movie's own folder, `<file name>-poster.jpg`, or the cover art inside the file; a movie with none gets a plain card with its title. On a Mac, macOS asks once whether Marquee Server may read a folder in Documents, Desktop or Downloads, or on a network volume. **Browse…** beside the path picks a folder on the server, starting from its mounted shares and disks.
+- **Folder**: a path on the machine Marquee Server runs on, read with the folders inside it. For a network share (SMB or NFS), mount it first and give the mount's path: `/Volumes/Movies` on a Mac, or wherever Docker or Linux mounts it. Movies are named from their files or folders, `Alien (1979)/Alien (1979).mkv` or `Alien.1979.1080p.mkv`; a Kodi/Jellyfin-style `movie.nfo` (or `<file name>.nfo`) beside a movie gives its title, year, plot, collection (`<set>`) and tags. Trailers, extras folders and second parts (`cd2`) are skipped. Posters come from `poster.jpg`/`folder.jpg`/`cover.jpg` in the movie's own folder, `<file name>-poster.jpg`, or the cover art inside the file; a movie with none gets a plain card with its title. On a Mac, macOS asks once whether Marquee Server may read a folder in Documents, Desktop or Downloads, or on a network volume. **Browse…** beside the path picks a folder on the server, starting from its mounted shares and disks.
 
 **Matching folder movies with TMDB.** A folder movie named loosely, or with no `.nfo`, can be matched with TMDB (The Movie Database, which Plex and Jellyfin use) for its proper title, year, summary, IDs, collection and poster. Paste a free TMDB API key (or read access token) from themoviedb.org's **Settings → API** with **Set up** beside *Matching folder movies with TMDB* on the **Sources** tab, then:
 
@@ -128,11 +121,7 @@ A movie is found by any key it has had, and a card also remembers its movie's ti
 
 **Order.** The **Sources** tab lists the sources in the order movies play from them (Plex first, unless you move it): a tap plays the first copy the player can play, and if that source doesn't answer (Plex signed out or switched off, say), the next one. **Now Playing** shows which source a Marquee movie is playing from.
 
-Where they play:
-
-- **Marquee** plays movies from every source, from the first one in the order that has it and answers. Jellyfin movies stream from Jellyfin, passed on by Marquee Server, so they play even when Jellyfin's address only works on the server (a Tailscale name, say). Folder movies stream from Marquee Server itself, at an address signed for that movie: MP4, M4V and MOV files as they are; other files (MKV, AVI…) need **ffmpeg** on the server (`brew install ffmpeg` on a Mac; the Docker image and the Home Assistant app don't include it, so there use MP4, M4V or MOV files), which repackages them for Apple TV as they play, converting only what Apple TV can't play. While a repackaged movie is starting, you can only skip ahead as far as ffmpeg has got.
-- **Jellyfin players** (Swiftfin) play the Jellyfin server's own copy, else find a Plex copy there by title and ID. With no `JELLYFIN_URL` set, the first Jellyfin source's players are used.
-- **Plex players** and Home Assistant's Plex integration play Plex's copy, whatever the order; a movie Plex doesn't have can't play there.
+Marquee plays movies from every source, from the first one in the order that has it and answers. Jellyfin movies stream from Jellyfin, passed on by Marquee Server, so they play even when Jellyfin's address only works on the server (a Tailscale name, say). Folder movies stream from Marquee Server itself, at an address signed for that movie: MP4, M4V and MOV files as they are; other files (MKV, AVI…) need **ffmpeg** on the server (`brew install ffmpeg` on a Mac; the Docker image doesn't include it, so there use MP4, M4V or MOV files), which repackages them for Apple TV as they play, converting only what Apple TV can't play. While a repackaged movie is starting, you can only skip ahead as far as ffmpeg has got.
 
 ## Music and books: AirPlay, Cast and Music Assistant
 
@@ -141,10 +130,6 @@ The control panel has three sections, **Movies**, **Music** and **Books**, each 
 The **Music** section browses and searches music from Music Assistant, Plex, Jellyfin and folders of audio files, and plays it on AirPlay speakers, Cast speakers and Music Assistant's players, with a queue, volume and grouping. See [docs/music.md](docs/music.md).
 
 The **Books** section plays audiobooks from Audiobookshelf on the same speakers, resumes where you left off and reports progress back. See [docs/books.md](docs/books.md).
-
-## Optional: play on Jellyfin
-
-Plex for Apple TV can't be remote-started, but Swiftfin (Jellyfin's Apple TV app) can. With `JELLYFIN_URL`, `JELLYFIN_API_KEY` and `JELLYFIN_PLAYER` set, taps, controls and `/now` go to that Jellyfin app instead of the Plex player. Plex still makes the book and the tag list, so the movies need to be in both libraries. `?client=jellyfin:NAME` picks a Jellyfin player for one tag.
 
 ## Optional: a "Movie Remote" with a screen
 
@@ -156,7 +141,7 @@ Plex for Apple TV can't be remote-started, but Swiftfin (Jellyfin's Apple TV app
 | --- | --- |
 | `/m/tmdb-603` | Play the movie from the beginning |
 | `/m/tmdb-603?resume=1` | Resume where it was left off |
-| `/m/tmdb-603?client=Bedroom TV` | Play on a different player (or `?client=media_player.xyz` to play through Home Assistant) |
+| `/m/tmdb-603?client=Bedroom` | Play on a different Marquee player |
 | `/pause`, `/play`, `/stop` | Control whatever is playing |
 | `/now`, `/toggle`, `/seek?by=30` | Used by the Movie Remote: what's playing (JSON), play/pause, skip |
 | `/off` | Run your Home Assistant "off" script (needs `HA_OFF_SCRIPT`) |
@@ -165,7 +150,8 @@ Tags store the movie's TMDB/IMDb ID rather than Plex's internal ID, so they keep
 
 ## Troubleshooting
 
-- **"Couldn't find a Plex player named…"**: the TV app has to be open (or at least running), and remote control has to be on. The error page lists the players plexnfc can see.
+- **"Marquee on … isn't connected to this server"**: approve Marquee on that Apple TV under **Devices**, with the name the tag or default player uses.
+- **The movie waits but the TV stays dark**: pair the Apple TV under **Devices › Open Marquee automatically**, or set a Home Assistant get-ready script.
 - **Nothing happens when tapping**: on iPhone, the screen must be on and unlocked. Hold the top edge of the phone on the sticker. On Android, NFC must be turned on in settings.
 - **The link opens but the page won't load**: the phone has to be on your home Wi-Fi, and `PUBLIC_BASE_URL` has to be an address the phone can reach.
 - **Security**: anyone on your network who has a URL can start a movie. Don't expose port 8080 to the internet.
@@ -177,7 +163,7 @@ pip install -r requirements.txt pytest
 pytest
 ```
 
-The control panel is a React app (TanStack Query and Table) in `panel/`. It's built into `plexnfc/static/panel`, and the build is committed, so the Home Assistant app and Marquee Server don't need Node. After changing it:
+The control panel is a React app (TanStack Query and Table) in `panel/`. It's built into `plexnfc/static/panel`, and the build is committed, so Marquee Server doesn't need Node. After changing it:
 
 ```bash
 cd panel

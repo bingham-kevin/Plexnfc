@@ -83,7 +83,7 @@ struct TagsView: View {
                 Picker("Try on", selection: $player) {
                     Text("\(overview.defaultPlayerLabel.isEmpty ? "The default player" : overview.defaultPlayerLabel) (default)")
                         .tag("")
-                    ForEach(players.filter { $0.id != overview.defaultPlayer }) { Text("\($0.name) (\($0.kind))").tag($0.id) }
+                    ForEach(players.filter { $0.id != overview.defaultPlayer }) { Text($0.name).tag($0.id) }
                 }
                 .frame(maxWidth: 280)
             }

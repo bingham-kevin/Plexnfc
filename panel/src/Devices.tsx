@@ -126,7 +126,7 @@ function PlayerChoice({ device, canManage }: { device: Device; canManage: boolea
             onChange={(e) => choose.mutate(e.target.value)}>
       <option value="">The default player</option>
       {current && !choices.some((p) => p.id === current) && <option value={current}>{current}</option>}
-      {choices.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.kind})</option>)}
+      {choices.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
     </select>
   );
 }

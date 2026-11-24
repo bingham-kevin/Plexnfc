@@ -1,4 +1,4 @@
-"""Talk to Marquee Server (or the plexnfc Home Assistant app): pairing, players and controls."""
+"""Talk to Marquee Server: pairing, players and controls."""
 from __future__ import annotations
 
 import asyncio

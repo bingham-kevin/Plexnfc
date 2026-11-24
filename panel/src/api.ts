@@ -1,5 +1,5 @@
 // The server's control panel API (/panel/api in plexnfc/server.py). Addresses are relative,
-// so they work under Home Assistant's ingress path too.
+// so the panel works from whatever address it was opened at.
 
 export type Kind = "tv" | "remote" | "phone" | "homeassistant";
 

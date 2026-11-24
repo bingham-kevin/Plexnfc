@@ -126,9 +126,9 @@ private struct PlayersView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showSettings = false
 
-    /// Players grouped by kind, Marquee (Apple TVs, iPhones, iPads) first.
+    /// Players grouped by kind: Marquee on Apple TVs (older servers may list others too).
     private var groups: [(kind: String, players: [Player])] {
-        let order = ["Marquee", "Jellyfin", "Plex", "Home Assistant"]
+        let order = ["Marquee"]
         return Dictionary(grouping: model.players, by: \.kind)
             .map { (kind: $0.key, players: $0.value) }
             .sorted { (order.firstIndex(of: $0.kind) ?? 99, $0.kind) < (order.firstIndex(of: $1.kind) ?? 99, $1.kind) }

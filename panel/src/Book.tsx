@@ -2,8 +2,7 @@ import { useState } from "react";
 import type { Overview } from "./api";
 import { useFilters } from "./hooks";
 
-/** The printable movie book. It opens in a new tab at the tag address, since Home Assistant's
- * sidebar won't serve a page opened outside it. */
+/** The printable movie book. It opens in a new tab at the tag address, to print from the browser. */
 export function Book({ overview }: { overview: Overview }) {
   const [title, setTitle] = useState("Movie Night");
   const [collection, setCollection] = useState("");

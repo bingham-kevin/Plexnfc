@@ -219,14 +219,6 @@ def test_mkv_without_ffmpeg_says_what_to_install(plex, movies_dir, monkeypatch):
     r = create_app(plex.config, plex).test_client().get(f"/m/{heat.key}")
     assert r.status_code == 404 and b"Install ffmpeg" in r.data
 
-
-def test_folder_movie_on_a_plex_player_is_refused(plex, movies_dir):
-    folder_plex(plex, movies_dir)
-    r = create_app(plex.config, plex).test_client().get("/m/file-tmdb-78")
-    assert r.status_code == 404 and b"plays on Marquee" in r.data
-    plex._client.playMedia.assert_not_called()
-
-
 def test_cards_and_tags_play_folder_movies(plex, movies_dir):
     folder_plex(plex, movies_dir)
     app = create_app(plex.config, plex).test_client()
@@ -307,10 +299,6 @@ def jellyfin_server(monkeypatch):
             body = {"Items": [{"Id": "a" * 32}]}
         elif path.endswith("/Items"):
             body = {"Items": JF_MOVIES}
-        elif path == "/Sessions":
-            body = [{"Id": "s1", "DeviceName": "Swiftfin", "SupportsRemoteControl": True,
-                     "NowPlayingItem": {"Id": "a" * 32, "Name": "The Matrix", "ProviderIds": {"Tmdb": "603"}},
-                     "PlayState": {"PositionTicks": 0, "SubtitleStreamIndex": -1}}]
         if body is not None:
             content = __import__("json").dumps(body).encode()
         return mock.Mock(ok=True, status_code=200, content=content, headers={"Content-Type": ctype},
@@ -386,26 +374,6 @@ def test_jellyfin_source_streams_to_marquee(plex, jellyfin_server):
     assert get.call_args.kwargs["params"]["ApiKey"] == ["key"] and get.call_args.kwargs["headers"] == {"Range": "bytes=0-3"}
     token = path.split("/")[3]
     assert app.get(path.replace(token, "0" * 32)).status_code == 404
-
-
-def test_jellyfin_source_plays_on_its_jellyfin_players(plex, jellyfin_server, monkeypatch):
-    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
-    jf_source_plex(plex)
-    # no JELLYFIN_URL: the Jellyfin source's server finds the players
-    assert {"id": "jellyfin:Swiftfin", "name": "Swiftfin", "kind": "Jellyfin"} in plex.players()
-    app = create_app(plex.config, plex).test_client()
-    assert app.get("/m/jf-tmdb-603?client=jellyfin:Swiftfin").status_code == 200
-    play = next(c for c in jellyfin_server if c[1].endswith("/Sessions/s1/Playing"))
-    assert play[2]["itemIds"] == "a" * 32  # its own item, not looked up by title
-    # and what's playing is reported with the key it was started with
-    now = app.get("/now?client=jellyfin:Swiftfin").json
-    assert now["key"] == "tmdb-603" and now["source"] == "Den Jellyfin"
-    # a Plex player plays Plex's copy, and can't play a movie only Jellyfin has
-    assert app.get("/m/jf-tmdb-603?client=Living Room").status_code == 200
-    plex._client.playMedia.assert_called_once()
-    r = app.get("/m/t-homevideo-2020?client=Living Room")
-    assert r.status_code == 404 and b"only in Den Jellyfin, which plays on Marquee and Jellyfin players" in r.data
-
 
 def test_jellyfin_sign_in_keeps_only_the_token(plex, jellyfin_server, tmp_path, monkeypatch):
     post = mock.Mock(return_value=mock.Mock(ok=True, status_code=200, json=lambda: {
@@ -494,9 +462,6 @@ def test_source_order_picks_where_marquee_streams_from(plex, matrix_file):
     plex.library.set_order([folder_id, "plex"])
     app.get("/m/tmdb-603")
     assert plex.app_inbox.next("Den", 0)["url"].endswith("/movie.mp4")
-    # a Plex player still plays Plex's copy, whatever comes first
-    assert app.get("/m/tmdb-603?client=Living Room").status_code == 200
-    plex._client.playMedia.assert_called_once()
 
 
 def test_a_source_that_fails_falls_back_to_the_next(plex, matrix_file, monkeypatch):

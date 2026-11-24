@@ -7,7 +7,7 @@ Without a server, **Try the Demo Library** plays a few freely licensed films, so
 ## How it connects
 
 1. Choose the Movie Book server from the list (plexnfc announces itself on the network with Bonjour as `_moviebook._tcp`), or enter its address (its **Tag base URL**, for example `192.168.1.20:8080`).
-2. Marquee shows a 6-digit code. Type the room (or, on an iPhone or iPad, whose it is) in the name box under **Marquee players and phones** in the server's control panel, then approve it. Approvals only work from the panel (Home Assistant's ingress, or Marquee Server's control panel on the Mac) or on the server's own machine, not from the open port on your network.
+2. Marquee shows a 6-digit code. Type the room (or, on an iPhone or iPad, whose it is) in the name box under **Marquee players and phones** in the server's control panel, then approve it. Approvals only work from the control panel on the server's own machine (Marquee Server's window on a Mac), not from the open port on your network.
 3. The Apple TV gets a secret it keeps in its Keychain and sends with every request, so only Apple TVs you approved can browse or get stream addresses. Remove an Apple TV in the panel to cut it off.
 
 Taps reach Marquee through the server's inbox for that Apple TV (`GET /tv/inbox`), which Marquee checks every 2 seconds while it's open; it reports what's playing (`POST /tv/status`) for now-playing and the control tags. The library comes from `/tv/library`, `/tv/movies` and `/tv/search`, and `/tv/play` returns a movie's stream: from Plex, or Jellyfin when **Marquee stream** is `jellyfin`.

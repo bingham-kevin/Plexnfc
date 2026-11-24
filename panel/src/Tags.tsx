@@ -139,7 +139,7 @@ export function Tags({ overview }: { overview: Overview }) {
             <select value={player} onChange={(e) => setPlayer(e.target.value)} disabled={players.isPending}>
               <option value="">{overview.default_player_label || "The default player"} (default)</option>
               {players.data?.players.filter((p) => p.id !== overview.default_player).map((p) => (
-                <option key={p.id} value={p.id}>{p.name} ({p.kind})</option>
+                <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
           </label>

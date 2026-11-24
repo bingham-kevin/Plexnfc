@@ -1,10 +1,11 @@
 """Web server the NFC tags point at.
 
 Tapping a tag opens e.g. ``http://192.168.1.20:8080/m/tmdb-603`` on the phone,
-which tells Plex to start that movie on the configured player.
+which sends that movie to the Marquee app on the chosen Apple TV (it streams from
+Plex, Jellyfin or a folder).
 
 Routes
-  /m/<key>             play a movie   (?client=NAME to pick a player, ?resume=0 to start over)
+  /m/<key>             play a movie   (?client=NAME to pick a Marquee player, ?resume=0 to start over)
   /pause /play /stop   control tags for the back cover of the book
   /off                 run the Home Assistant HA_OFF_SCRIPT (e.g. TV off)
   /tags                list every movie with the URL to write onto its tag (/tags.csv to download)
@@ -209,14 +210,13 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         """The paired Apple TV making this request, from its ``Authorization: Bearer`` secret."""
         return plex.app_pairings.device(bearer())
 
-    # Home Assistant's ingress, and this machine itself. On the host network (needed for
-    # Bonjour) ingress requests come from the host's own address, the tag address's host.
-    panel_addresses = {"172.30.32.2", "172.30.32.1", "127.0.0.1", "::1"}
+    # This machine itself, by any of its addresses (including the tag address's host)
+    panel_addresses = {"127.0.0.1", "::1"}
     panel_addresses.add(urlsplit(config.public_base_url).hostname or "")
 
     def from_panel() -> bool:
-        """Pairings are approved only from the panel: through Home Assistant's ingress,
-        or on the machine plexnfc runs on, never from another device on the network."""
+        """Pairings are approved only from the panel on the machine Marquee Server runs on,
+        never from another device on the network."""
         address = (request.remote_addr or "").removeprefix("::ffff:")
         return address in panel_addresses or is_own_address(address)
 
@@ -500,7 +500,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
 
     def player_label(player: str | None) -> str:
         player = player or plex.default_player() or ""
-        return player.split(":", 1)[1] if player.startswith(("app:", "jellyfin:")) else player
+        return player.removeprefix("app:")
 
     @remote_route("/remote/tap", methods=["POST"])
     def remote_tap(remote):
@@ -621,7 +621,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         try:
             status = plex.now_playing(client)
         except Exception as e:
-            return jsonify(state="error", message=f"Can't reach Plex: {e}")
+            return jsonify(state="error", message=str(e))
         with pending_lock:
             if pending:
                 done = pending.get("done")
@@ -632,7 +632,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                 else:
                     return jsonify(state="starting", title=pending["title"], year=pending["year"],
                                    key=pending["key"], poster=f"/poster/{pending['key']}",
-                                   position=0, duration=0, player=client or config.app_player or config.jellyfin_player or config.client)
+                                   position=0, duration=0, player=(client or config.app_player).removeprefix("app:"))
         return jsonify(status)
 
     def json_action(fn):
@@ -798,7 +798,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             title=request.args.get("title") or "Movie Night",
             qr=request.args.get("qr", "1") == "1",
             page_size=request.args.get("page_size") or "letter",
-            # Relative, so it also works behind Home Assistant's ingress proxy
+            # Relative, so it works under any address
             poster_src=lambda m: f"poster/{movie_key(m)}?w=1200&h=1800",
         )
         return Response(html, mimetype="text/html")
@@ -891,7 +891,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         except requests.RequestException as e:
             return page("Sign in", f'<h1 class="err">Couldn\'t reach plex.tv</h1><p>{escape(str(e))}</p>', 502)
         pins.add(pin_id)
-        # Relative URLs so this works behind Home Assistant's ingress proxy.
+        # Relative URLs, so this works under any address.
         return page("Sign in with Plex", f"""
           <h1>Sign in with Plex</h1>
           <p><a class="btn" href="{escape(auth_url)}" target="_blank" rel="noopener">Open plex.tv to sign in</a></p>
@@ -939,8 +939,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             return jsonify(error=str(e)), 503
 
     # ---- the control panel (panel/, built into plexnfc/static/panel) -----------------
-    # Anyone on the network can look; only the panel itself (Home Assistant's ingress, or
-    # this machine) can change anything. Its addresses are relative, for ingress.
+    # Anyone on the network can look; only the panel on this machine can change anything.
 
     panel_dir = os.path.join(os.path.dirname(__file__), "static", "panel")
 
@@ -989,10 +988,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             tag_address=config.public_base_url,
             tag_address_is_local="localhost" in config.public_base_url or "127.0.0.1" in config.public_base_url,
             default_player=plex.default_player(),
-            # The same order play() picks a player in
-            default_player_label=(f"Marquee on {config.app_player}" if config.app_player
-                                  else f"Jellyfin player {config.jellyfin_player}" if config.jellyfin_player
-                                  else config.ha_player or config.client or ""),
+            default_player_label=f"Marquee on {config.app_player}" if config.app_player else "",
             off_tag=bool(config.ha_off_script),
             plex={"signed_in": bool(config.plex_token),
                   "signed_in_here": bool(config.plex_token) and plexauth.saved_token(config.auth_file) == config.plex_token},
@@ -1004,7 +1000,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
 
     @panel_route("/players")
     def panel_players():
-        """Every player a movie can go to (asks Plex and Jellyfin, so it's slower)."""
+        """Every player a movie can go to: the paired Marquee Apple TVs."""
         return jsonify(players=plex.players(), default=plex.default_player())
 
     @panel_route("/movies")

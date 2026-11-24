@@ -24,21 +24,17 @@ def make_movie(title="The Matrix", guids=("imdb://tt0133093", "tmdb://603"), off
 @pytest.fixture
 def plex(tmp_path):
     movie = make_movie()
-    client = mock.Mock(title="Living Room")
     section = mock.Mock()
     section.getGuid.side_effect = lambda g: movie if g in [x.id for x in movie.guids] else (_ for _ in ()).throw(NotFound())
     section.all.return_value = [movie]
     server = mock.Mock()
     server.library.section.return_value = section
-    server.client.side_effect = lambda n: client if n == "Living Room" else (_ for _ in ()).throw(NotFound())
-    server.myPlexAccount.return_value.resource.side_effect = NotFound()
-    server.clients.return_value = [client]
     from dataclasses import replace
     # A copy: signing out (set_token) changes the config, which mustn't reach other tests
     p = Plex(replace(CONFIG), server=server)
     p.cards = Cards(str(tmp_path / "movie_cards.json"))
     p.library = Library(p, str(tmp_path))
-    p._movie, p._client = movie, client
+    p._movie = movie
     return p
 
 
@@ -48,20 +44,30 @@ def test_movie_key_prefers_tmdb():
     assert movie_key(make_movie(guids=[])) == "rk-42"
 
 
-def test_play_starts_movie_on_client(plex):
+def test_play_sends_movie_to_marquee(plex):
+    pair(plex, "Living Room")
     app = create_app(CONFIG, plex).test_client()
     r = app.get("/m/tmdb-603")
     assert r.status_code == 200 and b"The Matrix" in r.data
-    plex._client.playMedia.assert_called_once_with(plex._movie, offset=0)
+    command = plex.app_inbox.next("Living Room", 0)
+    assert command["action"] == "play" and command["key"] == "tmdb-603" and "offset=0" in command["url"]
 
 
 def test_taps_start_from_the_beginning(plex):
+    pair(plex, "Living Room")
     plex._movie.viewOffset = 5000
-    create_app(CONFIG, plex).test_client().get("/m/tmdb-603")
-    plex._client.playMedia.assert_called_once_with(plex._movie, offset=0)
-    plex._client.playMedia.reset_mock()
-    create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=1")  # unless the tag asks
-    plex._client.playMedia.assert_called_once_with(plex._movie, offset=5000)
+    app = create_app(CONFIG, plex).test_client()
+    app.get("/m/tmdb-603")
+    assert "offset=0" in plex.app_inbox.next("Living Room", 0)["url"]
+    app.get("/m/tmdb-603?resume=1")  # unless the tag asks
+    assert "offset=5" in plex.app_inbox.next("Living Room", 0)["url"]
+
+
+def test_no_player_chosen_says_so(plex):
+    from dataclasses import replace
+    plex.config = replace(CONFIG, app_player="")
+    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
+    assert r.status_code == 404 and b"No Marquee player chosen" in r.data
 
 
 def test_unknown_movie_and_bad_key(plex):
@@ -69,23 +75,11 @@ def test_unknown_movie_and_bad_key(plex):
     assert app.get("/m/tmdb-999").status_code == 404
     assert app.get("/m/garbage").status_code == 404
 
-
-def test_unknown_client_lists_available(plex):
-    r = create_app(CONFIG, plex).test_client().get("/m/tmdb-603?client=Bedroom")
-    assert r.status_code == 404 and b"Living Room" in r.data
-
-
-def test_unknown_client_lists_account_players(plex):
-    plex.server.myPlexAccount.return_value.resources.return_value = [
-        NS(name="Den", provides="client,player"), NS(name="Plex Server", provides="server")]
-    r = create_app(CONFIG, plex).test_client().get("/m/tmdb-603?client=Bedroom")
-    assert b"Den" in r.data and b"Plex Server" not in r.data
-
-
 def test_controls(plex):
+    pair(plex, "Living Room")
     app = create_app(CONFIG, plex).test_client()
     assert app.get("/pause").status_code == 200
-    plex._client.pause.assert_called_once()
+    assert plex.app_inbox.next("Living Room", 0)["action"] == "pause"
 
 
 def test_tags_page(plex):
@@ -101,44 +95,19 @@ def test_bad_key_rejected():
 def ha_plex(plex, **overrides):
     from dataclasses import replace
     settings = dict(ha_url="http://ha", ha_token="t", ha_script="script.movie_night",
-                    ha_off_script="script.tv_off", player_wait=0)
+                    ha_off_script="script.tv_off")
     plex.config = replace(CONFIG, **{**settings, **overrides})
     plex.ha = mock.Mock()
     return plex
 
 
-def test_home_assistant_script_runs_before_play(plex):
+def test_home_assistant_script_runs_after_the_movie_is_waiting(plex):
     plex = ha_plex(plex)
+    pair(plex, "Living Room")
     order = []
-    plex.ha.run_script.side_effect = lambda s: order.append(s)
-    plex._client.playMedia.side_effect = lambda *a, **k: order.append("play")
+    plex.ha.run_script.side_effect = lambda s: order.append((s, plex.app_inbox.next("Living Room", 0)["action"]))
     assert create_app(plex.config, plex).test_client().get("/m/tmdb-603").status_code == 200
-    assert order == ["script.movie_night", "play"]
-
-
-def test_waits_for_player_to_appear(plex, monkeypatch):
-    plex = ha_plex(plex, player_wait=30)
-    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
-    calls = iter([NotFound(), NotFound(), plex._client])
-
-    def client(name):
-        c = next(calls)
-        if isinstance(c, Exception):
-            raise c
-        return c
-    plex.server.client.side_effect = client
-    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
-    plex._client.playMedia.assert_called_once()
-
-
-def test_home_assistant_failure_still_tries_to_play(plex):
-    from plexnfc.homeassistant import HomeAssistantError
-    plex = ha_plex(plex)
-    plex.ha.run_script.side_effect = HomeAssistantError("HA down")
-    assert create_app(plex.config, plex).test_client().get("/m/tmdb-603").status_code == 200
-    plex.config.player_scripts = {"Nope": "script.nope"}
-    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603?client=Nope")
-    assert b"HA down" in r.data
+    assert order == [("script.movie_night", "play")]
 
 
 def test_off_tag(plex):
@@ -160,107 +129,28 @@ def test_ha_client_calls_script_service(monkeypatch):
     assert url == "http://ha:8123/api/services/script/movie_night"
     assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer tok"
 
-
-def test_playback_via_home_assistant(plex):
-    plex = ha_plex(plex, ha_player="media_player.plex_apple_tv")
-    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
-    assert r.status_code == 200 and b"media_player.plex_apple_tv" in r.data
-    plex.ha.run_script.assert_called_once_with("script.movie_night")
-    plex.ha.play_plex.assert_called_once_with("media_player.plex_apple_tv", 42, False)  # taps start over
-    plex._client.playMedia.assert_not_called()
-
-
-def test_ha_playback_retries_until_player_ready(plex, monkeypatch):
-    from plexnfc.homeassistant import HomeAssistantError
-    plex = ha_plex(plex, ha_player="media_player.plex_apple_tv", player_wait=30)
-    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
-    plex.ha.play_plex.side_effect = [HomeAssistantError("not accepting playback"), None]
-    assert create_app(plex.config, plex).test_client().get("/m/tmdb-603").status_code == 200
-    assert plex.ha.play_plex.call_count == 2
-
-
-def test_ha_controls(plex):
-    plex = ha_plex(plex, ha_player="media_player.plex_apple_tv")
-    create_app(plex.config, plex).test_client().get("/pause")
-    plex.ha.call_service.assert_called_once_with("media_player", "media_pause", {"entity_id": "media_player.plex_apple_tv"})
-
-
-def test_ha_play_plex_payload(monkeypatch):
-    import json
-    from plexnfc.homeassistant import HomeAssistant
-    post = mock.Mock(return_value=mock.Mock(ok=True, status_code=200))
-    monkeypatch.setattr("plexnfc.homeassistant.requests.post", post)
-    monkeypatch.setattr("plexnfc.homeassistant.requests.get",
-                        mock.Mock(return_value=mock.Mock(ok=True, status_code=200, json=lambda: {"state": "idle"})))
-    HomeAssistant("http://ha", "t").play_plex("media_player.x", "42", False)
-    assert post.call_args.args[0] == "http://ha/api/services/media_player/play_media"
-    body = post.call_args.kwargs["json"]
-    assert body["media_content_type"] == "movie"
-    assert json.loads(body["media_content_id"].removeprefix("plex://")) == {"plex_key": 42, "resume": False}
-
-
-def add_session(plex, state="playing", offset=60_000, player="Living Room"):
-    session = make_movie(offset=offset)
-    session.type = "movie"
-    session.duration = 7_200_000
-    session.player = NS(title=player, state=state)
-    plex.server.sessions.return_value = [session]
-    return session
-
-
 def test_now_idle(plex):
-    plex.server.sessions.return_value = []
     assert create_app(CONFIG, plex).test_client().get("/now").json == {"state": "idle"}
 
 
-def test_now_playing(plex):
-    add_session(plex)
-    data = create_app(CONFIG, plex).test_client().get("/now").json
-    assert data["state"] == "playing" and data["title"] == "The Matrix"
-    assert data["poster"] == "/poster/tmdb-603" and data["position"] == 60 and data["duration"] == 7200
-
-
-def test_now_ignores_other_players(plex):
-    add_session(plex, player="Bedroom")
-    assert create_app(CONFIG, plex).test_client().get("/now").json["state"] == "idle"
-
-
-def test_toggle_pauses_when_playing(plex):
-    add_session(plex, state="playing")
-    create_app(CONFIG, plex).test_client().get("/toggle")
-    plex._client.pause.assert_called_once()
-    add_session(plex, state="paused")
-    create_app(CONFIG, plex).test_client().get("/toggle")
-    plex._client.play.assert_called_once()
-
-
-def test_seek(plex):
-    add_session(plex, offset=60_000)
-    app = create_app(CONFIG, plex).test_client()
-    assert app.get("/seek?by=30").json["ok"]
-    plex._client.seekTo.assert_called_with(90_000)
-    app.get("/seek?by=-600")
-    plex._client.seekTo.assert_called_with(0)
-
-
 def test_async_play_reports_starting_then_playing(plex):
-    import threading
+    headers = pair(plex, "Living Room")
     gate = threading.Event()
-    plex._client.playMedia.side_effect = lambda *a, **k: gate.wait(5)
-    plex.server.sessions.return_value = []
+    stream = plex._app_stream
+    plex._app_stream = lambda *a: (gate.wait(5), stream(*a))[1]
     app = create_app(CONFIG, plex).test_client()
     r = app.get("/m/tmdb-603?async=1")
     assert r.status_code == 202
     now = app.get("/now").json
-    assert now["state"] == "starting" and now["poster"] == "/poster/tmdb-603"
+    assert now["state"] == "starting" and now["poster"] == "/poster/tmdb-603" and now["player"] == "Living Room"
     gate.set()
-    add_session(plex)
+    app.post("/tv/status", headers=headers, json={"state": "playing", "position": 1, "duration": 7200,
+                                                   "title": "The Matrix", "key": "tmdb-603"})
     assert app.get("/now").json["state"] == "playing"
 
 
 def test_async_play_error_is_reported(plex):
     import time as _t
-    plex.server.sessions.return_value = []
     app = create_app(CONFIG, plex).test_client()
     app.get("/m/tmdb-603?async=1&client=Nope")
     for _ in range(50):
@@ -317,12 +207,12 @@ def test_tags_csv(plex):
 def test_control_panel_is_served_with_relative_addresses(plex):
     app = create_app(CONFIG, plex).test_client()
     page = app.get("/").data
-    # relative, so it works inside the Home Assistant sidebar (ingress)
+    # relative, so it works under any address
     assert b'src="./assets/' in page and b'"/assets' not in page
     script = page.split(b'src="./', 1)[1].split(b'"', 1)[0].decode()
     assert app.get(f"/{script}").status_code == 200
     overview = app.get("/panel/api/overview").json
-    assert overview["tag_address"] == "http://nfc.local:8080" and overview["default_player_label"] == "Living Room"
+    assert overview["tag_address"] == "http://nfc.local:8080" and overview["default_player_label"] == "Marquee on Living Room"
     # the tag list, and trying a tag from the panel
     movies = app.get("/panel/api/movies").json
     assert movies["movies"] == [{"key": "tmdb-603", "title": "The Matrix", "year": 1999,
@@ -332,25 +222,9 @@ def test_control_panel_is_served_with_relative_addresses(plex):
     with mock.patch("plexnfc.server.threading.Thread") as thread:
         assert app.post("/panel/api/play", json={"key": "tmdb-603", "player": "Bedroom"}).json["title"] == "The Matrix"
     assert thread.call_args.kwargs["args"] == ("tmdb-603", "Bedroom", False)
+    pair(plex, "Living Room")
     assert app.post("/panel/api/control", json={"action": "pause"}).json["ok"]
-    plex._client.pause.assert_called_once()
-
-
-def test_ha_app_options(tmp_path, monkeypatch):
-    import json
-    from plexnfc import config as cfg
-    opts = tmp_path / "options.json"
-    opts.write_text(json.dumps({"plex_url": "http://plex:32400", "plex_token": "abc", "resume": False,
-                                "ha_player": "", "player_wait": 30}))
-    for k in ("PLEX_URL", "PLEX_TOKEN", "RESUME", "HA_PLAYER", "PLAYER_WAIT", "HA_URL", "HA_TOKEN"):
-        monkeypatch.delenv(k, raising=False)
-    monkeypatch.setenv("SUPERVISOR_TOKEN", "sup")
-    monkeypatch.setattr(cfg, "HA_APP_OPTIONS", str(opts))
-    monkeypatch.chdir(tmp_path)
-    c = cfg.Config.from_env()
-    assert c.plex_url == "http://plex:32400" and c.resume is False and c.player_wait == 30
-    assert c.ha_url == "http://supervisor/core" and c.ha_token == "sup" and c.ha_player == ""
-
+    assert plex.app_inbox.next("Living Room", 0)["action"] == "pause"
 
 def test_sign_in_with_plex(plex, tmp_path, monkeypatch):
     from dataclasses import replace
@@ -401,211 +275,17 @@ def test_saved_token_used_when_none_configured(tmp_path, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("PLEX_URL", "http://plex:32400")
     monkeypatch.setenv("PLEX_AUTH_FILE", str(tmp_path / "auth.json"))
-    monkeypatch.setattr(cfg, "HA_APP_OPTIONS", str(tmp_path / "none.json"))
     monkeypatch.chdir(tmp_path)
     assert cfg.Config.from_env().plex_token == "saved"
     monkeypatch.setenv("PLEX_TOKEN", "manual")
     assert cfg.Config.from_env().plex_token == "manual"
 
 
-@pytest.mark.parametrize("status,state,message", [
-    (200, "unavailable", "isn't ready"), (200, "unknown", "isn't ready"), (404, None, "no entity")])
-def test_ha_play_plex_refuses_unavailable_player(monkeypatch, status, state, message):
-    from plexnfc.homeassistant import HomeAssistant, HomeAssistantError
-    get = mock.Mock(return_value=mock.Mock(ok=status == 200, status_code=status, json=lambda: {"state": state}))
-    post = mock.Mock()
-    monkeypatch.setattr("plexnfc.homeassistant.requests.get", get)
-    monkeypatch.setattr("plexnfc.homeassistant.requests.post", post)
-    with pytest.raises(HomeAssistantError, match=message):
-        HomeAssistant("http://ha", "t").play_plex("media_player.x", 42, True)
-    assert get.call_args.args[0] == "http://ha/api/states/media_player.x"
-    post.assert_not_called()
-
-
-def test_ha_playback_reports_player_never_ready(plex):
-    import time
-    from plexnfc.homeassistant import HomeAssistantError
-    plex = ha_plex(plex, ha_player="media_player.plex_apple_tv", player_wait=0)
-    plex.ha.play_plex.side_effect = HomeAssistantError("media_player.plex_apple_tv is unavailable")
-    app = create_app(plex.config, plex).test_client()
-    r = app.get("/m/tmdb-603")
-    assert r.status_code == 404 and b"is unavailable" in r.data
-    r = app.get("/m/tmdb-603?async=1")
-    deadline = time.monotonic() + 5
-    while app.get("/now").json["state"] == "starting" and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert app.get("/now").json["state"] == "error"
-
-
-def test_now_uses_tag_key_when_session_has_no_guids(plex):
-    session = add_session(plex)
-    session.guids = []  # what Plex sends for a playing item
-    plex.server.fetchItem.return_value = make_movie()
-    app = create_app(CONFIG, plex).test_client()
-    assert app.get("/now").json["key"] == "tmdb-603"
-    assert app.get("/now").json["poster"] == "/poster/tmdb-603"
-    plex.server.fetchItem.assert_called_once_with(42)  # looked up once, then cached
-
-
-def test_async_play_clears_starting_once_session_matches(plex):
-    plex.server.sessions.return_value = []
-    app = create_app(CONFIG, plex).test_client()
-    app.get("/m/tmdb-603?async=1")
-    session = add_session(plex)
-    session.guids = []
-    plex.server.fetchItem.return_value = make_movie()
-    assert app.get("/now").json["state"] == "playing"
-
-
-def test_start_over_rewinds_player_that_resumed(plex, monkeypatch):
-    """Plex for Roku ignores the start offset and resumes; plexnfc seeks back to 0."""
-    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
-    plex._movie.viewOffset = 658_000
-    plex._client.playMedia.side_effect = lambda *a, **k: add_session(plex, offset=658_000)
-    create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=0")
-    plex._client.seekTo.assert_called_once_with(0)
-
-
-def test_start_over_leaves_player_that_started_at_zero(plex, monkeypatch):
-    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
-    plex._movie.viewOffset = 658_000
-    plex._client.playMedia.side_effect = lambda *a, **k: add_session(plex, offset=1_000)
-    create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=0")
-    plex._client.seekTo.assert_not_called()
-
-
-def test_resume_does_not_rewind(plex):
-    plex._movie.viewOffset = 658_000
-    plex._client.playMedia.side_effect = lambda *a, **k: add_session(plex, offset=658_000)
-    create_app(CONFIG, plex).test_client().get("/m/tmdb-603?resume=1")
-    plex._client.seekTo.assert_not_called()
-
-
-# ---- Jellyfin ------------------------------------------------------------------
-
-def jf_plex(plex, **cfg):
-    from dataclasses import replace
-    from plexnfc.jellyfin import Jellyfin
-    plex.config = replace(CONFIG, **{"jellyfin_url": "http://jf:8096", "jellyfin_api_key": "k",
-                                     "jellyfin_player": "AppleTV", **cfg})
-    plex.jellyfin = mock.Mock(spec=Jellyfin)
-    plex.jellyfin.find_movie.return_value = {"Id": "abc", "Name": "The Matrix"}
-    # Already playing with subtitles off, so the subtitle check finishes at once
-    plex.jellyfin.session.return_value = {"Id": "s1", "DeviceName": "AppleTV", "NowPlayingItem": {"Id": "abc"},
-                                          "PlayState": {"SubtitleStreamIndex": -1}}
-    return plex
-
-
-def test_jellyfin_play_starts_over_on_jellyfin_player(plex):
-    plex = jf_plex(plex)
-    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603?resume=0")
-    assert r.status_code == 200 and b"AppleTV" in r.data
-    plex.jellyfin.find_movie.assert_called_once_with("The Matrix", 1999, "tmdb-603")
-    plex.jellyfin.play.assert_called_once_with(plex.jellyfin.session.return_value, "abc", start_seconds=0)
-    plex._client.playMedia.assert_not_called()
-
-
-def test_jellyfin_resume_leaves_start_to_the_app(plex):
-    plex = jf_plex(plex)
-    create_app(plex.config, plex).test_client().get("/m/tmdb-603?resume=1")
-    assert plex.jellyfin.play.call_args.kwargs == {"start_seconds": None}
-
-
-def test_jellyfin_player_not_open_lists_players(plex):
-    plex = jf_plex(plex)
-    plex.jellyfin.session.return_value = None
-    plex.jellyfin.players.return_value = ["Bedroom"]
-    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
-    assert r.status_code == 404 and b"Jellyfin player named" in r.data and b"Bedroom" in r.data
-
-
-def test_client_param_picks_plex_or_jellyfin(plex):
-    plex = jf_plex(plex, jellyfin_player="")
-    app = create_app(plex.config, plex).test_client()
-    app.get("/m/tmdb-603")  # no Jellyfin player set: Plex as before
-    plex._client.playMedia.assert_called_once()
-    app.get("/m/tmdb-603?client=jellyfin:AppleTV")
-    plex.jellyfin.session.assert_called_with("AppleTV")
-    plex.jellyfin.play.assert_called_once()
-
-
-def test_jellyfin_controls_and_now(plex):
-    plex = jf_plex(plex)
-    plex.jellyfin.session.return_value = {
-        "Id": "s1", "DeviceName": "AppleTV",
-        "NowPlayingItem": {"Id": "abc", "Name": "The Matrix", "ProductionYear": 1999,
-                           "RunTimeTicks": 7200 * 10_000_000, "ProviderIds": {"Tmdb": "603"}},
-        "PlayState": {"PositionTicks": 60 * 10_000_000, "IsPaused": False}}
-    app = create_app(plex.config, plex).test_client()
-    now = app.get("/now").json
-    assert now["state"] == "playing" and now["key"] == "tmdb-603" and now["position"] == 60
-    app.get("/toggle")
-    plex.jellyfin.command.assert_called_with(plex.jellyfin.session.return_value, "Pause")
-    app.get("/stop")
-    plex.jellyfin.command.assert_called_with(plex.jellyfin.session.return_value, "Stop")
-    app.get("/seek?by=30")
-    plex.jellyfin.seek.assert_called_once_with(plex.jellyfin.session.return_value, 90)
-
-
-def test_jellyfin_without_settings_is_reported(plex):
-    from dataclasses import replace
-    plex.config = replace(CONFIG, jellyfin_player="AppleTV")
-    r = create_app(plex.config, plex).test_client().get("/m/tmdb-603")
-    assert r.status_code == 404 and b"JELLYFIN_API_KEY" in r.data
-
-
-@pytest.mark.parametrize("items,expected", [
-    ([{"Id": "old", "Name": "3:10 to Yuma", "ProviderIds": {"Tmdb": "14168"}},
-      {"Id": "new", "Name": "3:10 to Yuma", "ProviderIds": {"Tmdb": "5176"}}], "new"),
-    ([{"Id": "only", "Name": "3:10 to Yuma", "ProviderIds": {}}], "only"),
-])
-def test_jellyfin_find_movie_matches_tag_id(monkeypatch, items, expected):
-    from plexnfc.jellyfin import Jellyfin
-    req = mock.Mock(return_value=mock.Mock(ok=True, status_code=200, content=b"x",
-                                           json=lambda: {"Items": items}))
-    monkeypatch.setattr("plexnfc.jellyfin.requests.request", req)
-    item = Jellyfin("http://jf:8096", "k").find_movie("3:10 to Yuma", 2007, "tmdb-5176")
-    assert item["Id"] == expected
-    params = req.call_args.kwargs["params"]
-    assert params["searchTerm"] == "3:10 to Yuma" and params["years"] == 2007
-    assert req.call_args.kwargs["headers"]["Authorization"] == 'MediaBrowser Token="k"'
-
-
-def test_jellyfin_find_movie_ambiguous(monkeypatch):
-    from plexnfc.jellyfin import Jellyfin, JellyfinError
-    items = [{"Id": "a", "Name": "Dune", "ProviderIds": {}}, {"Id": "b", "Name": "Dune", "ProviderIds": {}}]
-    monkeypatch.setattr("plexnfc.jellyfin.requests.request", mock.Mock(
-        return_value=mock.Mock(ok=True, status_code=200, content=b"x", json=lambda: {"Items": items})))
-    with pytest.raises(JellyfinError, match="Couldn't find Dune"):
-        Jellyfin("http://jf:8096", "k").find_movie("Dune", None, "tmdb-1")
-
-
-def test_jellyfin_play_sends_session_command(monkeypatch):
-    from plexnfc.jellyfin import Jellyfin
-    req = mock.Mock(return_value=mock.Mock(ok=True, status_code=204, content=b""))
-    monkeypatch.setattr("plexnfc.jellyfin.requests.request", req)
-    Jellyfin("http://jf:8096", "k").play({"Id": "s1"}, "abc", start_seconds=0)
-    assert req.call_args.args == ("POST", "http://jf:8096/Sessions/s1/Playing")
-    assert req.call_args.kwargs["params"] == {"playCommand": "PlayNow", "itemIds": "abc",
-                                              "subtitleStreamIndex": -1, "startPositionTicks": 0}
-
-
-def test_starting_screen_names_jellyfin_player(plex):
-    import threading
-    plex = jf_plex(plex)
-    gate = threading.Event()
-    plex.jellyfin.play.side_effect = lambda *a, **k: gate.wait(5)
-    app = create_app(plex.config, plex).test_client()
-    app.get("/m/tmdb-603?async=1")
-    plex.jellyfin.session.return_value = {"Id": "s1", "DeviceName": "AppleTV"}  # nothing playing yet
-    assert app.get("/now").json["player"] == "AppleTV"
-    gate.set()
-
-
 def test_started_script_runs_after_play_without_waiting(plex):
     plex = ha_plex(plex, ha_started_script="script.hide_controls")
+    pair(plex, "Living Room")
     create_app(plex.config, plex).test_client().get("/m/tmdb-603")
-    plex._client.playMedia.assert_called_once()
+    assert plex.app_inbox.next("Living Room", 0)["action"] == "play"
     plex.ha.call_service.assert_called_once_with("script", "turn_on", {"entity_id": "script.hide_controls"})
 
 
@@ -613,59 +293,6 @@ def test_started_script_not_run_when_play_fails(plex):
     plex = ha_plex(plex, ha_started_script="script.hide_controls")
     create_app(plex.config, plex).test_client().get("/m/tmdb-999")
     plex.ha.call_service.assert_not_called()
-
-
-def test_jellyfin_turns_on_subtitles_off_once_playing(plex, monkeypatch):
-    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
-    plex = jf_plex(plex)
-    idle = {"Id": "s1", "DeviceName": "AppleTV"}
-    playing = {**idle, "NowPlayingItem": {"Id": "abc"}, "PlayState": {"SubtitleStreamIndex": 3}}
-    plex.jellyfin.session.side_effect = [idle, idle, playing]
-    plex.jellyfin.subtitles_off.return_value = True
-    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
-    plex.jellyfin.subtitles_off.assert_called_once_with(playing)
-
-
-def test_jellyfin_leaves_subtitles_already_off(plex, monkeypatch):
-    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
-    plex = jf_plex(plex)
-    plex.jellyfin.session.return_value = {"Id": "s1", "DeviceName": "AppleTV", "NowPlayingItem": {"Id": "abc"},
-                                          "PlayState": {"SubtitleStreamIndex": -1}}
-    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
-    plex.jellyfin.subtitles_off.assert_not_called()
-
-
-def test_jellyfin_subtitles_off_command(monkeypatch):
-    from plexnfc.jellyfin import Jellyfin
-    req = mock.Mock(return_value=mock.Mock(ok=True, status_code=204, content=b""))
-    monkeypatch.setattr("plexnfc.jellyfin.requests.request", req)
-    jf = Jellyfin("http://jf:8096", "k")
-    assert not jf.subtitles_off({"Id": "s1", "SupportedCommands": ["DisplayMessage"]})
-    req.assert_not_called()
-    assert jf.subtitles_off({"Id": "s1", "SupportedCommands": ["SetSubtitleStreamIndex"]})
-    assert req.call_args.args == ("POST", "http://jf:8096/Sessions/s1/Command")
-    assert req.call_args.kwargs["json"] == {"Name": "SetSubtitleStreamIndex", "Arguments": {"Index": "-1"}}
-
-
-def test_jellyfin_subtitles_wait_for_the_new_start(plex, monkeypatch):
-    """Switching to the movie that's already playing: ignore the old playback's report."""
-    monkeypatch.setattr("plexnfc.plex.time.sleep", lambda s: None)
-    plex = jf_plex(plex)
-    old = {"Id": "s1", "DeviceName": "AppleTV", "NowPlayingItem": {"Id": "abc"},
-           "PlayState": {"SubtitleStreamIndex": 3, "PositionTicks": 900 * 10_000_000}}
-    new = {**old, "PlayState": {"SubtitleStreamIndex": 3, "PositionTicks": 2 * 10_000_000}}
-    plex.jellyfin.session.side_effect = [old, old, new]  # find player, then two checks
-    plex.jellyfin.subtitles_off.return_value = True
-    create_app(plex.config, plex).test_client().get("/m/tmdb-603?resume=0")
-    plex.jellyfin.subtitles_off.assert_called_once_with(new)
-
-
-def test_player_rejecting_play_is_reported(plex):
-    from plexapi.exceptions import NotFound
-    plex._client.playMedia.side_effect = NotFound("(404) not_found")
-    r = create_app(CONFIG, plex).test_client().get("/m/tmdb-603")
-    assert r.status_code == 404 and b"didn&#x27;t accept the movie" in r.data
-
 
 # ---- Marquee Apple TV app -----------------------------------------------------
 
@@ -719,21 +346,11 @@ def test_app_play_leaves_stream_in_inbox_before_script(plex, requests_get):
     # Plex 1.43 only streams a session it has made a decision for, so that comes first
     decision = requests_get.call_args.args[0]
     assert decision == command["url"].replace("/start.m3u8?", "/decision?")
-    plex._client.playMedia.assert_not_called()
     # the app picks it up once, by ID
     headers = pair(plex, "Den")
     inbox = app.get("/tv/inbox?after=0", headers=headers).json
     assert inbox["id"] == command["id"]
     assert app.get(f"/tv/inbox?after={command['id']}", headers=headers).status_code == 204
-
-
-def test_app_play_uses_jellyfin_stream_when_chosen(plex):
-    plex = jf_plex(plex, jellyfin_player="")
-    plex = app_plex(plex, jellyfin_url="http://jf:8096", jellyfin_api_key="k", app_stream="jellyfin")
-    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
-    url = plex.app_inbox.next("Den", 0)["url"]
-    assert url.startswith("http://jf:8096/Videos/abc/master.m3u8?") and "ApiKey=k" in url
-
 
 def test_app_status_controls_and_now(plex):
     plex = app_plex(plex)
@@ -777,15 +394,6 @@ def test_app_play_sends_poster_and_details(plex):
     assert command["poster"] == "/poster/tmdb-603?w=600&h=900"
     assert command["year"] == 1999 and command["summary"] == "A hacker learns the truth."
 
-
-def test_app_stream_is_plex_even_with_jellyfin_set_up(plex):
-    plex = jf_plex(plex, jellyfin_player="")
-    plex = app_plex(plex, app_stream="")
-    create_app(plex.config, plex).test_client().get("/m/tmdb-603")
-    assert "/video/:/transcode/universal/start.m3u8?" in plex.app_inbox.next("Den", 0)["url"]
-    plex.jellyfin.find_movie.assert_not_called()
-
-
 # ---- Marquee pairing and library ---------------------------------------------
 
 def test_pairing_flow_and_panel(plex):
@@ -796,12 +404,12 @@ def test_pairing_flow_and_panel(plex):
     # the panel lists the request with its code
     assert app.get("/panel/api/overview").json["pairing_requests"] == [
         {"pair_id": started["pair_id"], "name": "Den", "kind": "tv", "code": started["code"]}]
-    # approving from the network port is refused; through the panel (ingress) it works
+    # approving from another device is refused; from the panel on this machine it works
     approve = f"/panel/api/pairings/{started['pair_id']}/approve"
     assert app.post(approve, json={}, environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
-    assert app.post(approve, json={}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 200
+    assert app.post(approve, json={}, environ_base={"REMOTE_ADDR": "127.0.0.1"}).status_code == 200
     assert app.post("/panel/api/pairings/nope/approve", json={}).status_code == 404
-    # on the host network, ingress comes from the host's own address (the tag address's host)
+    # this machine by the tag address's host counts too
     from dataclasses import replace
     host_app = create_app(replace(CONFIG, public_base_url="http://127.0.0.2:8080"), plex).test_client()
     again = host_app.post("/tv/pair", json={"name": "Den 2"}).json
@@ -832,7 +440,7 @@ def test_approving_names_the_apple_tv_and_keeps_names_unique(plex):
     for given in ("Living Room", "", "living room"):
         started = app.post("/tv/pair", json={"name": "Apple TV"}).json
         app.post(f"/panel/api/pairings/{started['pair_id']}/approve", json={"name": given},
-                 environ_base={"REMOTE_ADDR": "172.30.32.2"})
+                 environ_base={"REMOTE_ADDR": "127.0.0.1"})
         names.append(app.get(f"/tv/pair/{started['pair_id']}").json["name"])
     # blank keeps the Apple TV's own name; a name already taken gets a number
     assert names == ["Living Room", "Apple TV 2", "living room 2"]
@@ -843,30 +451,30 @@ def test_panel_renames_a_paired_apple_tv(plex):
     secret = pair(plex, "Apple TV")["Authorization"].removeprefix("Bearer ")
     pair(plex, "Den")
     started = app.post("/tv/pair", json={"name": "iPhone", "kind": "phone"}).json
-    app.post(f"/panel/api/pairings/{started['pair_id']}/approve", json={}, environ_base={"REMOTE_ADDR": "172.30.32.2"})
+    app.post(f"/panel/api/pairings/{started['pair_id']}/approve", json={}, environ_base={"REMOTE_ADDR": "127.0.0.1"})
     tv, _, phone = plex.app_pairings.devices()
     plex.app_pairings.set_player(phone["id"], "app:Apple TV")
     rename = f"/panel/api/devices/{tv['id']}/rename"
     assert app.post(rename, json={"name": "Living Room"}, environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
-    assert app.post(rename, json={"name": " "}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 400
-    assert app.post(rename, json={"name": "Living  Room"}, environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code == 200
+    assert app.post(rename, json={"name": " "}, environ_base={"REMOTE_ADDR": "127.0.0.1"}).status_code == 400
+    assert app.post(rename, json={"name": "Living  Room"}, environ_base={"REMOTE_ADDR": "127.0.0.1"}).status_code == 200
     # the Apple TV keeps its pairing under the new name, and the phone follows it
     assert plex.app_pairings.device(secret) == "Living Room"
     assert plex.app_pairings.devices()[2]["player"] == "app:Living Room"
     # another device's name gets a number; its own name (even in another case) doesn't
-    app.post(rename, json={"name": "den"}, environ_base={"REMOTE_ADDR": "172.30.32.2"})
+    app.post(rename, json={"name": "den"}, environ_base={"REMOTE_ADDR": "127.0.0.1"})
     assert plex.app_pairings.device(secret) == "den 2"
-    app.post(rename, json={"name": "DEN 2"}, environ_base={"REMOTE_ADDR": "172.30.32.2"})
+    app.post(rename, json={"name": "DEN 2"}, environ_base={"REMOTE_ADDR": "127.0.0.1"})
     assert plex.app_pairings.device(secret) == "DEN 2"
 
 
 def test_each_player_gets_its_own_ready_script(plex):
     plex = ha_plex(plex)
-    plex.config.player_scripts = {"app:Living Room": "script.living_room"}
-    plex.prepare_tv("app:living room")
+    plex.config.player_scripts = {"app:Den": "script.den"}
+    plex.prepare_tv("app:den")
     plex.prepare_tv("Living Room")  # the default player gets HA_SCRIPT
     plex.prepare_tv("Bedroom")  # another player with no script of its own wakes nothing
-    assert [c.args[0] for c in plex.ha.run_script.call_args_list] == ["script.living_room", plex.config.ha_script]
+    assert [c.args[0] for c in plex.ha.run_script.call_args_list] == ["script.den", plex.config.ha_script]
 
 
 def test_phone_picks_where_its_taps_go(plex):
@@ -875,14 +483,13 @@ def test_phone_picks_where_its_taps_go(plex):
     started = app.post("/tv/pair", json={"name": "iPhone", "kind": "phone"}).json
     assert app.get("/panel/api/overview").json["pairing_requests"][0]["kind"] == "phone"
     app.post(f"/panel/api/pairings/{started['pair_id']}/approve", json={"name": "Kevin's iPhone"},
-             environ_base={"REMOTE_ADDR": "172.30.32.2"})
+             environ_base={"REMOTE_ADDR": "127.0.0.1"})
     secret = app.get(f"/tv/pair/{started['pair_id']}").json["secret"]
     phone = {"headers": {"Authorization": f"Bearer {secret}"}, "environ_base": {"REMOTE_ADDR": "192.168.0.60"}}
 
     players = app.get("/phone/players", **phone).json
-    assert players["default"] == "Living Room" and players["selected"] is None
-    assert {"id": "app:Den", "name": "Den", "kind": "Marquee"} in players["players"]
-    assert {"id": "Living Room", "name": "Living Room", "kind": "Plex"} in players["players"]
+    assert players["default"] == "app:Living Room" and players["selected"] is None
+    assert players["players"] == [{"id": "app:Den", "name": "Den", "kind": "Marquee"}]
     assert app.post("/phone/player", json={"player": "app:Den"}, **phone).json["selected"] == "app:Den"
     assert app.get("/panel/api/overview").json["devices"][1]["player"] == "app:Den"
 
@@ -891,10 +498,10 @@ def test_phone_picks_where_its_taps_go(plex):
     app.get("/m/tmdb-603", environ_base={"REMOTE_ADDR": "192.168.0.60"})
     assert plex._play_in_app.call_args.args[0] == "Den"
     app.get("/m/tmdb-603", environ_base={"REMOTE_ADDR": "192.168.0.61"})
-    plex._client.playMedia.assert_called_once()
+    assert plex._play_in_app.call_args.args[0] == "Living Room"
     # ?client= on a tag still wins
-    app.get("/m/tmdb-603?client=Living Room", environ_base={"REMOTE_ADDR": "192.168.0.60"})
-    assert plex._client.playMedia.call_count == 2
+    app.get("/m/tmdb-603?client=Bedroom", environ_base={"REMOTE_ADDR": "192.168.0.60"})
+    assert plex._play_in_app.call_args.args[0] == "Bedroom"
 
     # the phone moved to a new address: its taps follow it, and the old address is free
     app.get("/phone/players", headers=phone["headers"], environ_base={"REMOTE_ADDR": "192.168.0.77"})
@@ -927,7 +534,7 @@ def test_marquee_on_a_phone_plays_itself_or_where_its_chosen(plex):
     assert plex._play_in_app.call_args.args[0] == "Den" and b"moviebook://" not in page
     # Apple TVs never noted an address, so no one else's taps change
     app.get("/m/tmdb-603", environ_base={"REMOTE_ADDR": "192.168.0.61"})
-    plex._client.playMedia.assert_called_once()
+    assert plex._play_in_app.call_args.args[0] == "Living Room"
 
     # a scanned code starts on the chosen player in the background
     with mock.patch("plexnfc.server.threading.Thread") as thread:
@@ -1007,7 +614,7 @@ def test_movie_remote_pairs_then_plays_on_its_player(plex):
     assert app.get("/remote/now", headers=den).status_code == 401  # a Marquee isn't a Movie Remote
     started = app.post("/tv/pair", json={"name": "Movie Remote", "kind": "remote"}).json
     app.post(f"/panel/api/pairings/{started['pair_id']}/approve", json={"name": "Den Remote"},
-             environ_base={"REMOTE_ADDR": "172.30.32.2"})
+             environ_base={"REMOTE_ADDR": "127.0.0.1"})
     secret = app.get("/tv/pair/" + started["pair_id"]).json["secret"]
     box = {"Authorization": f"Bearer {secret}"}
     device = next(d for d in app.get("/panel/api/overview").json["devices"] if d["kind"] == "remote")
@@ -1258,7 +865,6 @@ def test_no_plex_url_uses_the_accounts_own_server(monkeypatch):
 def test_config_without_plex_url(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("PLEX_URL", raising=False)
-    monkeypatch.setattr("plexnfc.config.HA_APP_OPTIONS", str(tmp_path / "none.json"))
     assert Config.from_env().plex_url == ""
 
 

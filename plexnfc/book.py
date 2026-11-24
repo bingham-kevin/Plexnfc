@@ -206,7 +206,7 @@ def render_html(plex: Plex, base_url: str, movies, layout: str = "full", title: 
     """The printable book as one HTML page.
 
     ``poster_src(movie)`` gives each <img> src: a data: URI for a standalone
-    file, or a URL when the page is served by plexnfc (Home Assistant app).
+    file, or a URL when the page is served by Marquee Server.
     """
     from string import Template
 
