@@ -6,8 +6,8 @@ import UIKit
 /// A command left for this Apple TV by the server (`GET /tv/inbox`), e.g. from an NFC tap.
 struct InboxCommand: Decodable {
     let id: Int
-    let action: String       // play, pause, resume, stop, seek
-    let url: String?         // play: an HLS (or MP4) stream address
+    let action: String       // play, pause, resume, stop, seek; audio, audio_pause, audio_resume, audio_stop; nowplaying
+    let url: String?         // play: an HLS (or MP4) stream address; audio: the track's
     let title: String?
     let key: String?         // the movie's key, e.g. tmdb-603, reported back in /tv/status
     let start: Double?       // play: seconds to start at
@@ -15,6 +15,11 @@ struct InboxCommand: Decodable {
     let year: Int?
     let summary: String?
     let poster: String?      // a path on the server
+    // Music Marquee plays itself (see NowPlaying.swift)
+    let play: String?        // audio: the server's ID for the track, reported back when it ends
+    let artist: String?
+    let album: String?
+    let duration: Double?
 }
 
 /// A stream ready to play: what `/tv/play` returns.
@@ -85,8 +90,16 @@ final class PlayerModel: ObservableObject {
     @Published private(set) var notice: String?  // e.g. "Starting Alien on Den"
     @Published var resumeOffer: ResumeOffer?
 
+    /// Music and audiobooks: played here, or on the speakers of this room's NFC reader
+    let nowPlaying = NowPlayingModel()
+
+    init() {
+        nowPlaying.onStatusChange = { [weak self] in Task { await self?.reportStatus() } }
+    }
+
     var api: ServerAPI? {
         didSet {
+            nowPlaying.api = api
             #if os(iOS)
             Task { await refreshPlayers() }
             #endif
@@ -118,6 +131,9 @@ final class PlayerModel: ObservableObject {
     }
 
     func resignedActive() {
+        // Music Marquee plays itself carries on in the background, and the server still
+        // needs to hear when each track ends
+        if nowPlaying.playsHere { return }
         pollTask?.cancel()
         pollTask = nil
     }
@@ -255,8 +271,10 @@ final class PlayerModel: ObservableObject {
     private func poll() async {
         guard let api else { return }
         do {
-            let (data, status) = try await api.request("tv/inbox?after=\(lastCommandID)")
-            if status == 200 {
+            // Take everything waiting (a track for here and a Now Playing can come together)
+            for _ in 0..<5 {
+                let (data, status) = try await api.request("tv/inbox?after=\(lastCommandID)")
+                guard status == 200 else { break }
                 let command = try JSONDecoder().decode(InboxCommand.self, from: data)
                 lastCommandID = command.id
                 run(command, api: api)
@@ -287,6 +305,17 @@ final class PlayerModel: ObservableObject {
                 let target = max(0, player.currentTime().seconds + by)
                 player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
             }
+        case "audio":
+            if player != nil { stop() }  // music chosen for this TV replaces the movie
+            nowPlaying.playAudio(command)
+        case "audio_pause":
+            nowPlaying.pauseAudio()
+        case "audio_resume":
+            nowPlaying.resumeAudio()
+        case "audio_stop":
+            nowPlaying.stopAudio()
+        case "nowplaying":
+            if player == nil { nowPlaying.show() }  // not over a movie
         default:
             break
         }
@@ -302,6 +331,7 @@ final class PlayerModel: ObservableObject {
         }
         // A tap or scan replaces whatever's playing, including a movie carried on in Picture in Picture
         empty(self.player)
+        nowPlaying.movieStarting()
         let item = AVPlayerItem(url: url)
         item.externalMetadata = Self.metadata(for: info, artwork: info.posterImage?.jpegData(compressionQuality: 0.9))
         self.info = info
@@ -399,6 +429,8 @@ final class PlayerModel: ObservableObject {
     private func reportStatus() async {
         guard let api else { return }
         var status: [String: Any] = ["state": "idle"]
+        let audio = nowPlaying.audioStatus
+        if let audio { status["audio"] = audio.body }
         if let player, let item = player.currentItem {
             status["state"] = player.timeControlStatus == .paused ? "paused" : "playing"
             let position = player.currentTime().seconds

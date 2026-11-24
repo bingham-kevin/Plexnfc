@@ -4,6 +4,14 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var player: PlayerModel
+    @EnvironmentObject private var nowPlaying: NowPlayingModel
+
+    /// Beside the TV's tab bar; a bar at the bottom of a phone or tablet, clear of its toolbar
+    #if os(tvOS)
+    private let nowPlayingCorner = Alignment.topTrailing
+    #else
+    private let nowPlayingCorner = Alignment.bottom
+    #endif
 
     var body: some View {
         ZStack {
@@ -18,8 +26,23 @@ struct RootView: View {
             if let avPlayer = player.player {
                 PlaybackView(avPlayer: avPlayer)
                     .transition(.opacity)
+            } else if nowPlaying.visible {
+                NowPlayingView()
+                    .transition(.opacity)
             }
         }
+        .overlay(alignment: nowPlayingCorner) {
+            // Back to the music (or the book) from browsing
+            if player.player == nil, !nowPlaying.visible, nowPlaying.hasSomething {
+                NowPlayingButton()
+                    #if os(tvOS)
+                    .padding(.top, 8).padding(.trailing, 40)
+                    #else
+                    .padding(.bottom, 24)
+                    #endif
+            }
+        }
+        .animation(.default, value: nowPlaying.visible)
         .overlay(alignment: .top) {
             if let notice = player.notice {  // a movie started on another player
                 Label(notice, systemImage: "play.tv")

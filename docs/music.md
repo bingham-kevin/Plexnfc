@@ -24,10 +24,11 @@ Pick one or more speakers under **Speakers**, then use **Play**, **Play next** o
 | **Music Assistant** players | Music Assistant | Yes: choosing several makes a Music Assistant group | Plays music from every source. Music from Plex, Jellyfin and folders is passed to it as addresses on this server. **Ungroup** splits a group. |
 | **AirPlay** (HomePods, Apple TVs, AirPlay speakers, Macs) | Marquee, with pyatv | No | HomePods and Apple TVs need **Allow speaker access** set to everyone on the same network (Home app › Home settings › Speakers & TV). Apple TVs and Macs also ask to be paired once: see [Pairing Apple TVs](#pairing-apple-tvs). AirPlay can't pause a stream: ▶ after ⏸ starts the track again, where it was if the server has ffmpeg. |
 | **Cast** (Chromecast, Google/Nest speakers, Cast groups) | Marquee, with pychromecast | Use a speaker group made in Google Home: it shows up as one speaker | |
+| **Marquee** (an Apple TV, iPhone or iPad paired as a TV, shown as "Den (Marquee)") | The Marquee app itself | No | Opens Marquee if it isn't open, and shows **Now Playing** while it plays. It plays MP3, AAC/M4A, FLAC, WAV and AIFF as they are. Its volume is the TV's. |
 
 Music Assistant's own music (Apple Music and so on) plays only on Music Assistant's speakers.
 
-For AirPlay and Cast speakers, Marquee keeps the queue itself. It moves on when the first speaker finishes a track. Choosing several of them sends each the same track, but they aren't sample-accurate together.
+For AirPlay, Cast and Marquee speakers, Marquee keeps the queue itself. It moves on when the first speaker finishes a track. Choosing several of them sends each the same track, but they aren't sample-accurate together.
 
 A format a speaker can't play is turned into MP3 by ffmpeg, if the server has it:
 - AirPlay plays MP3, FLAC, WAV and Ogg as they are.
@@ -37,6 +38,30 @@ A format a speaker can't play is turned into MP3 by ffmpeg, if the server has it
 Speakers fetch files and pictures from the server's public address (`PUBLIC_BASE_URL`), so it has to be reachable from them. The addresses are signed, so nothing else on the network can read your music through them.
 
 **Playing** shows what's on each speaker or group, with previous, play/pause, next, stop and the queue. It shows only music played through Music Assistant or Marquee. It doesn't show what an Apple TV plays in its own apps, and it never controls that.
+
+## Now Playing on the TV
+
+The Marquee app has a **Now Playing** screen for music and books, like its movie screen:
+
+- **Music:** the album cover, title and artist, a timeline, the album's tracks in order with what's up next, and lyrics. Synced lyrics highlight and scroll along with the song.
+- **Books:** the cover, author, a timeline for the whole book with its chapters marked, and the chapter list. ⏮ ⏭ move between chapters, and the other buttons skip back or forward 30 seconds.
+
+It shows on its own when Marquee is the speaker. To watch music playing on other speakers, open it from the Now Playing button (top right on Apple TV, at the bottom on iPhone and iPad). Its buttons control those speakers.
+
+A reader can show its music on a TV too. Under **Devices › Readers**, set **Shows Now Playing on** to a Marquee screen. Each music or book card held to that reader then puts Now Playing on that TV. With **Turn the TV on for it**, Marquee is opened (which wakes the TV). Without it, Now Playing only shows if Marquee is already open.
+
+### Where lyrics come from
+
+Marquee tries these sources in order:
+
+1. The source's own lyrics:
+   - Plex: lyrics it found or that sit beside the files (Plex Pass);
+   - Jellyfin: its lyrics;
+   - folders: a `.lrc` or `.txt` file with the same name as the track;
+   - Music Assistant: lyrics in its metadata.
+2. If the source has none, [LRCLIB](https://lrclib.net), a free, open lyrics database. Marquee sends it only the title, artist, album and length. To turn this off, set `LYRICS_LRCLIB=0`.
+
+`.lrc` files with timestamps give synced lyrics. Plain text is shown as it is.
 
 ## Music cards
 

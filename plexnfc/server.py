@@ -53,7 +53,8 @@ from .cards import music_title, normalize_uid
 from .music import Music, MusicBridge, MusicError, music_item
 from .musiclib import AUDIO_TYPES, MusicLibrary, MusicSourceError, split_id
 from .readers import ReaderError, Readers
-from .speakers import MusicPlayer, SpeakerError
+from .lyrics import Lyrics
+from .speakers import MarqueeSpeakers, MusicPlayer, SpeakerError
 from .plex import Plex, PlexNFCError, app_movie, movie_key
 from .screen_text import box_json
 from .filestream import DIRECT_TYPES
@@ -142,6 +143,14 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                          os.path.join(os.path.dirname(plex.config.auth_file) or ".", "airplay_pairings.json"),
                          plex.apple_tvs.credentials_for)
     app.extensions["marquee_music"] = player
+    # Marquee on each Apple TV is a speaker too: it plays music and books through the TV
+    player.marquee = MarqueeSpeakers(plex.app_inbox, lambda: marquee_screens(), lambda name: plex.prepare_tv(name))
+    lyrics = Lyrics(music_library)
+    app.extensions["marquee_lyrics"] = lyrics
+
+    def marquee_screens() -> list[str]:
+        """The paired Marquees on Apple TVs: speakers, and screens for Now Playing."""
+        return [d["name"] for d in plex.app_pairings.devices() if d["kind"] == "tv"]
 
     # ---- NFC readers and where they play (see readers.py) ----------------------------
     readers = Readers(os.path.join(os.path.dirname(plex.config.auth_file) or ".", "readers.json"))
@@ -263,6 +272,108 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                 "now": now and {"state": now["state"], "title": now["title"], "artist": now["artist"],
                                 "book": now["book"]},
                 **({"message": state["message"]} if state.get("message") else {})}
+
+    # ---- Now Playing on Marquee: the room's music or book on the TV ---------------------
+    # A Marquee shows what it plays itself (as a speaker), or what the speakers of the reader
+    # whose card was just read play (the reader's "screen").
+
+    showing: dict[str, str] = {}  # a Marquee's name (casefolded) -> the reader it shows
+    detail_cache: dict[str, tuple[float, object]] = {}
+
+    def cached(key: str, seconds: float, make):
+        hit = detail_cache.get(key)
+        if hit and time.monotonic() - hit[0] < seconds:
+            return hit[1]
+        value = make()
+        detail_cache[key] = (time.monotonic(), value)
+        if len(detail_cache) > 200:
+            for old in sorted(detail_cache, key=lambda k: detail_cache[k][0])[:100]:
+                detail_cache.pop(old, None)
+        return value
+
+    def show_on_screen(reader: dict | None) -> None:
+        """A music or book card was read: show it on the reader's Marquee screen, if it has
+        one and it's open (or the reader may wake its TV)."""
+        screen = reader and reader.get("screen")
+        if not screen or f"marquee:{screen}" in reader["speakers"]:
+            return  # no screen; or Marquee plays it, and shows it anyway
+        is_open = plex.app_inbox.status(screen) is not None
+        if not is_open and not reader.get("wake"):
+            return
+        showing[screen.casefold()] = reader["id"]
+        plex.app_inbox.send(screen, "nowplaying", reader=reader["id"])
+        if not is_open:
+            threading.Thread(target=plex.prepare_tv, args=(screen,), daemon=True).start()
+
+    def marquee_zone(device: str) -> tuple[dict | None, dict | None]:
+        """What a Marquee shows: what it plays itself, else its reader's speakers' music."""
+        try:
+            zones = player.now()
+        except Exception:  # noqa: BLE001
+            zones = []
+        zone = next((z for z in zones if f"marquee:{device}" in z["speakers"]), None)
+        if zone:
+            return zone, None
+        reader = readers.get(showing.get(device.casefold(), ""))
+        return (reader_zone(reader, zones), reader) if reader else (None, None)
+
+    def assistant_extras(zone_id: str) -> dict:
+        """Music Assistant's queue and its lyrics for the current track."""
+        queue = player.queue(zone_id)
+        own = None
+        try:
+            current = (player._call("player_queues/get", queue_id=zone_id.split(":", 1)[1]) or {}).get("current_item") or {}
+            metadata = (current.get("media_item") or {}).get("metadata") or {}
+            from .lyrics import parse
+            own = parse(metadata.get("lrc_lyrics")) or parse(metadata.get("lyrics"))
+        except Exception:  # noqa: BLE001
+            pass
+        return {"queue": queue, "lyrics": own}
+
+    def book_details(book_id: str) -> dict:
+        opened = music_library.open(book_id)
+        item = opened["item"]
+        return {"title": item["name"], "author": item.get("artist") or "", "image": public_art(item) if item.get("image") else None,
+                "chapters": opened.get("chapters") or []}
+
+    def now_playing(device: str) -> dict:
+        """Everything Marquee's Now Playing screen shows."""
+        zone, reader = marquee_zone(device)
+        if zone is None:
+            return {"state": "idle", "reader": reader and reader["name"]}
+        summary = zone_summary(zone)
+        track = zone.get("track") or {}
+        out = {**{k: summary[k] for k in ("state", "title", "artist", "album", "image", "position", "duration")},
+               "zone": zone["id"], "speakers": summary["speakers"], "here": f"marquee:{device}" in zone["speakers"],
+               "reader": reader and reader["name"], "track": track.get("id") or summary["title"],
+               "queue": None, "index": None, "book": None, "lyrics": None}
+        own_lyrics = None
+        try:
+            if zone["kind"] == "music_assistant":
+                extras = cached(f"ma|{zone['id']}|{summary['title']}", 10, lambda: assistant_extras(zone["id"]))
+                out["queue"], out["index"] = extras["queue"]["items"], extras["queue"]["index"]
+                own_lyrics = extras["lyrics"]
+            else:
+                out["queue"], out["index"] = zone.get("queue"), zone.get("index")
+        except Exception as e:  # noqa: BLE001 - the rest still shows
+            logging.getLogger(__name__).debug("Now Playing queue: %s", e)
+        book = player.progress.book_of(zone["id"])
+        if book:
+            try:
+                details = cached(f"book|{book['id']}", 600, lambda: book_details(book["id"]))
+                out["book"] = {**details, "position": book["position"], "duration": book["duration"]}
+                if details.get("image"):
+                    out["image"] = details["image"]
+            except (MusicSourceError, Exception) as e:  # noqa: BLE001
+                logging.getLogger(__name__).debug("Now Playing book: %s", e)
+        else:
+            known, found = lyrics.lookup({**track, "name": summary["title"], "artist": summary["artist"],
+                                          "album": summary["album"], "duration": summary["duration"] or None,
+                                          **({"source": split_id(track["id"])[0]} if track.get("id") else {})},
+                                         own_lyrics)
+            out["lyrics"] = found
+            out["lyrics_loading"] = not known
+        return out
 
     def card_speakers(card: dict, reader: dict | None) -> list[str]:
         """Where a music card plays: the reader's speakers, if it has any; else the card's own."""
@@ -507,6 +618,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             if "id" in item:  # linked on the Music tab: Marquee plays it
                 try:
                     reply["message"] = play_card_music(card, speakers=card_speakers(card, reader)).replace("\n", " ")
+                    show_on_screen(reader)
                 except MusicError as e:
                     return answer(ok=False, result="error", title=music_title(item),
                                   message=f"Couldn't play {music_title(item)}: {e}")
@@ -633,6 +745,37 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         resume = body.get("resume")
         return jsonify(plex.app_play_details(device, body.get("key", ""), resume=resume))
 
+    @app_route("/tv/nowplaying")
+    def tv_nowplaying(device):
+        """The music or book Marquee shows: what it plays itself, or what the speakers of the
+        reader whose card was just read play. With the cover, the queue, a book's chapters
+        and the lyrics."""
+        return jsonify(now_playing(device))
+
+    @app_route("/tv/nowplaying", methods=["POST"])
+    def tv_nowplaying_control(device):
+        """Now Playing's controls: ``toggle``, ``pause``, ``play``, ``next``, ``previous``,
+        ``stop``, ``seek`` (``value``: seconds into the track), ``book`` (seconds into the
+        book), ``jump`` (a queue index), and ``hide`` (stop showing a reader's music)."""
+        body = request.get_json(silent=True) or {}
+        action, value = body.get("action"), body.get("value")
+        if action == "hide":
+            showing.pop(device.casefold(), None)
+            return jsonify(ok=True)
+        zone, _ = marquee_zone(device)
+        if zone is None:
+            return jsonify(ok=False, message="Nothing is playing"), 400
+        if action == "toggle":
+            action = "pause" if zone["state"] == "playing" else "play"
+        if action not in ("pause", "play", "next", "previous", "stop", "seek", "book", "jump"):
+            return jsonify(ok=False, message="Send an action: toggle, pause, play, next, previous, stop, "
+                                             "seek, book, jump or hide"), 400
+        try:
+            player.control(zone["id"], action, value)
+        except (SpeakerError, MusicSourceError, ValueError, TypeError) as e:
+            return jsonify(ok=False, message=str(e)), 400
+        return jsonify(now_playing(device))
+
     # ---- the Movie Remote: an ESP32 box with an NFC reader and a touchscreen -----------
     # It pairs like Marquee (showing its code on its screen), then sends the tags it reads
     # and its buttons with its secret. Nothing here works for a box that isn't paired.
@@ -688,6 +831,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             if "id" in item:  # linked on the Music tab: any source, on the box's speakers if it has some
                 try:
                     message = play_card_music(card, speakers=card_speakers(card, reader))
+                    show_on_screen(reader)
                 except MusicError as e:
                     return jsonify(ok=False, message=f"Couldn't play {item['name']}.\n{e}"), 502
                 return jsonify(ok=True, result="music", title=item["name"], message=message)
@@ -1742,12 +1886,13 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         """The NFC readers, each with its default output, for Devices › Readers."""
         choices = speaker_choices()
         return jsonify(readers=[reader_state(r, choices) for r in all_readers()], speakers=choices,
-                       players=plex.players(), default_player=plex.default_player())
+                       players=plex.players(), default_player=plex.default_player(), screens=marquee_screens())
 
     @panel_route("/readers/<reader_id>", methods=["POST"])
     def panel_reader(reader_id):
-        """Set a reader's default speakers (``default``), Marquee player (``movie_player``) and
-        Tessera page (``page``)."""
+        """Set a reader's default speakers (``default``), Marquee player (``movie_player``),
+        Tessera page (``page``), and the Marquee screen that shows its Now Playing (``screen``,
+        and ``wake`` to turn the TV on for it)."""
         body = panel_body()
         try:
             reader = readers.get(reader_id)

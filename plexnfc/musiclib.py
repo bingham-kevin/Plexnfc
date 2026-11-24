@@ -117,6 +117,10 @@ class MusicSource:
     def art(self, kind: str, ref: str) -> tuple[bytes, str] | None:
         return None
 
+    def lyrics(self, track: dict) -> dict | None:
+        """The track's lyrics (see lyrics.py), if the source has them."""
+        return None
+
 
 # ---- Music Assistant ----------------------------------------------------------------
 
@@ -308,6 +312,21 @@ class PlexMusicSource(MusicSource):
         ext = os.path.splitext(getattr(part, "file", "") or "")[1].lower() or f".{getattr(part, 'container', 'mp3')}"
         return self._server().url(part.key, includeToken=True), AUDIO_TYPES.get(ext, "audio/mpeg")
 
+    def lyrics(self, track: dict) -> dict | None:
+        """Plex's lyrics: a sidecar .lrc or .txt file, or Plex Pass's, as a lyrics stream."""
+        from .lyrics import parse
+        obj = self._fetch(split_id(track["id"])[2])
+        server = self._server()
+        for media in getattr(obj, "media", None) or []:
+            for part in getattr(media, "parts", None) or []:
+                for stream in getattr(part, "streams", None) or []:
+                    if getattr(stream, "streamType", None) != 4 or not getattr(stream, "key", None):
+                        continue
+                    r = server._session.get(server.url(stream.key, includeToken=True), timeout=10)
+                    if r.ok and (found := parse(r.text)):
+                        return found
+        return None
+
     def art(self, kind: str, ref: str) -> tuple[bytes, str] | None:
         obj = self._fetch(ref)
         thumb = getattr(obj, "thumb", None) or getattr(obj, "composite", None) or getattr(obj, "parentThumb", None)
@@ -400,6 +419,17 @@ class JellyfinMusicSource(MusicSource):
         ref = split_id(track["id"])[2]
         query = urlencode({"static": "false", "audioCodec": "mp3", "audioBitRate": 320000, "api_key": self.client.api_key})
         return f"{self.client.url}/Audio/{quote(ref)}/stream.mp3?{query}", "audio/mpeg"
+
+    def lyrics(self, track: dict) -> dict | None:
+        """Jellyfin's lyrics (10.9 and later): lines with their start in ticks, if timed."""
+        from .lyrics import from_lines
+        try:
+            found = self._get(f"/Audio/{quote(split_id(track['id'])[2])}/Lyrics")
+        except MusicSourceError:
+            return None
+        lines = [(l["Start"] / 10_000_000 if isinstance(l.get("Start"), (int, float)) else None,
+                  str(l.get("Text") or "")) for l in found.get("Lyrics") or [] if isinstance(l, dict)]
+        return from_lines(lines)
 
     def art(self, kind: str, ref: str) -> tuple[bytes, str] | None:
         from .jellyfin import JellyfinError
@@ -656,6 +686,22 @@ class FolderMusicSource(MusicSource):
                 AUDIO_TYPES.get(ext, "application/octet-stream"))
 
     files_base = ""  # Marquee's public address, set by the library
+
+    def lyrics(self, track: dict) -> dict | None:
+        """A .lrc (or .txt) file beside the track, with the same name."""
+        from .lyrics import parse
+        path = self.file(split_id(track["id"])[2])
+        if not path:
+            return None
+        base = os.path.splitext(path)[0]
+        for ext in (".lrc", ".LRC", ".txt"):
+            try:
+                with open(base + ext, encoding="utf-8", errors="replace") as f:
+                    if found := parse(f.read()):
+                        return found
+            except OSError:
+                continue
+        return None
 
     def art(self, kind: str, ref: str) -> tuple[bytes, str] | None:
         index = self.index()

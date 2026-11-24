@@ -1372,9 +1372,10 @@ def write_wav(path, seconds=1):
 
 
 @pytest.fixture
-def music_app(plex, tmp_path):
+def music_app(plex, tmp_path, monkeypatch):
     """The app, with a music folder: Artist/Album/NN Title.wav, a cover and a playlist."""
     from dataclasses import replace
+    monkeypatch.setenv("LYRICS_LRCLIB", "0")  # tests never ask lrclib.net
     plex.config = replace(plex.config, auth_file=str(tmp_path / "data" / "plex_auth.json"), plex_token="", plex_url="")
     (tmp_path / "data").mkdir()
     root = tmp_path / "Music"
@@ -2209,3 +2210,96 @@ def test_moving_music_assistant_queue_to_other_speakers(music_app):
     from plexnfc.speakers import SpeakerError
     with pytest.raises(SpeakerError, match="next card"):
         player.move("ma:kitchen", ["cast:kitchen"])
+
+
+def test_marquee_plays_music_itself_and_shows_now_playing(music_app):
+    app, root = music_app
+    plex = app.plex
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    (root / "The Beatles" / "Abbey Road" / "01 Come Together.lrc").write_text(
+        "[ar: The Beatles]\n[00:12.50]Here come old flat-top\n[00:15.00]He come groovin' up slowly\n")
+    sid = app.post("/panel/api/music/folders", json={"path": str(root)}, **panel).json["folders"][0]["id"]
+    player = music_player(app)
+    player.airplay, player.cast = FakeAirPlay(), FakeCast()
+    tv = pair(plex, "Den")
+    app.post("/tv/status", headers=tv, json={"state": "idle"})  # Marquee is open
+    # each Marquee is a speaker
+    assert {"id": "marquee:Den", "name": "Den (Marquee)", "kind": "marquee", "group": False}.items() <= \
+        next(s for s in player.speakers() if s["id"] == "marquee:Den").items()
+    album = app.get(f"/panel/api/music/browse?source={sid}&kind=album&q=abbey").json["items"][0]
+    player.play([album["id"]], ["marquee:Den"])
+
+    # the track goes to Marquee's inbox, to play itself
+    assert wait_for(lambda: (plex.app_inbox.next("Den", 0) or {}).get("action") == "audio")
+    sent = plex.app_inbox.next("Den", 0)
+    assert sent["title"] == "Come Together" and sent["artist"] == "The Beatles" and sent["type"] == "audio/wav"
+    assert sent["url"].startswith("http://marquee:8080/music/file/") and sent["image"]
+    app.post("/tv/status", headers=tv, json={"state": "idle", "audio": {"play": sent["play"], "state": "playing",
+                                                                         "position": 13}})
+    # Now Playing: the track, the album's queue and the timed lyrics
+    now = app.get("/tv/nowplaying", headers=tv).json
+    assert now["here"] and now["title"] == "Come Together" and now["state"] == "playing"
+    assert [t["name"] for t in now["queue"]] == ["Come Together", "Something"] and now["index"] == 0
+    assert wait_for(lambda: (app.get("/tv/nowplaying", headers=tv).json["lyrics"] or {}).get("synced"))
+    lines = app.get("/tv/nowplaying", headers=tv).json["lyrics"]["lines"]
+    assert lines[0] == {"time": 12.5, "text": "Here come old flat-top"} and len(lines) == 2
+
+    # its controls: pause goes to the app; when the track ends, the next one comes
+    app.post("/tv/nowplaying", headers=tv, json={"action": "toggle"})
+    assert plex.app_inbox.next("Den", sent["id"])["action"] == "audio_pause"
+    app.post("/tv/nowplaying", headers=tv, json={"action": "toggle"})
+    app.post("/tv/status", headers=tv, json={"state": "idle", "audio": {"play": sent["play"], "ended": sent["play"]}})
+    assert wait_for(lambda: (plex.app_inbox.next("Den", 0) or {}).get("title") == "Something")
+    assert app.get("/tv/nowplaying", headers=tv).json["index"] == 1
+    # Marquee was closed: the queue stops rather than racing through the album
+    second = plex.app_inbox.next("Den", 0)
+    app.post("/tv/status", headers=tv, json={"state": "idle", "audio": {"play": second["play"], "state": "stopped"}})
+    assert wait_for(lambda: not player.sessions)
+    assert app.get("/tv/nowplaying", headers=tv).json["state"] == "idle"
+    assert app.post("/tv/nowplaying", headers=tv, json={"action": "toggle"}).status_code == 400
+
+
+def test_a_readers_marquee_screen_shows_its_music(music_app):
+    app, root = music_app
+    plex = app.plex
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    sid = app.post("/panel/api/music/folders", json={"path": str(root)}, **panel).json["folders"][0]["id"]
+    player = music_player(app)
+    player.airplay, player.cast = FakeAirPlay(), FakeCast()
+    tv = pair(plex, "Den")
+    album = app.get(f"/panel/api/music/browse?source={sid}&kind=album&q=abbey").json["items"][0]
+    app.post("/panel/api/cards/link", json={"uid": "04-AA-BB-CC", "music": {"id": album["id"], "name": album["name"]},
+                                            "speaker": "cast:kitchen"}, **panel)
+    box = paired_box(plex, app)
+    readers = app.get("/panel/api/readers").json
+    assert readers["screens"] == ["Den"]
+    reader = readers["readers"][0]
+    app.post(f"/panel/api/readers/{reader['id']}", json={"default": ["airplay:den"], "screen": "Den"}, **panel)
+    assert app.get("/panel/api/readers").json["readers"][0]["screen"] == "Den"
+
+    # Marquee isn't open, and the reader doesn't wake the TV: nothing's shown
+    app.post("/remote/tap", json={"uid": "04:aa:bb:cc"}, headers=box)
+    assert (plex.app_inbox.next("Den", 0) or {}).get("action") != "nowplaying"
+    # open: the tap shows the reader's music there
+    app.post("/tv/status", headers=tv, json={"state": "idle"})
+    app.post("/remote/tap", json={"uid": "04:aa:bb:cc"}, headers=box)
+    assert plex.app_inbox.next("Den", 0) | {"id": 0} == {"id": 0, "action": "nowplaying", "reader": reader["id"]}
+    assert wait_for(lambda: app.get("/tv/nowplaying", headers=tv).json["title"] == "Come Together")
+    now = app.get("/tv/nowplaying", headers=tv).json
+    assert not now["here"] and now["reader"] == "Movie Remote" and now["speakers"] == ["Den HomePod"]
+    # its controls are the reader's music's; hiding it stops showing it
+    app.post("/tv/nowplaying", headers=tv, json={"action": "seek", "value": 30})
+    assert wait_for(lambda: len(player.airplay.played) > 1)  # the track starts again, 30 s in
+    app.post("/tv/nowplaying", headers=tv, json={"action": "hide"})
+    assert app.get("/tv/nowplaying", headers=tv).json["state"] == "idle"
+
+
+def test_lyrics_parse_lrc_and_plain():
+    from plexnfc.lyrics import parse
+    timed = parse("[ti: x]\n[00:01.00][00:05.5]Chorus\n[00:03.250]Verse\n")
+    assert timed == {"synced": True, "lines": [{"time": 1.0, "text": "Chorus"}, {"time": 3.25, "text": "Verse"},
+                                               {"time": 5.5, "text": "Chorus"}]}
+    assert parse("\nOne\n\nTwo\n") == {"synced": False, "lines": [{"time": None, "text": "One"},
+                                                                   {"time": None, "text": ""},
+                                                                   {"time": None, "text": "Two"}]}
+    assert parse("  ") is None

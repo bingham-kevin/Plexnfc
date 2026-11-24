@@ -361,6 +361,10 @@ export interface Reader {
   movie_player: string | null;
   /** The Tessera page that shows its controls, opened when it reads a card */
   page: number | null;
+  /** The Marquee screen (an Apple TV) that shows Now Playing when it reads a music or book card */
+  screen: string | null;
+  /** Turn the TV on for Now Playing (else it shows only when Marquee is already open) */
+  wake: boolean;
   seen: number | null;
   now: { title: string; artist: string; state: string } | null;
 }
@@ -370,4 +374,6 @@ export interface ReadersState {
   speakers: { id: string; name: string; kind: string; group: boolean }[];
   players: Player[];
   default_player: string;
+  /** Marquee screens (paired Apple TVs) that can show Now Playing */
+  screens: string[];
 }
