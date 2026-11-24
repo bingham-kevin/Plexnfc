@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
-import { posterURL, type CardsState, type Movie, type Overview, type Scan } from "./api";
+import { posterURL, type CardsState, type Movie, type MusicItem, type Overview,
+  type Scan } from "./api";
+import { Art } from "./Music";
 import { useCardAction, useCards, useFilters, useMovies } from "./hooks";
 
 type Source = "collection" | "label" | "source" | "manual";
@@ -18,6 +20,7 @@ export function Cards({ overview }: { overview: Overview }) {
         <>
           {state?.unknown && overview.can_manage && <UnknownCard uid={state.unknown.uid} />}
           <ScanSetup canManage={overview.can_manage} />
+          <MusicCards />
           {state && <LinkedCards state={state} canManage={overview.can_manage} />}
         </>
       )}
@@ -167,10 +170,15 @@ function ScanView({ scan, canManage }: { scan: Scan; canManage: boolean }) {
 
       {scan.current ? (
         <div className="scan-body">
-          <img key={scan.current.key} className="scan-poster" src={posterURL(scan.current.key, 300, 450)} alt="" />
+          {scan.current.music ? (
+            <MusicArt key={scan.current.key} item={scan.current.music} className="scan-poster music" />
+          ) : (
+            <img key={scan.current.key} className="scan-poster" src={posterURL(scan.current.key, 300, 450)} alt="" />
+          )}
           <div>
-            <p className="muted">Hold this movie's card on a Movie Remote</p>
+            <p className="muted">Hold this {scan.current.music ? "music" : "movie"}'s card on a Movie Remote or an NFC reader in Home Assistant</p>
             <h3 className="scan-title">{scan.current.title}</h3>
+            {scan.current.music && <p className="muted">Plays on {scan.current.speaker_name}</p>}
             {scan.next && <p className="muted">Next: {scan.next.title}</p>}
             {scan.last && (
               <p key={scan.last.at} className={`scan-last ${recent ? "fresh" : ""}`}>
@@ -204,7 +212,7 @@ function ScanView({ scan, canManage }: { scan: Scan; canManage: boolean }) {
           </div>
         </div>
       )}
-      <p className="muted">While scanning, cards held on a Movie Remote are linked rather than played.</p>
+      <p className="muted">While scanning, cards held on a Movie Remote, or on an NFC reader in Home Assistant, are linked rather than played.</p>
     </section>
   );
 }
@@ -213,6 +221,7 @@ function ScanView({ scan, canManage }: { scan: Scan; canManage: boolean }) {
 function UnknownCard({ uid }: { uid: string }) {
   const movies = useMovies("");
   const [search, setSearch] = useState("");
+  const [kind, setKind] = useState<"movie" | "music">("movie");
   const link = useCardAction<string>(() => "cards/link", (key) => ({ uid, key }));
   const matches = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -222,7 +231,22 @@ function UnknownCard({ uid }: { uid: string }) {
   return (
     <section className="card attention">
       <h2>Card not linked</h2>
-      <p>A Movie Remote just read card <code>{uid}</code>, which isn't linked to a movie. Find its movie to link it:</p>
+      <p>A reader just read card <code>{uid}</code>, which isn't linked to anything. Find what it should play:</p>
+      {(
+        <div className="segmented" role="radiogroup" aria-label="Link it to">
+          {(["movie", "music"] as const).map((k) => (
+            <button key={k} role="radio" aria-checked={kind === k} className={kind === k ? "on" : ""}
+                    onClick={() => setKind(k)}>
+              {k === "movie" ? "A movie" : "Music"}
+            </button>
+          ))}
+        </div>
+      )}
+      {kind === "music" ? (
+        <p className="muted">Find the music on the <a href="#music">Music tab</a>, choose one speaker, and use
+          <b> Link card {uid}</b>.</p>
+      ) : (
+        <>
       <input type="search" placeholder="Search titles" value={search} autoFocus
              onChange={(e) => setSearch(e.target.value)} aria-label="Find the card's movie" />
       <div className="matches">
@@ -233,6 +257,8 @@ function UnknownCard({ uid }: { uid: string }) {
           </button>
         ))}
       </div>
+        </>
+      )}
     </section>
   );
 }
@@ -260,8 +286,14 @@ function LinkedCards({ state, canManage }: { state: CardsState; canManage: boole
               <tbody>
                 {shown.map((c) => (
                   <tr key={c.uid}>
-                    <td><img className="thumb" src={posterURL(c.key, 80, 120)} alt="" loading="lazy" /></td>
-                    <td><b>{c.title}</b></td>
+                    <td>
+                      {c.music ? <MusicArt item={c.music} className="thumb music" />
+                        : <img className="thumb" src={posterURL(c.key, 80, 120)} alt="" loading="lazy" />}
+                    </td>
+                    <td>
+                      <b>{c.title}</b>
+                      {c.music && <div className="muted">♪ {c.music.media_type} on {c.speaker_name}</div>}
+                    </td>
                     <td><code>{c.uid}</code></td>
                     <td className="row end">
                       {canManage && (
@@ -280,4 +312,20 @@ function LinkedCards({ state, canManage }: { state: CardsState; canManage: boole
       )}
     </section>
   );
+}
+
+/** Music cards are linked from the Music tab, where all the music is. */
+function MusicCards() {
+  return (
+    <section className="card">
+      <h2>Music cards</h2>
+      <p className="muted">A card can play an album, playlist, artist or track instead, from any music source, on any
+        speaker. Find the music on the <a href="#music">Music tab</a>, choose a speaker, and use <b>Link next card</b>.</p>
+    </section>
+  );
+}
+
+/** Music Assistant's artwork for an item, or a note if it has none. */
+function MusicArt({ item, className }: { item: MusicItem; className: string }) {
+  return <Art image={item.image} className={className} />;
 }

@@ -48,7 +48,10 @@ from flask import Flask, Response, abort, jsonify, request, send_file, send_from
 from . import plexauth
 from .appletv import AppleTVError
 from .config import Config
-from .cards import normalize_uid
+from .cards import music_title, normalize_uid
+from .music import Music, MusicBridge, MusicError, music_item
+from .musiclib import AUDIO_TYPES, MusicLibrary, MusicSourceError, split_id
+from .speakers import MusicPlayer, SpeakerError
 from .plex import Plex, PlexNFCError, app_movie, movie_key
 from .screen_text import box_json
 from .filestream import DIRECT_TYPES
@@ -120,6 +123,23 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     # Playback started with ?async=1. Shown by /now until Plex reports the movie playing.
     pending: dict = {}
     pending_lock = threading.Lock()
+    # Music cards play through Music Assistant: directly, or through the Marquee
+    # integration in Home Assistant (see music.py)
+    bridge = MusicBridge()
+    music = Music(bridge, os.path.join(os.path.dirname(plex.config.auth_file) or ".", "music_assistant.json"),
+                  os.environ.get("MUSIC_ASSISTANT_URL", ""), os.environ.get("MUSIC_ASSISTANT_TOKEN", ""))
+    # The Music tab: music from every source, played on AirPlay, Cast and Music Assistant speakers
+    music_library = MusicLibrary(plex, music, os.path.dirname(plex.config.auth_file) or ".", plex.library.files,
+                                 config.public_base_url)
+
+    def public_art(track: dict) -> str | None:
+        image = track.get("image") or ""
+        return image if image.startswith(("http://", "https://")) else music_library.signed("art", track["id"])
+
+    player = MusicPlayer(music_library, music, public_art,
+                         os.path.join(os.path.dirname(plex.config.auth_file) or ".", "airplay_pairings.json"),
+                         plex.apple_tvs.credentials_for)
+    app.extensions["marquee_music"] = player
 
     def play_in_background(key, client, resume):
         try:
@@ -316,6 +336,60 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         plex.control(body["action"], body["player"])
         return jsonify(ok=True)
 
+    @ha_route("/ha/tap", methods=["POST"])
+    def ha_tap():
+        """A card read by an NFC reader in Home Assistant (a Tessera screen, a phone...), sent
+        on by the integration: link it during a scan, or say what it plays. For music the
+        integration plays it itself (``play``); a movie starts here on the default player."""
+        body = request.get_json(silent=True) or {}
+        uid = str(body.get("uid") or "")
+        if (scanned := plex.cards.scanned(uid)) is not None:
+            return jsonify(ok=True, scan=True, message=scanned["message"], result=scanned["result"])
+        card = plex.cards.card(uid)
+        if card and "music" in card:
+            item = card["music"]
+            speaker = music.speaker_name(card["speaker"]) or card.get("speaker_name") or card["speaker"]
+            answer = dict(ok=True, result="music", title=music_title(item),
+                          message=f"Playing {music_title(item)} on {speaker}")
+            if "id" in item:  # linked on the Music tab: Marquee plays it
+                try:
+                    answer["message"] = play_card_music(card).replace("\n", " ")
+                except MusicError as e:
+                    return jsonify(ok=False, result="error", title=music_title(item),
+                                   message=f"Couldn't play {music_title(item)}: {e}")
+                return jsonify(answer)
+            if music.plays_here():  # connected to Music Assistant directly: play it from here
+                try:
+                    music.play(item, card["speaker"])
+                except MusicError as e:
+                    return jsonify(ok=False, result="error", title=music_title(item),
+                                   message=f"Couldn't play {music_title(item)}: {e}")
+                return jsonify(answer)
+            entity = bridge.entity_for(card["speaker"]) or card["speaker"]
+            return jsonify(**answer, play={"uri": item["uri"], "media_type": item["media_type"], "speaker": entity})
+        if card:
+            movie = plex.find_library_movie(card["key"], card.get("title"), card.get("year"))
+            threading.Thread(target=play_in_background, daemon=True, args=(movie.key, None, False)).start()
+            return jsonify(ok=True, result="movie", title=movie.title, message=f"Playing {movie.title}")
+        if normalize_uid(uid):
+            plex.cards.unknown = {"uid": normalize_uid(uid), "at": time.time()}
+        return jsonify(ok=False, result="unknown", message="This card isn't linked. Link it in Marquee, under Cards.")
+
+    @ha_route("/ha/music/poll", methods=["POST"])
+    def ha_music_poll():
+        """The integration's open request: it sends the Music Assistant speakers it can see,
+        and gets the music jobs waiting (``search`` or ``play``), waiting up to 25 s for one."""
+        body = request.get_json(silent=True) or {}
+        speakers = body.get("speakers") if isinstance(body.get("speakers"), list) else []
+        jobs = bridge.poll(speakers, bool(body.get("music_assistant")), request.args.get("wait", 25, type=float))
+        return jsonify(jobs=jobs)
+
+    @ha_route("/ha/music/jobs/<int:job_id>", methods=["POST"])
+    def ha_music_done(job_id):
+        body = request.get_json(silent=True) or {}
+        bridge.finish(job_id, bool(body.get("ok")), body.get("result"), body.get("message"))
+        return jsonify(ok=True)
+
     @ha_route("/ha/play", methods=["POST"])
     def ha_play():
         """Start a movie (``key``, e.g. tmdb-603) on a player, from the beginning unless ``resume``."""
@@ -443,7 +517,24 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         if (scanned := plex.cards.scanned(uid)) is not None:
             return jsonify(ok=True, scan=True, message=scanned["message"], result=scanned["result"])
         query: dict = {}
-        if card := plex.cards.movie(uid):
+        card = plex.cards.card(uid)
+        if card and "music" in card:
+            # Music Assistant plays it on the card's speaker, directly or through Home Assistant
+            item = card["music"]
+            if "id" in item:  # linked on the Music tab: any source, any speaker
+                try:
+                    message = play_card_music(card)
+                except MusicError as e:
+                    return jsonify(ok=False, message=f"Couldn't play {item['name']}.\n{e}"), 502
+                return jsonify(ok=True, result="music", title=item["name"], message=message)
+            try:
+                playing = music.play(item, card["speaker"])
+            except MusicError as e:
+                return jsonify(ok=False, message=f"Couldn't play {item['name']}.\n{e}"), 502
+            speaker = music.speaker_name(card["speaker"]) or card.get("speaker_name") or card["speaker"]
+            return jsonify(ok=True, result="music", title=item["name"],
+                           message=f"{'Playing' if playing else 'Starting'} {music_title(item)}\non {speaker}")
+        if card:
             # A card is linked to a movie, whichever source has it: found by its key, else its title
             key = plex.find_library_movie(card["key"], card.get("title"), card.get("year")).key
         else:
@@ -595,6 +686,54 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         data, mime = found
         return Response(data, mimetype=mime, headers={"Cache-Control": "no-cache" if name.endswith(".m3u8")
                                                       else "max-age=3600"})
+
+    # ---- music for speakers: signed addresses AirPlay, Cast and Music Assistant fetch ----
+
+    @app.get("/music/file/<source_id>/<ref>/<token>/track<ext>")
+    def music_file(source_id, ref, token, ext):
+        """A track in a music folder (speakers ask for it in ranges)."""
+        path = music_library.folder_file(source_id, ref, token)
+        if not path or os.path.splitext(path)[1].lower() != ext.lower():
+            abort(404)
+        return send_file(path, mimetype=AUDIO_TYPES.get(ext.lower(), "application/octet-stream"),
+                         conditional=True, max_age=0)
+
+    @app.get("/music/art/<token>")
+    def music_art_public(token):
+        """A track's picture, for a Cast speaker's screen."""
+        ident = request.args.get("id", "")
+        if not music_library.check("art", ident, token):
+            abort(404)
+        try:
+            found = music_library.art(ident)
+        except MusicSourceError:
+            found = None
+        if not found:
+            abort(404)
+        return Response(found[0], mimetype=found[1], headers={"Cache-Control": "max-age=86400"})
+
+    @app.get("/music/mp3/<token>")
+    def music_mp3(token):
+        """A track as MP3, made by ffmpeg, for speakers that can't play its own format."""
+        ident = request.args.get("id", "")
+        if not music_library.check("mp3", ident, token):
+            abort(404)
+        try:
+            source = music_library.source_for_ffmpeg(ident)
+            command = MusicPlayer._ffmpeg(source)
+        except (MusicSourceError, SpeakerError) as e:
+            return jsonify(ok=False, message=str(e)), 404
+        import subprocess
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+        def chunks():
+            try:
+                while chunk := proc.stdout.read(65536):
+                    yield chunk
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+        return Response(chunks(), mimetype="audio/mpeg")
 
     @app.get("/jf/<source_id>/<token>/Videos/<path:path>")
     def jellyfin_stream(source_id, token, path):
@@ -1012,7 +1151,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
 
     def cards_state():
         unknown = plex.cards.unknown
-        if unknown and (time.time() - unknown["at"] > 600 or plex.cards.movie(unknown["uid"])):
+        if unknown and (time.time() - unknown["at"] > 600 or plex.cards.card(unknown["uid"])):
             unknown = plex.cards.unknown = None
         return {"cards": plex.cards.all(), "scan": plex.cards.scan(), "unknown": unknown}
 
@@ -1025,7 +1164,9 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     def panel_scan_start():
         """Start linking cards: the next cards read go to these movies, in order."""
         try:
-            plex.cards.start_scan(panel_body().get("movies") or [])
+            items = panel_body().get("movies") or []
+            plex.cards.start_scan([checked_music(m) if isinstance(m, dict) and "music" in m else m
+                                   for m in items if isinstance(m, dict)])
         except ValueError as e:
             return jsonify(ok=False, message=str(e)), 400
         return jsonify(ok=True, **cards_state())
@@ -1038,10 +1179,208 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             plex.cards.move(1 if action == "skip" else -1)
         return jsonify(ok=True, **cards_state())
 
+    def checked_music(body: dict) -> dict:
+        """``{"music", "speaker"}`` from the panel, checked, with the speaker's name. The music
+        is an item from the Music tab (any source, any kind of speaker: ``ma:``, ``airplay:``,
+        ``cast:``), or, as before, a Music Assistant item for a Music Assistant player."""
+        raw = body.get("music")
+        speaker = str(body.get("speaker") or "").strip()
+        if not speaker or len(speaker) > 200:
+            raise ValueError("Choose a speaker")
+        if isinstance(raw, dict) and raw.get("id"):
+            try:
+                source, kind, ref = split_id(str(raw["id"]))
+            except MusicSourceError as e:
+                raise ValueError(str(e)) from None
+            if speaker.split(":", 1)[0] not in ("ma", "airplay", "cast"):
+                raise ValueError("Choose a speaker")
+            item = {"id": str(raw["id"]), "kind": kind, "media_type": kind, "name": str(raw.get("name") or "")[:200],
+                    "artist": str(raw.get("artist") or "")[:200],
+                    "image": raw["image"] if isinstance(raw.get("image"), str) and len(raw["image"]) < 2000 else None}
+            if not item["name"]:
+                raise ValueError("Choose some music")
+            if source == "ma":
+                item["uri"] = ref
+            return {"music": item, "speaker": speaker, "speaker_name": player.speaker_name(speaker)}
+        item = music_item(raw)
+        return {"music": item, "speaker": speaker, "speaker_name": music.speaker_name(speaker) or speaker}
+
+    def play_card_music(card: dict, wait: float = 4) -> str:
+        """Start a music card from the Music tab: the box's message. Raises MusicError."""
+        item, speaker = card["music"], card["speaker"]
+        name = card.get("speaker_name") or player.speaker_name(speaker)
+        done = threading.Event()
+        failed: list = []
+
+        def run():
+            try:
+                player.play([item["id"]], [speaker])
+            except (MusicSourceError, SpeakerError, MusicError) as e:
+                failed.append(e)
+                if not done.is_set():
+                    logging.getLogger(__name__).warning("Card music failed: %s", e)
+            finally:
+                done.set()
+        threading.Thread(target=run, daemon=True).start()
+        finished = done.wait(wait)
+        if failed:
+            raise MusicError(str(failed[0]))
+        return f"{'Playing' if finished else 'Starting'} {music_title(item)}\non {name}"
+
+    @panel_route("/music")
+    def panel_music():
+        """Whether Music Assistant is connected (directly, or through Home Assistant), and
+        its speakers."""
+        return jsonify(music.status())
+
+    @panel_route("/music/assistant", methods=["POST"])
+    def panel_music_assistant():
+        """Connect to Music Assistant directly: ``url`` (blank to stop) and ``token`` (left
+        out to keep the one there is). It's tried before it's kept."""
+        body = panel_body()
+        token = body.get("token")
+        try:
+            music.set_assistant(str(body.get("url") or ""), None if token in (None, "") else str(token))
+        except MusicError as e:
+            return jsonify(ok=False, message=str(e)), 400
+        return jsonify(ok=True, **music.status())
+
+    # ---- the Music tab ----
+
+    def music_reply(fn):
+        """Run a music call, answering its errors as a message."""
+        try:
+            return fn()
+        except (MusicSourceError, SpeakerError, MusicError) as e:
+            return jsonify(ok=False, message=str(e)), 400
+
+    @panel_route("/music/sources")
+    def panel_music_sources():
+        """Where music comes from, the music folders added, and which kinds of speaker work."""
+        return jsonify(sources=music_library.public(), folders=[f.public() for f in music_library.folders],
+                       speakers=player.status())
+
+    @panel_route("/music/folders", methods=["POST"])
+    def panel_music_folder_add():
+        body = panel_body()
+        return music_reply(lambda: (music_library.add_folder(str(body.get("path") or ""), str(body.get("name") or "")),
+                                    panel_music_sources())[1])
+
+    @panel_route("/music/folders/<source_id>/remove", methods=["POST"])
+    def panel_music_folder_remove(source_id):
+        music_library.remove_folder(source_id)
+        return panel_music_sources()
+
+    @panel_route("/music/folders/<source_id>/rescan", methods=["POST"])
+    def panel_music_folder_rescan(source_id):
+        return music_reply(lambda: (music_library.rescan(source_id), panel_music_sources())[1])
+
+    @panel_route("/music/browse")
+    def panel_music_browse():
+        """A source's artists, albums, playlists or tracks (``kind``), optionally filtered (``q``)."""
+        args = request.args
+        return music_reply(lambda: jsonify(items=music_library.browse(
+            args.get("source", ""), args.get("kind", "album"), (args.get("q") or "").strip()[:200],
+            args.get("offset", 0, type=int), min(args.get("limit", 100, type=int), 500))))
+
+    @panel_route("/music/search")
+    def panel_music_search():
+        """Every source's matches (or one ``source``'s)."""
+        query = (request.args.get("q") or "").strip()[:200]
+        if not query:
+            return jsonify(items=[])
+        return music_reply(lambda: jsonify(items=music_library.search(query, request.args.get("source") or None)))
+
+    @panel_route("/music/item")
+    def panel_music_item():
+        """An item with what's in it: an artist's albums, an album's or playlist's tracks."""
+        return music_reply(lambda: jsonify(music_library.open(request.args.get("id", ""))))
+
+    @panel_route("/music/art")
+    def panel_music_art():
+        try:
+            found = music_library.art(request.args.get("id", ""))
+        except MusicSourceError:
+            found = None
+        if not found:
+            abort(404)
+        return Response(found[0], mimetype=found[1], headers={"Cache-Control": "max-age=86400"})
+
+    @panel_route("/music/speakers")
+    def panel_music_speakers():
+        return jsonify(speakers=player.speakers(), kinds=player.status())
+
+    @panel_route("/music/now")
+    def panel_music_now():
+        """What's playing where."""
+        return jsonify(zones=player.now())
+
+    @panel_route("/music/queue")
+    def panel_music_queue():
+        return music_reply(lambda: jsonify(player.queue(request.args.get("zone", ""))))
+
+    @panel_route("/music/play", methods=["POST"])
+    def panel_music_play():
+        """Play items (``ids``) on speakers (``speakers``): ``option`` replace, next or add."""
+        body = panel_body()
+        ids = [str(i) for i in body.get("ids") or [] if i]
+        speakers = [str(s) for s in body.get("speakers") or [] if s]
+        return music_reply(lambda: jsonify(ok=True, zones=player.play(
+            ids, speakers, str(body.get("option") or "replace"), int(body.get("start") or 0))))
+
+    @panel_route("/music/control", methods=["POST"])
+    def panel_music_control():
+        body = panel_body()
+        return music_reply(lambda: (player.control(str(body.get("zone") or ""), str(body.get("action") or ""),
+                                                   body.get("value")), jsonify(ok=True, zones=player.now()))[1])
+
+    @panel_route("/music/volume", methods=["POST"])
+    def panel_music_volume():
+        body = panel_body()
+        return music_reply(lambda: (player.volume(str(body.get("speaker") or ""), int(body.get("level") or 0)),
+                                    jsonify(ok=True))[1])
+
+    @panel_route("/music/airplay/pair", methods=["POST"])
+    def panel_music_airplay_pair():
+        """Ask an AirPlay speaker (an Apple TV) to show a PIN for pairing."""
+        speaker = str(panel_body().get("speaker") or "")
+        if not speaker.startswith("airplay:"):
+            return jsonify(ok=False, message="Only AirPlay speakers pair"), 400
+        return music_reply(lambda: jsonify(ok=True, pair_id=player.airplay.start_pairing(speaker[8:])))
+
+    @panel_route("/music/airplay/pair/finish", methods=["POST"])
+    def panel_music_airplay_pair_finish():
+        body = panel_body()
+        return music_reply(lambda: jsonify(ok=True, name=player.airplay.finish_pairing(
+            str(body.get("pair_id") or ""), str(body.get("pin") or "")), speakers=player.speakers()))
+
+    @panel_route("/music/airplay/unpair", methods=["POST"])
+    def panel_music_airplay_unpair():
+        speaker = str(panel_body().get("speaker") or "")
+        player.airplay.unpair(speaker.removeprefix("airplay:"))
+        return jsonify(ok=True, speakers=player.speakers())
+
+    @panel_route("/music/group", methods=["POST"])
+    def panel_music_group():
+        """Music Assistant speakers in sync: ``leader`` and its ``members`` (none to ungroup)."""
+        body = panel_body()
+        return music_reply(lambda: (player.group(str(body.get("leader") or ""),
+                                                 [str(m) for m in body.get("members") or []]),
+                                    jsonify(ok=True, speakers=player.speakers()))[1])
+
+
     @panel_route("/cards/link", methods=["POST"])
     def panel_card_link():
-        """Link one card (by its ID, such as the last unknown card read) to a movie."""
+        """Link one card (by its ID, such as the last unknown card read) to a movie, or to
+        music (``music`` and ``speaker``)."""
         body = panel_body()
+        if "music" in body:
+            try:
+                m = checked_music(body)
+                plex.cards.link_music(str(body.get("uid", "")), m["music"], m["speaker"], m["speaker_name"])
+            except ValueError as e:
+                return jsonify(ok=False, message=str(e)), 400
+            return jsonify(ok=True, **cards_state())
         movie = plex.find_library_movie(str(body.get("key", "")))
         try:
             plex.cards.link(str(body.get("uid", "")), movie.key, movie.title, movie.year)

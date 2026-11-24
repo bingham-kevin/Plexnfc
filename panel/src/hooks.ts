@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { get, post, type CardsState, type Filters, type Movies, type Overview, type Player, type Sources } from "./api";
+import { get, post, type CardsState, type Filters, type MusicStatus, type Movies, type Overview, type Player, type Sources } from "./api";
 import { useToast } from "./toast";
 
 /** Pairing requests and what's playing change on their own, so this keeps checking. */
@@ -55,6 +55,11 @@ export const useCards = () =>
     queryFn: () => get<CardsState>("cards"),
     refetchInterval: (q) => (q.state.data?.scan ? 1000 : 3000),
   });
+
+/** Whether Music Assistant is reachable for music cards (directly or through Home Assistant),
+ * and its speakers. */
+export const useMusic = () =>
+  useQuery({ queryKey: ["music"], queryFn: () => get<MusicStatus>("music"), refetchInterval: 10000 });
 
 /** A POST to the card routes, whose answer is the new card state. */
 export function useCardAction<V>(path: (v: V) => string, body: (v: V) => object = () => ({})) {

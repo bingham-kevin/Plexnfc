@@ -18,6 +18,7 @@ struct CardsView: View {
                     UnknownCardView(model: model, uid: unknown.uid) { state = $0 }
                 }
                 ScanSetupView(model: model, canManage: overview.canManage) { state = $0 }
+                MusicCardsNote()
                 if let state { LinkedCardsView(model: model, state: state, canManage: overview.canManage) { self.state = $0 } }
             }
         }
@@ -232,10 +233,18 @@ private struct ScanProgressView: View {
             ProgressView(value: Double(scan.index), total: Double(max(scan.total, 1)))
             if let current = scan.current {
                 HStack(alignment: .top, spacing: 20) {
-                    Poster(url: model.poster(current.key, 300, 450), width: 180).id(current.key)
+                    if let music = current.music {
+                        MusicArtwork(url: model.musicArt(music.image), size: 180).id(current.key)
+                    } else {
+                        Poster(url: model.poster(current.key, 300, 450), width: 180).id(current.key)
+                    }
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Hold this movie's card on a Movie Remote").foregroundStyle(.secondary)
+                        Text("Hold this \(current.music == nil ? "movie" : "music")'s card on a Movie Remote or an NFC reader in Home Assistant")
+                            .foregroundStyle(.secondary)
                         Text(current.title).font(.largeTitle.weight(.semibold))
+                        if current.music != nil, let speaker = current.speakerName {
+                            Text("Plays on \(speaker)").foregroundStyle(.secondary)
+                        }
                         if let next = scan.next { Text("Next: \(next.title)").foregroundStyle(.secondary) }
                         lastCard
                         HStack {
@@ -256,7 +265,7 @@ private struct ScanProgressView: View {
                     }
                 }
             }
-            Text("While scanning, cards held on a Movie Remote are linked rather than played.")
+            Text("While scanning, cards held on a Movie Remote, or on an NFC reader in Home Assistant, are linked rather than played.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -291,6 +300,7 @@ private struct UnknownCardView: View {
     let update: (CardsState) -> Void
     @State private var movies: [Movie] = []
     @State private var search = ""
+    @State private var linkMusic = false
 
     private var matches: [Movie] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -298,8 +308,19 @@ private struct UnknownCardView: View {
     }
 
     var body: some View {
-        PanelSection("Card not linked", subtitle: "A Movie Remote just read card \(uid), which isn't linked to a movie. "
-                     + "Find its movie to link it:", attention: true) {
+        PanelSection("Card not linked", subtitle: "A reader just read card \(uid), which isn't linked to anything. "
+                     + "Find what it should play:", attention: true) {
+            do {
+                Picker("Link it to", selection: $linkMusic) {
+                    Text("A movie").tag(false)
+                    Text("Music").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 220)
+            }
+            if linkMusic {
+                Text("Find the music on the **Music** tab, choose one speaker, and use **Link Card \(uid)**.")
+                    .foregroundStyle(.secondary)
+            } else {
             TextField("Search titles", text: $search).textFieldStyle(.roundedBorder).frame(maxWidth: 300)
             ForEach(matches) { movie in
                 Button {
@@ -313,6 +334,7 @@ private struct UnknownCardView: View {
                     }
                 }
                 .buttonStyle(.plain)
+            }
             }
         }
         .task { movies = (try? await model.api.get("movies", as: Movies.self).movies) ?? [] }
@@ -340,8 +362,17 @@ private struct LinkedCardsView: View {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(shown) { card in
                         HStack(spacing: 12) {
-                            Poster(url: model.poster(card.key, 80, 120), width: 26)
-                            Text(card.title).bold()
+                            if let music = card.music {
+                                MusicArtwork(url: model.musicArt(music.image), size: 39)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(card.title).bold()
+                                    Text("♪ \(music.mediaType) on \(card.speakerName ?? "")")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Poster(url: model.poster(card.key, 80, 120), width: 26)
+                                Text(card.title).bold()
+                            }
                             Spacer()
                             CodeText(card.uid)
                             if canManage {
@@ -358,6 +389,17 @@ private struct LinkedCardsView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Music cards are linked from the Music tab, where all the music is.
+private struct MusicCardsNote: View {
+    var body: some View {
+        PanelSection("Music cards") {
+            Text("A card can play an album, playlist, artist or track instead, from any music source, on any speaker. "
+                 + "Find the music on the **Music** tab, choose a speaker, and use **Link Next Card**.")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 }

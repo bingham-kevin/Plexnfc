@@ -90,6 +90,8 @@ With a [Movie Remote](esphome/README.md), nothing has to be written on the cards
 
 To link one card, use **Link card** next to the movie under **Tags**. If the Movie Remote reads a card that isn't linked, the **Cards** page offers to link it. While a scan is going, cards held on a Movie Remote are linked instead of played.
 
+A card can play music instead: on the **Music** tab, any album, artist, playlist or track can be linked to a card, to play on a chosen speaker ([music](docs/music.md#music-cards)).
+
 Phones can't read these cards on their own, since there's no address on them. For phones, write the tag URLs as above; a written tag works on the Movie Remote too.
 
 Put the stickers on the **back** of the page, or between pages in a page protector, so they don't show. One sheet of paper between the phone and the tag is fine. Don't stack tags directly on top of each other on facing pages; offset them, or give every other page a blank backing.
@@ -98,7 +100,7 @@ Put the stickers on the **back** of the page, or between pages in a page protect
 
 plexnfc can run a Home Assistant script before every movie. The script can turn the TV on, switch to the right HDMI input and open Plex, so one tap goes from a dark TV to the movie playing. Home Assistant can also start the movie itself through its Plex integration, which is the recommended setup for Apple TV. See [docs/home-assistant.md](docs/home-assistant.md) for setup and example scripts for Apple TV, Shield, LG, Samsung and Google TV.
 
-The **Marquee** integration (`custom_components/marquee`, installable with HACS) works the other way round. Each Marquee player becomes a media player in Home Assistant, with *Movie started*, *paused*, *resumed* and *stopped* triggers for automations, such as dimming the lights. See [the integration's section](docs/home-assistant.md#the-marquee-integration-automations-that-follow-the-movie).
+The **Marquee** integration (`custom_components/marquee`, installable with HACS) works the other way round. Each Marquee player becomes a media player in Home Assistant, with *Movie started*, *paused*, *resumed* and *stopped* triggers for automations, such as dimming the lights. It also passes on cards read by NFC readers in Home Assistant, and can carry music cards to Music Assistant when Marquee isn't connected to it directly. See [the integration's section](docs/home-assistant.md#the-marquee-integration-automations-that-follow-the-movie).
 
 ## Movie sources: Plex, Jellyfin and folders
 
@@ -131,6 +133,10 @@ Where they play:
 - **Marquee** plays movies from every source, from the first one in the order that has it and answers. Jellyfin movies stream from Jellyfin, passed on by Marquee Server, so they play even when Jellyfin's address only works on the server (a Tailscale name, say). Folder movies stream from Marquee Server itself, at an address signed for that movie: MP4, M4V and MOV files as they are; other files (MKV, AVI…) need **ffmpeg** on the server (`brew install ffmpeg` on a Mac; the Docker image and the Home Assistant app don't include it, so there use MP4, M4V or MOV files), which repackages them for Apple TV as they play, converting only what Apple TV can't play. While a repackaged movie is starting, you can only skip ahead as far as ffmpeg has got.
 - **Jellyfin players** (Swiftfin) play the Jellyfin server's own copy, else find a Plex copy there by title and ID. With no `JELLYFIN_URL` set, the first Jellyfin source's players are used.
 - **Plex players** and Home Assistant's Plex integration play Plex's copy, whatever the order; a movie Plex doesn't have can't play there.
+
+## Music: AirPlay, Cast and Music Assistant
+
+The control panel's **Music** tab browses and searches music from Music Assistant, Plex, Jellyfin and folders of audio files, and plays it on AirPlay speakers, Cast speakers and Music Assistant's players, with a queue, volume and grouping. See [docs/music.md](docs/music.md).
 
 ## Optional: play on Jellyfin
 

@@ -200,11 +200,41 @@ struct FoundAppleTV: Decodable, Sendable, Identifiable {
     var id: String { identifier }
 }
 
+/// What a music card plays: an item from the Music tab (``id``), or, from before, something in
+/// Music Assistant (``uri``).
+struct MusicItem: Decodable, Sendable, Equatable {
+    let id: String?
+    let uri: String?
+    let mediaType: String?
+    let name: String
+    let artist: String
+    let image: String?
+}
+
+/// How music cards reach Music Assistant: directly, or through the Marquee integration in
+/// Home Assistant.
+struct MusicStatus: Decodable, Sendable {
+    /// A speaker, by its Music Assistant player ID
+    struct Speaker: Decodable, Sendable, Identifiable { let id: String; let name: String }
+    /// The direct connection's settings (the token itself is never sent)
+    struct Assistant: Decodable, Sendable { let url: String; let token: Bool; let connected: Bool; let message: String? }
+    let connected: Bool
+    let musicAssistant: Bool
+    /// "music_assistant", "home_assistant" or nil: which way music goes now
+    let via: String?
+    let speakers: [Speaker]
+    let assistant: Assistant
+    let homeAssistant: Bool
+}
+
 struct Card: Decodable, Sendable, Identifiable {
     let uid: String
     let key: String
     let title: String
     let linked: Double
+    /// A music card: what it plays, and on which Music Assistant speaker
+    let music: MusicItem?
+    let speakerName: String?
     var id: String { uid }
 }
 
@@ -212,6 +242,8 @@ struct ScanMovie: Decodable, Sendable, Equatable {
     let key: String
     let title: String
     let year: Int?
+    let music: MusicItem?
+    let speakerName: String?
 }
 
 struct Scan: Decodable, Sendable {
