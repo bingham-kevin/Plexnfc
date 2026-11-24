@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 
@@ -108,14 +109,26 @@ class MarqueeAPI:
             raise MarqueeError(f"Marquee Server answered HTTP {status}", status)
         return [j for j in data.get("jobs") or [] if isinstance(j, dict) and "id" in j]
 
-    async def tap(self, uid: str, reader: str | None) -> dict:
-        """A card read by an NFC reader in Home Assistant: what Marquee does with it."""
-        status, data = await self._request("POST", "/ha/tap", json={"uid": uid, "reader": reader})
+    async def tap(self, uid: str, reader: str | None, reader_id: str | None = None) -> dict:
+        """A card read by an NFC reader in Home Assistant (its device ``reader_id`` and name
+        ``reader``): what Marquee does with it."""
+        status, data = await self._request("POST", "/ha/tap",
+                                           json={"uid": uid, "reader": reader, "reader_id": reader_id})
         if status == 401:
             raise MarqueeAuthError("Marquee Server doesn't know this Home Assistant any more")
         if status != 200 or not isinstance(data, dict):
             raise MarqueeError(f"Marquee Server answered HTTP {status}", status)
         return data
+
+    async def reader(self, reader_id: str, body: dict) -> dict:
+        """Do something on a reader (choose a speaker, restore or make the default, control what
+        plays); returns the reader as it is now."""
+        status, data = await self._request("POST", f"/ha/readers/{quote(reader_id, safe='')}", json=body)
+        if status == 401:
+            raise MarqueeAuthError("Marquee Server doesn't know this Home Assistant any more")
+        if status >= 400 or not isinstance(data, dict):
+            raise MarqueeError((data or {}).get("message") or f"Marquee Server answered HTTP {status}", status)
+        return data.get("reader") or {}
 
     async def music_done(self, job_id: int, answer: dict) -> None:
         await self._post(f"/ha/music/jobs/{int(job_id)}", answer)

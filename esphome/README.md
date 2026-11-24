@@ -56,6 +56,14 @@ No Wi-Fi network is written into the firmware. If the box doesn't know one, it o
 2. Open the control panel on the Mac (or in Home Assistant), check the code matches, name the box, and approve it.
 3. In **Devices**, choose the player the box controls. With "The default player", it uses the Marquee player chosen in Marquee Server's settings.
 
+## Speakers on the screen
+
+Tap the speaker at the top right of the screen to choose where this box's music and book cards play (its default output is chosen in the control panel under **Devices › Readers**):
+
+- **The speakers**: tap one to add it or take it away. Music already playing moves with them, and the box remembers the choice for the next card.
+- **Previous, play/pause and next**, for what's playing on them.
+- **Restore default** puts back the speakers chosen in the control panel; **Make default** keeps the ones chosen here as the new default.
+
 ## Settings on the screen
 
 Tap the gear at the top left of the screen for:

@@ -47,6 +47,9 @@ class MarqueeCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         self.api = api
         self.tag: str | None = None
         self.updated: datetime = dt_util.utcnow()
+        # NFC readers in Home Assistant, by Marquee's reader ID (ha:<device ID>): their
+        # speakers, every speaker they could use, and what's playing on them
+        self.readers: dict[str, dict[str, Any]] = {}
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         try:
@@ -59,6 +62,7 @@ class MarqueeCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
     def _take(self, answer: dict) -> dict[str, dict[str, Any]]:
         self.tag = answer["tag"]
         self.updated = dt_util.utcnow()
+        self.readers = {r["id"]: r for r in answer.get("readers") or [] if isinstance(r, dict) and "id" in r}
         return {p["device_id"]: p for p in answer["players"]}
 
     async def listen(self) -> None:
@@ -98,3 +102,9 @@ class MarqueeCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
                 "title": movie.get("title"),
                 "key": movie.get("key"),
             })
+
+    def take_reader(self, reader: dict) -> None:
+        """A reader's state from an answer to a control: show it straight away."""
+        if reader.get("id") in self.readers:
+            self.readers[reader["id"]] = reader
+            self.async_update_listeners()

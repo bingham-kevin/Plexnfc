@@ -178,6 +178,25 @@ lvgl:
             on_click:
               - script.execute: show_settings
 
+        # The speakers this box's music and book cards play on
+        - button:
+            id: speakers_btn
+            align: TOP_RIGHT
+            x: -10
+            y: 10
+            width: 44
+            height: 44
+            radius: 22
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text_font: montserrat_20
+                  text_color: 0x9A9A9A
+                  text: "\uF028"
+            on_click:
+              - script.execute: show_speakers
+
         - label:
             id: idle_lbl
             align: CENTER
@@ -321,6 +340,135 @@ lvgl:
                         text: "\uF04D"
                   on_click:
                     - script.execute: { id: send_control, action: stop, by: 0 }
+
+    - id: speakers_page
+      bg_color: 0x101010
+      widgets:
+        - button:
+            align: TOP_LEFT
+            x: 10
+            y: 10
+            width: 44
+            height: 44
+            radius: 22
+            bg_color: 0x1E1E1E
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\uF053"
+            on_click:
+              - script.execute: hide_speakers
+        - label:
+            align: TOP_MID
+            y: 20
+            text_font: montserrat_20
+            text_color: 0xFFFFFF
+            text: "Speakers"
+        - label:
+            id: spk_now_lbl
+            align: TOP_MID
+            y: 60
+            width: 290
+            long_mode: DOT
+            max_height: 44
+            text_align: CENTER
+            text_color: 0x9E9E9E
+            text: ""
+        - obj:
+            id: spk_list
+            align: TOP_MID
+            y: 110
+            width: 300
+            height: 250
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: true
+        # What's playing on them
+        - obj:
+            align: TOP_MID
+            y: 368
+            width: 300
+            height: 50
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_EVENLY
+              flex_align_cross: CENTER
+            widgets:
+              - button:
+                  width: 80
+                  height: 46
+                  radius: 23
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\uF048"
+                  on_click:
+                    - script.execute: { id: reader_send, body: '{"action": "previous"}' }
+              - button:
+                  width: 80
+                  height: 46
+                  radius: 23
+                  widgets:
+                    - label:
+                        id: spk_play_icon
+                        align: CENTER
+                        text: "\uF04B"
+                  on_click:
+                    - script.execute: { id: reader_send, body: '{"action": "toggle"}' }
+              - button:
+                  width: 80
+                  height: 46
+                  radius: 23
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\uF051"
+                  on_click:
+                    - script.execute: { id: reader_send, body: '{"action": "next"}' }
+        # Back to the speakers chosen in the control panel, or keep these as the default
+        - obj:
+            align: TOP_MID
+            y: 424
+            width: 300
+            height: 50
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+              flex_align_cross: CENTER
+            widgets:
+              - button:
+                  width: 146
+                  height: 46
+                  radius: 12
+                  bg_color: 0x2A2A2A
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "Restore default"
+                  on_click:
+                    - script.execute: { id: reader_send, body: '{"action": "restore"}' }
+              - button:
+                  width: 146
+                  height: 46
+                  radius: 12
+                  bg_color: 0x2A2A2A
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "Make default"
+                  on_click:
+                    - script.execute: { id: reader_send, body: '{"action": "make_default"}' }
 
     - id: settings_page
       bg_color: 0x101010

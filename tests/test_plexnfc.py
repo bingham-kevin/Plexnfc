@@ -2068,3 +2068,144 @@ def test_books_on_music_assistant_start_partway_and_are_followed(music_app):
     assert player.progress.book_of("ma:den")["position"] == 105
     player.progress.report("ma:den")
     assert fake.saved[-1][0] == "b1" and fake.saved[-1][1]["currentTime"] == 105
+
+
+# ---- NFC readers with a default output ------------------------------------------------
+
+def test_readers_play_on_their_own_speakers_and_remember_them(music_app):
+    app, root = music_app
+    plex = app.plex
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    sid = app.post("/panel/api/music/folders", json={"path": str(root)}, **panel).json["folders"][0]["id"]
+    player = music_player(app)
+    player.airplay, player.cast = FakeAirPlay(), FakeCast()
+    album = app.get(f"/panel/api/music/browse?source={sid}&kind=album&q=abbey").json["items"][0]
+    # a card linked to the album on the kitchen speaker
+    app.post("/panel/api/cards/link", json={"uid": "04-AA-BB-CC", "music": {"id": album["id"], "name": album["name"]},
+                                            "speaker": "cast:kitchen"}, **panel)
+
+    # a Movie Remote shows up as a reader; the panel gives it a default output
+    box = paired_box(plex, app)
+    readers = app.get("/panel/api/readers").json
+    reader = readers["readers"][0]
+    assert (reader["kind"], reader["name"], reader["speakers"]) == ("remote", "Movie Remote", [])
+    assert [s["id"] for s in readers["speakers"]] == ["airplay:den", "cast:kitchen", "cast:home"]
+    assert app.post(f"/panel/api/readers/{reader['id']}", json={"default": ["airplay:den"]},
+                    environ_base={"REMOTE_ADDR": "192.0.2.50"}).status_code == 403
+    app.post(f"/panel/api/readers/{reader['id']}", json={"default": ["airplay:den"]}, **panel)
+
+    # the card plays on the box's speaker, not the card's own
+    tapped = app.post("/remote/tap", json={"uid": "04:aa:bb:cc"}, headers=box).json
+    assert tapped["result"] == "music" and "Den HomePod" in tapped["message"]
+    assert wait_for(lambda: player.airplay.played)
+    assert not player.cast.played
+
+    # on the box: what's playing on its speakers, and every speaker it could add
+    state = app.get("/remote/reader", headers=box).json
+    assert state["now"]["title"] == "Come Together" and state["speaker_names"] == ["Den HomePod"]
+    assert [(c["id"], c["on"]) for c in state["choices"]] == [("airplay:den", True), ("cast:kitchen", False),
+                                                              ("cast:home", False)]
+    # adding a speaker carries the album on there too, from where it was, and is remembered
+    state = app.post("/remote/reader", json={"action": "speaker", "speaker": "cast:kitchen", "on": True},
+                     headers=box).json
+    assert state["speakers"] == ["airplay:den", "cast:kitchen"] and not state["is_default"]
+    assert wait_for(lambda: player.cast.played and player.cast.played[-1][3] == "Come Together")
+    assert app.post("/remote/reader", json={"action": "speaker", "speaker": "airplay:den", "on": False},
+                    headers=box).json["speakers"] == ["cast:kitchen"]
+    assert app.post("/remote/reader", json={"action": "speaker", "speaker": "cast:kitchen", "on": False},
+                    headers=box).status_code == 400  # one has to stay on
+    # controls go to what's playing there
+    app.post("/remote/reader", json={"action": "toggle"}, headers=box)
+    assert ("kitchen", "pause") in player.cast.controls
+    assert app.get("/panel/api/readers").json["readers"][0]["speakers"] == ["cast:kitchen"]
+
+    # back to the default, then a new default
+    assert app.post("/remote/reader", json={"action": "restore"}, headers=box).json["speakers"] == ["airplay:den"]
+    app.post("/remote/reader", json={"action": "speakers", "speakers": ["cast:home"]}, headers=box)
+    made = app.post("/remote/reader", json={"action": "make_default"}, headers=box).json
+    assert made["default"] == ["cast:home"] and made["is_default"] and made["message"]
+    assert app.post("/remote/reader", json={"action": "eject"}, headers=box).status_code == 400
+
+    # it's all remembered
+    from plexnfc.readers import Readers
+    saved = Readers(str(tmp_path_of(plex) / "readers.json")).get(reader["id"])
+    assert saved["default"] == ["cast:home"] and saved["speakers"] == ["cast:home"]
+    # removing the box forgets its reader
+    device = next(d for d in plex.app_pairings.devices() if d["kind"] == "remote")
+    app.post(f"/panel/api/devices/{device['id']}/remove", **panel)
+    assert app.get("/panel/api/readers").json["readers"] == []
+
+
+def tmp_path_of(plex):
+    import pathlib
+    return pathlib.Path(plex.config.auth_file).parent
+
+
+def test_home_assistant_readers_play_there_and_open_their_tessera_page(music_app):
+    app, root = music_app
+    plex = app.plex
+    panel = {"environ_base": {"REMOTE_ADDR": "127.0.0.1"}}
+    sid = app.post("/panel/api/music/folders", json={"path": str(root)}, **panel).json["folders"][0]["id"]
+    player = music_player(app)
+    player.airplay, player.cast = FakeAirPlay(), FakeCast()
+    album = app.get(f"/panel/api/music/browse?source={sid}&kind=album&q=abbey").json["items"][0]
+    app.post("/panel/api/cards/link", json={"uid": "04-AA-BB-CC", "music": {"id": album["id"], "name": album["name"]},
+                                            "speaker": "cast:kitchen"}, **panel)
+    ha = pair_home_assistant(plex, app)
+
+    # an unknown reader plays on the card's speaker, and becomes known
+    tapped = app.post("/ha/tap", json={"uid": "04aabbcc", "reader": "Office_Test", "reader_id": "dev1"}, headers=ha).json
+    assert tapped["result"] == "music" and tapped["reader"] == {"id": "ha:dev1", "page": None}
+    assert wait_for(lambda: player.cast.played)
+    reader = app.get("/panel/api/readers").json["readers"][0]
+    assert (reader["id"], reader["kind"], reader["name"]) == ("ha:dev1", "homeassistant", "Office_Test")
+
+    # given a default output and a Tessera page, the next card plays there and opens the page
+    app.post("/panel/api/readers/ha:dev1", json={"default": ["airplay:den"], "page": 3}, **panel)
+    assert app.post("/panel/api/readers/ha:dev1", json={"page": 0}, **panel).status_code == 400
+    tapped = app.post("/ha/tap", json={"uid": "04aabbcc", "reader": "Office_Test", "reader_id": "dev1"}, headers=ha).json
+    assert tapped["reader"] == {"id": "ha:dev1", "page": 3}
+    assert wait_for(lambda: player.airplay.played)
+
+    # Home Assistant hears of the reader, its speakers and what's playing there
+    players = app.get("/ha/players?wait=0", headers=ha).json
+    reader = players["readers"][0]
+    assert reader["speakers"] == ["airplay:den"] and reader["now"]["title"] == "Come Together"
+    assert any(c["id"] == "cast:home" and not c["on"] for c in reader["choices"])
+    # and controls it: a speaker switch, then back to the default
+    changed = app.post("/ha/readers/ha:dev1", json={"action": "speaker", "speaker": "cast:home", "on": True},
+                       headers=ha).json
+    assert changed["reader"]["speakers"] == ["airplay:den", "cast:home"]
+    assert app.get(f"/ha/players?tag={players['tag']}&wait=0", headers=ha).json["tag"] != players["tag"]
+    assert app.post("/ha/readers/ha:dev1", json={"action": "restore"}, headers=ha).json["reader"]["speakers"] == \
+        ["airplay:den"]
+    assert app.post("/ha/readers/ha:nope", json={"action": "restore"}, headers=ha).status_code == 400
+    assert app.post("/ha/readers/ha:dev1", json={"action": "restore"}).status_code == 401
+
+    # a movie card read there goes to the reader's Marquee player
+    pair(plex, "Office")
+    app.post("/panel/api/readers/ha:dev1", json={"movie_player": "app:Office"}, **panel)
+    plex.cards.link("04-11-22-33", "tmdb-603", "The Matrix", 1999)
+    plex.find_library_movie = lambda key, title=None, year=None: NS(key=key, title=title)
+    with mock.patch("plexnfc.server.threading.Thread") as thread:
+        assert app.post("/ha/tap", json={"uid": "04112233", "reader_id": "dev1"}, headers=ha).json["result"] == "movie"
+    assert thread.call_args.kwargs["args"] == ("tmdb-603", "app:Office", False)
+    # forgetting it
+    app.post("/panel/api/readers/ha:dev1/remove", **panel)
+    assert app.get("/panel/api/readers").json["readers"] == []
+
+
+def test_moving_music_assistant_queue_to_other_speakers(music_app):
+    app, _ = music_app
+    player = music_player(app)
+    calls = []
+    player._call = lambda command, timeout=15, **args: calls.append((command, args))
+    player._assistant_players = lambda: [{"player_id": "bedroom", "group_members": []}]
+    player.move("ma:kitchen", ["ma:bedroom", "ma:office"])
+    assert calls == [("player_queues/transfer", {"source_queue_id": "kitchen", "target_queue_id": "bedroom",
+                                                 "auto_play": True}),
+                     ("players/cmd/set_members", {"target_player": "bedroom", "player_ids_to_add": ["office"],
+                                                  "player_ids_to_remove": []})]
+    from plexnfc.speakers import SpeakerError
+    with pytest.raises(SpeakerError, match="next card"):
+        player.move("ma:kitchen", ["cast:kitchen"])
