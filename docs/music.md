@@ -26,7 +26,16 @@ Pick one or more speakers under **Speakers**, then use **Play**, **Play next** o
 | **Cast** (Chromecast, Google/Nest speakers, Cast groups) | Marquee, with pychromecast | Use a speaker group made in Google Home: it shows up as one speaker | |
 | **Marquee** (an Apple TV, iPhone or iPad paired as a TV, shown as "Den (Marquee)") | The Marquee app itself | No | Opens Marquee if it isn't open, and shows **Now Playing** while it plays. It plays MP3, AAC/M4A, FLAC, WAV and AIFF as they are. Its volume is the TV's. |
 
-Music Assistant's own music (Apple Music and so on) plays only on Music Assistant's speakers.
+Music Assistant's own music (Apple Music and so on) plays only on Music Assistant's speakers, and on Marquee through Home Assistant (below).
+
+### Music Assistant's music on Marquee
+
+Marquee can't stream Apple Music or Music Assistant's other providers itself, but Music Assistant can stream them to Marquee. It does that through Marquee's media player in Home Assistant:
+
+1. Install the Marquee integration in Home Assistant (see [docs/home-assistant.md](home-assistant.md)). Each paired Marquee gets a media player, named after the Apple TV.
+2. In Music Assistant, open **Settings › Providers › Home Assistant Media Players**, add those Marquee media players, and save.
+
+Then a Music Assistant card held to a reader whose speakers include a Marquee plays there. So does Music Assistant music played on a Marquee speaker. Music Assistant keeps the queue and Marquee plays its stream, with Now Playing showing Music Assistant's queue. Marquee lists that speaker once, as "<name> (Marquee)". If a step is missing, the reader says which one.
 
 For AirPlay, Cast and Marquee speakers, Marquee keeps the queue itself. It moves on when the first speaker finishes a track. Choosing several of them sends each the same track, but they aren't sample-accurate together.
 

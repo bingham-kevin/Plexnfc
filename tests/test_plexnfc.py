@@ -2358,3 +2358,58 @@ def test_lyrics_parse_lrc_and_plain():
                                                                    {"time": None, "text": ""},
                                                                    {"time": None, "text": "Two"}]}
     assert parse("  ") is None
+
+
+def test_music_assistant_plays_on_marquee_through_home_assistant(music_app):
+    """Apple Music (and the rest of Music Assistant's music) can't be streamed by Marquee
+    itself: Music Assistant streams it to Marquee's media player in Home Assistant, which
+    sends it on to the app."""
+    from plexnfc.speakers import SpeakerError
+    app, _ = music_app
+    plex = app.plex
+    player = music_player(app)
+    tv = pair(plex, "Den")
+    ha = pair_home_assistant(plex, app)
+    den = next(d for d in plex.app_pairings.devices() if d["name"] == "Den")
+    entity = "media_player.den_marquee"
+    album = "ma|album|library://album/1127"
+
+    # before Home Assistant says which media player is Den's, it says what's needed
+    with pytest.raises(SpeakerError, match="Marquee integration"):
+        player.play([album], ["marquee:Den"])
+    app.post("/ha/music/poll?wait=0", json={"speakers": [], "music_assistant": True,
+                                            "marquee_players": {den["id"]: entity}}, headers=ha)
+    # and before it's added to Music Assistant
+    ma_players = []
+    player._assistant_players = lambda: ma_players
+    with pytest.raises(SpeakerError, match="Home Assistant Media Players"):
+        player.play([album], ["marquee:Den"])
+    # added: Music Assistant plays it there, and the speaker shows once, as the Marquee
+    ma_players.append({"player_id": entity, "name": "Den", "playback_state": "idle"})
+    played = []
+    player._play_assistant = lambda ids, speakers, option, start: played.append((ids, speakers))
+    player.play([album], ["marquee:Den"])
+    assert played == [([album], [f"ma:{entity}"])]
+    assert f"ma:{entity}" not in {s["id"] for s in player.speakers()}
+    # what it plays is Den's, so the reader and Den's Now Playing find it
+    ma_players[0].update(playback_state="playing", current_media={"title": "Down", "artist": "311", "queue_id": entity})
+    (zone,) = player.now()
+    assert zone["speakers"] == ["marquee:Den"] and zone["names"] == ["Den (Marquee)"] and zone["track"]["name"] == "Down"
+
+    # Music Assistant's stream, through Home Assistant, goes to the app
+    sent = app.post("/ha/audio", json={"player": "app:Den", "url": "http://ma.local:8097/flow/q/1.mp3",
+                                       "title": "Down", "artist": "311", "duration": 173}, headers=ha)
+    assert sent.status_code == 200
+    command = plex.app_inbox.next("Den", 0)
+    assert command["action"] == "audio" and command["url"] == "http://ma.local:8097/flow/q/1.mp3"
+    assert command["title"] == "Down" and command["play"]
+    assert app.post("/ha/audio", json={"player": "app:Nope", "url": "http://x/y.mp3"}, headers=ha).status_code == 404
+    assert app.post("/ha/audio", json={"player": "app:Den", "url": "file:///etc"}, headers=ha).status_code == 400
+    # Home Assistant hears it's playing music, and its pause goes to the app's own player
+    app.post("/tv/status", headers=tv, json={"state": "idle", "audio": {"play": command["play"], "state": "playing",
+                                                                         "position": 20}})
+    den_player = next(p for p in app.get("/ha/players?wait=0", headers=ha).json["players"] if p["name"] == "Den")
+    assert (den_player["state"], den_player["media"], den_player["title"], den_player["position"]) == \
+        ("playing", "music", "Down", 20)
+    app.post("/ha/control", json={"player": "app:Den", "action": "pause"}, headers=ha)
+    assert plex.app_inbox.next("Den", command["id"])["action"] == "audio_pause"

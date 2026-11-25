@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import socket
+import secrets
 import threading
 import time
 from html import escape
@@ -144,7 +145,13 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                          plex.apple_tvs.credentials_for)
     app.extensions["marquee_music"] = player
     # Marquee on each Apple TV is a speaker too: it plays music and books through the TV
-    player.marquee = MarqueeSpeakers(plex.app_inbox, lambda: marquee_screens(), lambda name: plex.prepare_tv(name))
+    def marquee_assistant_player(name: str) -> str | None:
+        """Marquee's media player in Home Assistant (which Music Assistant can stream to)."""
+        device = next((d for d in plex.app_pairings.devices() if d["kind"] == "tv" and d["name"] == name), None)
+        return bridge.marquee_entity(device["id"]) if device else None
+
+    player.marquee = MarqueeSpeakers(plex.app_inbox, lambda: marquee_screens(), lambda name: plex.prepare_tv(name),
+                                     marquee_assistant_player)
     lyrics = Lyrics(music_library)
     app.extensions["marquee_lyrics"] = lyrics
 
@@ -571,9 +578,20 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             return app.route(rule, **options)(wrapped)
         return decorator
 
+    ha_audio: dict[str, dict] = {}  # a Marquee's name -> the stream Home Assistant (Music Assistant) sent it
+
+    def streaming(name: str, status: dict | None = None) -> dict | None:
+        """The stream Home Assistant sent this Marquee, while the app plays it."""
+        sent = ha_audio.get(name)
+        audio = ((plex.app_inbox.status(name) if status is None else status) or {}).get("audio") or {}
+        if not sent or audio.get("play") != sent["play"] or audio.get("state") not in ("playing", "paused"):
+            return None
+        return {**sent, "state": audio["state"], "position": audio.get("position") or 0}
+
     def marquee_players() -> tuple[list[dict], str]:
-        """Every paired Marquee and what it's playing, with a tag that changes when one
-        starts, pauses or stops something (not as the position moves on)."""
+        """Every paired Marquee and what it's playing (a movie, or music Home Assistant sent),
+        with a tag that changes when one starts, pauses or stops something (not as the
+        position moves on)."""
         players = []
         for d in plex.app_pairings.devices():
             if d["kind"] != "tv":
@@ -584,8 +602,13 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             if player["state"] != "idle" and status.get("key"):
                 player.update(key=status["key"], title=status.get("title") or "", poster=f"/poster/{status['key']}",
                               position=status.get("position") or 0, duration=status.get("duration") or 0)
+            elif stream := streaming(d["name"], status):
+                player.update(state=stream["state"], media="music", url=stream["url"], title=stream["title"],
+                              artist=stream["artist"], album=stream["album"], image=stream["image"],
+                              position=stream["position"], duration=stream["duration"] or 0)
             players.append(player)
-        tag = repr([(p["device_id"], p["name"], p["state"], p.get("key")) for p in players])
+        tag = repr([(p["device_id"], p["name"], p["state"], p.get("key"), p.get("url"), p.get("title"))
+                    for p in players])
         return players, hashlib.sha256(tag.encode()).hexdigest()[:16]
 
     @ha_route("/ha/players")
@@ -619,7 +642,38 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         body = request.get_json(silent=True) or {}
         if body.get("action") not in ("pause", "play", "stop") or not isinstance(body.get("player"), str):
             return jsonify(ok=False, message="Send a player and an action: pause, play or stop"), 400
+        name = body["player"].removeprefix("app:")
+        if streaming(name):  # music Home Assistant sent: the app's own player
+            plex.app_inbox.send(name, {"pause": "audio_pause", "play": "audio_resume", "stop": "audio_stop"}[body["action"]])
+            return jsonify(ok=True)
         plex.control(body["action"], body["player"])
+        return jsonify(ok=True)
+
+    @ha_route("/ha/audio", methods=["POST"])
+    def ha_audio_play():
+        """Play an audio stream (``url``) on a Marquee (``player``: ``app:<name>``), with its
+        ``title``, ``artist``, ``album``, ``image`` and ``duration`` if known: how Music
+        Assistant plays on Marquee, through Marquee's media player in Home Assistant. Opens
+        Marquee on its Apple TV if it isn't open."""
+        body = request.get_json(silent=True) or {}
+        name = str(body.get("player") or "").removeprefix("app:")
+        url = body.get("url")
+        if name not in marquee_screens():
+            return jsonify(ok=False, message="Marquee isn't paired on that device"), 404
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            return jsonify(ok=False, message="Send the address of the audio to play"), 400
+        text = lambda key: str(body.get(key) or "")[:300]  # noqa: E731
+        duration = body.get("duration")
+        stream = {"play": secrets.token_hex(6), "url": url, "title": text("title"), "artist": text("artist"),
+                  "album": text("album"), "image": text("image") or None,
+                  "duration": duration if isinstance(duration, (int, float)) and not isinstance(duration, bool) else None}
+        opened = plex.app_inbox.status(name) is not None
+        ha_audio[name] = stream
+        plex.app_inbox.send(name, "audio", play=stream["play"], url=url, type=text("type") or "audio/mpeg", track=None,
+                            title=stream["title"], artist=stream["artist"], album=stream["album"],
+                            image=stream["image"], duration=stream["duration"], start=0)
+        if not opened:
+            threading.Thread(target=plex.prepare_tv, args=(name,), daemon=True).start()
         return jsonify(ok=True)
 
     @ha_route("/ha/tap", methods=["POST"])
@@ -687,7 +741,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         and gets the music jobs waiting (``search`` or ``play``), waiting up to 25 s for one."""
         body = request.get_json(silent=True) or {}
         speakers = body.get("speakers") if isinstance(body.get("speakers"), list) else []
-        jobs = bridge.poll(speakers, bool(body.get("music_assistant")), request.args.get("wait", 25, type=float))
+        jobs = bridge.poll(speakers, bool(body.get("music_assistant")), request.args.get("wait", 25, type=float),
+                           body.get("marquee_players"))
         return jsonify(jobs=jobs)
 
     @ha_route("/ha/music/jobs/<int:job_id>", methods=["POST"])

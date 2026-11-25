@@ -105,7 +105,7 @@ The **Marquee** integration (in `custom_components/marquee`) works the other way
 
 ### What you get
 
-- **A media player for each Marquee player** (each Apple TV, iPhone or iPad running Marquee). It shows the title and poster, and is *playing*, *paused* or *idle*; Marquee in the background counts as idle. It can pause, play and stop. **Play media** starts a movie by its key, the end of its tag address, e.g. `tmdb-603`.
+- **A media player for each Marquee player** (each Apple TV, iPhone or iPad running Marquee). It shows the title and poster, and is *playing*, *paused* or *idle*; Marquee in the background counts as idle. It can pause, play and stop. **Play media** starts a movie by its key, the end of its tag address, e.g. `tmdb-603`. It also plays audio: an address, or anything in Home Assistant's media browser. Music Assistant uses that to stream to Marquee, Apple Music included: see [Music Assistant's music on Marquee](music.md#music-assistants-music-on-marquee).
 - **Triggers on each Marquee player's device:** *Movie started*, *Movie paused*, *Movie resumed* and *Movie stopped or finished*. Find them in the automation editor under **Device**. They fire within a second or so: the server holds Home Assistant's request open until something changes.
 - **A `marquee_event` event** for each of those, for an Event trigger that should cover every player. The event data has `type` (`started`, `paused`, `resumed`, `stopped`), `player`, `title`, `key` and `device_id`.
 

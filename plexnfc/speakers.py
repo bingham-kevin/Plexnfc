@@ -447,10 +447,12 @@ class MarqueeSpeakers:
     # TV that's asleep takes a while
     GRACE = 45
 
-    def __init__(self, inbox=None, devices=None, open_app=None):
+    def __init__(self, inbox=None, devices=None, open_app=None, assistant_player=None):
         self.inbox = inbox            # tvapp.AppInbox
         self.devices = devices        # () -> the names of the paired Marquee Apple TVs
         self.open_app = open_app      # (name) -> open Marquee on that Apple TV
+        # (name) -> Marquee's media player in Home Assistant, which Music Assistant can stream to
+        self.assistant_player = assistant_player
 
     @property
     def available(self) -> bool:
@@ -507,6 +509,12 @@ class MarqueeSpeakers:
     def stop(self, ref: str) -> None:
         if self.available and ref in self.devices():
             self.inbox.send(ref, "audio_stop")
+
+    def assistant_players(self) -> dict[str, str]:
+        """Marquee's media player in Home Assistant -> its Marquee's name, for each that has one."""
+        if not self.available or not self.assistant_player:
+            return {}
+        return {entity: name for name in self.devices() if (entity := self.assistant_player(name))}
 
 
 # ---- Marquee's own queues (AirPlay, Cast and Marquee) -------------------------------
@@ -816,7 +824,10 @@ class MusicPlayer:
 
     def speakers(self) -> list[dict]:
         out = []
+        through = self.marquee.assistant_players()  # shown once, as the Marquee speaker
         for p in self._assistant_players():
+            if p["player_id"] in through:
+                continue
             out.append({
                 "id": f"ma:{p['player_id']}", "name": str(p.get("display_name") or p.get("name") or p["player_id"]),
                 "kind": "music_assistant", "group": p.get("type") == "group",
@@ -876,8 +887,10 @@ class MusicPlayer:
         if len(assistant) + len(own) != len(speaker_ids):
             raise SpeakerError("That isn't a speaker")
         if own and any(split_id(i)[0] == "ma" for i in ids):
-            raise SpeakerError("Music Assistant's music plays on Music Assistant's speakers. "
-                               "Choose one of those, or music from another source.")
+            # Only Music Assistant can play its music (Apple Music...): on a Marquee, Music
+            # Assistant streams it to Marquee's media player in Home Assistant
+            assistant += [self._marquee_through_assistant(s) for s in own]
+            own = []
         if len(ids) == 1 and option == "replace" and split_id(ids[0])[:2] == ("abs", "book"):
             self._play_book(split_id(ids[0])[2], assistant, own, position)
             return self.now()
@@ -893,6 +906,22 @@ class MusicPlayer:
                 raise SpeakerError("There's nothing in that to play")
             self._play_own(tracks, own, option)
         return self.now()
+
+    def _marquee_through_assistant(self, speaker: str) -> str:
+        """Music Assistant's player for a Marquee speaker: Marquee's media player in Home
+        Assistant, once it's added to Music Assistant. Raises SpeakerError."""
+        if kind_of(speaker) != "marquee":
+            raise SpeakerError("Music Assistant's music plays on Music Assistant's speakers and Marquee. "
+                               "Choose one of those, or music from another source.")
+        name = ref_of(speaker)
+        entity = self.marquee.assistant_player(name) if self.marquee.assistant_player else None
+        if not entity:
+            raise SpeakerError(f"To play Music Assistant's music on {name}, add the Marquee integration to "
+                               "Home Assistant: Music Assistant streams to Marquee through it.")
+        if entity not in {p["player_id"] for p in self._assistant_players()}:
+            raise SpeakerError(f"To play Music Assistant's music on {name}, add {entity} to Music Assistant: "
+                               "Settings › Providers › Home Assistant Media Players.")
+        return f"ma:{entity}"
 
     def _play_book(self, book_id: str, assistant: list[str], own: list[str], position: float | None) -> None:
         from .audiobookshelf import locate
@@ -1128,6 +1157,8 @@ class MusicPlayer:
 
     def now(self) -> list[dict]:
         zones = []
+        through = self.marquee.assistant_players()  # Music Assistant playing on a Marquee: that Marquee
+        as_speaker = lambda m: f"marquee:{through[m]}" if m in through else f"ma:{m}"  # noqa: E731
         for p in self._assistant_players():
             if p.get("synced_to") or p.get("playback_state") not in ("playing", "paused") or not self._own_queue(p):
                 continue
@@ -1135,8 +1166,10 @@ class MusicPlayer:
             members = [m for m in p.get("group_members") or [] if m != p["player_id"]]
             zones.append({
                 "id": f"ma:{p['player_id']}", "kind": "music_assistant",
-                "speakers": [f"ma:{p['player_id']}"] + [f"ma:{m}" for m in members],
-                "names": [p.get("display_name") or p.get("name")] + [self.music.speaker_name(m) or m for m in members],
+                "speakers": [as_speaker(p["player_id"])] + [as_speaker(m) for m in members],
+                "names": [self.marquee.name(through[m]) if m in through else (p.get("display_name") or p.get("name")
+                          if m == p["player_id"] else self.music.speaker_name(m) or m)
+                          for m in [p["player_id"]] + members],
                 "state": p["playback_state"], "can_pause": True,
                 "track": {"name": media.get("title") or "", "artist": media.get("artist") or "",
                           "album": media.get("album") or "", "image": media.get("image_url"),

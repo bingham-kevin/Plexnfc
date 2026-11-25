@@ -68,12 +68,13 @@ class MusicBridge:
         self._seen = 0.0
         self._speakers: list[dict] = []
         self._assistant = False  # whether Home Assistant has Music Assistant
+        self._marquee: dict[str, str] = {}  # a Marquee's pairing ID -> its media player in Home Assistant
 
     # ---- the integration's side ---------------------------------------------------
 
-    def poll(self, speakers: list, assistant: bool, wait: float) -> list[dict]:
-        """Note what Home Assistant has, then return the jobs waiting, waiting up to ``wait``
-        seconds for one."""
+    def poll(self, speakers: list, assistant: bool, wait: float, marquee: dict | None = None) -> list[dict]:
+        """Note what Home Assistant has (with ``marquee``, each Marquee's media player), then
+        return the jobs waiting, waiting up to ``wait`` seconds for one."""
         clean = [{"entity_id": str(s["entity_id"]), "name": str(s.get("name") or s["entity_id"]),
                   "player_id": str(s.get("player_id") or "")}
                  for s in speakers if isinstance(s, dict) and str(s.get("entity_id", "")).startswith("media_player.")]
@@ -82,6 +83,9 @@ class MusicBridge:
             self._seen = time.monotonic()
             self._speakers = sorted(clean, key=lambda s: s["name"].lower())
             self._assistant = bool(assistant)
+            if isinstance(marquee, dict):
+                self._marquee = {str(k): str(v) for k, v in marquee.items()
+                                 if isinstance(v, str) and v.startswith("media_player.")}
             while not self._jobs and (remaining := deadline - time.monotonic()) > 0:
                 self._cond.wait(remaining)
                 self._seen = time.monotonic()
@@ -103,6 +107,11 @@ class MusicBridge:
             connected = time.monotonic() - self._seen < CONNECTED_FOR if self._seen else False
             return {"connected": connected, "music_assistant": connected and self._assistant,
                     "speakers": list(self._speakers) if connected else []}
+
+    def marquee_entity(self, device_id: str) -> str | None:
+        """The media player Home Assistant has for a Marquee (by its pairing ID)."""
+        with self._cond:
+            return self._marquee.get(device_id)
 
     def speaker_name(self, entity_id: str) -> str | None:
         with self._cond:
