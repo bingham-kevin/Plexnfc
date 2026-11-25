@@ -86,20 +86,23 @@ private struct ReaderRow: View {
                 }
             }
             Text(summary).font(.callout).foregroundStyle(.secondary)
-            Text("Default output (music and books)").font(.caption).foregroundStyle(.secondary)
-            FlowRow {
-                ForEach(state.speakers) { speaker in
-                    Toggle(speaker.name + (speaker.group ? " (group)" : ""), isOn: Binding(
-                        get: { reader.default.contains(speaker.id) },
-                        set: { on in send("readers/\(path)", ["default": next(speaker.id, on)], done: "\(reader.name) saved") }))
-                    .toggleStyle(.checkbox)
+            LabeledContent("Music and books play on") {
+                Menu {
+                    ForEach(state.speakers) { speaker in
+                        Toggle(speaker.name + (speaker.group ? " (group)" : ""), isOn: Binding(
+                            get: { reader.default.contains(speaker.id) },
+                            set: { on in send("readers/\(path)", ["default": next(speaker.id, on)], done: "\(reader.name) saved") }))
+                    }
+                    ForEach(reader.default.filter { id in !state.speakers.contains { $0.id == id } }, id: \.self) { id in
+                        Toggle("\(id) (away)", isOn: Binding(get: { true },
+                            set: { _ in send("readers/\(path)", ["default": next(id, false)], done: "\(reader.name) saved") }))
+                    }
+                    if state.speakers.isEmpty { Text("No speakers found.") }
+                } label: {
+                    Text(chosenSpeakers).lineLimit(1).truncationMode(.tail)
                 }
-                ForEach(reader.default.filter { id in !state.speakers.contains { $0.id == id } }, id: \.self) { id in
-                    Toggle("\(id) (away)", isOn: Binding(get: { true },
-                        set: { _ in send("readers/\(path)", ["default": next(id, false)], done: "\(reader.name) saved") }))
-                    .toggleStyle(.checkbox)
-                }
-                if state.speakers.isEmpty { Text("No speakers found.").foregroundStyle(.secondary) }
+                .frame(maxWidth: 420, alignment: .leading)
+                .help(chosenSpeakers)
             }
             HStack(spacing: 16) {
                 Picker("Movies play on", selection: Binding(
@@ -159,6 +162,13 @@ private struct ReaderRow: View {
         return text
     }
 
+    /// The default speakers by name, for the menu's label.
+    private var chosenSpeakers: String {
+        let names = Dictionary(state.speakers.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let list = reader.default.map { names[$0] ?? "\($0) (away)" }
+        return list.isEmpty ? (reader.kind == "homeassistant" ? "Its Home Assistant's" : "No speakers") : list.joined(separator: " + ")
+    }
+
     private func next(_ id: String, _ on: Bool) -> [String] {
         on ? reader.default.filter { $0 != id } + [id] : reader.default.filter { $0 != id }
     }
@@ -180,35 +190,6 @@ private struct ReaderRow: View {
                 model.say(error.localizedDescription, error: true)
             }
             busy = false
-        }
-    }
-}
-
-/// Lays out its children in rows, wrapping to the next line when one is full.
-private struct FlowRow: Layout {
-    var spacing: CGFloat = 10
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? .infinity
-        var x: CGFloat = 0, y: CGFloat = 0, row: CGFloat = 0, widest: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
-            if x > 0 && x + size.width > width { y += row + spacing; x = 0; row = 0 }
-            x += size.width + spacing
-            row = max(row, size.height)
-            widest = max(widest, x - spacing)
-        }
-        return CGSize(width: min(widest, width), height: y + row)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX, y = bounds.minY, row: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
-            if x > bounds.minX && x + size.width > bounds.maxX { y += row + spacing; x = bounds.minX; row = 0 }
-            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            row = max(row, size.height)
         }
     }
 }

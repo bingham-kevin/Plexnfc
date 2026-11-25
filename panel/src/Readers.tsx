@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { get, post, type Overview, type Reader, type ReadersState } from "./api";
 import { useToast } from "./toast";
 
@@ -72,20 +72,12 @@ function ReaderCard({ reader, state, canManage }: { reader: Reader; state: Reade
         )}
       </div>
       <fieldset disabled={!canManage || save.isPending}>
-        <legend className="muted small">Default output (music and books)</legend>
         <div className="row wrap">
-          {state.speakers.map((s) => (
-            <label key={s.id} className={`speaker-pick ${reader.default.includes(s.id) ? "on" : ""}`}>
-              <input type="checkbox" checked={reader.default.includes(s.id)} onChange={() => toggle(s.id)} />
-              {s.name}{s.group ? " (group)" : ""}
-            </label>
-          ))}
-          {missing.map((s) => (
-            <label key={s} className="speaker-pick on" title="Not found right now">
-              <input type="checkbox" checked onChange={() => toggle(s)} />{s} (away)
-            </label>
-          ))}
-          {!state.speakers.length && <span className="muted">No speakers found.</span>}
+          <label className="row">Music and books play on
+            <SpeakerSelect label={`Speakers for ${reader.name}`} chosen={reader.default} missing={missing}
+                           speakers={state.speakers} onToggle={toggle}
+                           empty={reader.kind === "homeassistant" ? "Its Home Assistant's" : "No speakers"} />
+          </label>
         </div>
         <div className="row wrap">
           <label className="row">Movies play on
@@ -121,5 +113,43 @@ function ReaderCard({ reader, state, canManage }: { reader: Reader; state: Reade
         </div>
       </fieldset>
     </div>
+  );
+}
+
+/** A dropdown of speakers with a checkbox each: several can be chosen, played together. */
+function SpeakerSelect({ label, chosen, missing, speakers, onToggle, empty }: {
+  label: string; chosen: string[]; missing: string[]; speakers: ReadersState["speakers"];
+  onToggle: (id: string) => void; empty: string;
+}) {
+  const ref = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      const el = ref.current;
+      if (el?.open && (e instanceof KeyboardEvent ? e.key === "Escape" : !el.contains(e.target as Node))) el.open = false;
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", close); };
+  }, []);
+  const names = new Map(speakers.map((s) => [s.id, s.name]));
+  const summary = chosen.map((id) => names.get(id) ?? `${id} (away)`).join(" + ") || empty;
+  return (
+    <details className="multi-select" ref={ref}>
+      <summary aria-label={label} title={summary}><span>{summary}</span></summary>
+      <div className="multi-select-menu" role="group" aria-label={label}>
+        {speakers.map((s) => (
+          <label key={s.id} className={chosen.includes(s.id) ? "on" : ""}>
+            <input type="checkbox" checked={chosen.includes(s.id)} onChange={() => onToggle(s.id)} />
+            {s.name}{s.group ? " (group)" : ""}
+          </label>
+        ))}
+        {missing.map((s) => (
+          <label key={s} className="on" title="Not found right now">
+            <input type="checkbox" checked onChange={() => onToggle(s)} />{s} (away)
+          </label>
+        ))}
+        {!speakers.length && <span className="muted">No speakers found.</span>}
+      </div>
+    </details>
   );
 }
