@@ -34,16 +34,16 @@ struct ReadersView: View {
     @State private var error: String?
 
     var body: some View {
-        PanelSection("Readers", subtitle: "Each NFC reader plays music and book cards on its own speakers, whatever speaker "
-                     + "the card was linked with, so a card plays in the room where it's held. Choose its default output "
+        PanelSection("Readers", subtitle: "Each NFC reader plays music and book cards on its own speakers, so a card plays "
+                     + "in the room where it's held. Choose its default output "
                      + "here. On the reader (a Movie Remote's speaker screen, or the controls Home Assistant gives a "
                      + "Tessera screen) the speakers can be changed, and are remembered until Restore Default, or Make "
                      + "Default keeps them.") {
             if let error { ErrorText(error) }
             if let state {
                 if state.readers.isEmpty {
-                    Text("No readers yet. Pair a Movie Remote above, or hold any card to a reader in Home Assistant "
-                         + "(with the Marquee integration) and it shows up here.").foregroundStyle(.secondary)
+                    Text("No readers yet. Pair a Movie Remote or Home Assistant (with the Marquee integration) above. "
+                         + "Each reader in Home Assistant also shows up here once it reads a card.").foregroundStyle(.secondary)
                 }
                 ForEach(state.readers) { reader in
                     ReaderRow(model: model, reader: reader, state: state, canManage: overview.canManage) { self.state = $0 }
@@ -74,7 +74,7 @@ private struct ReaderRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(reader.name).bold()
-                Pill(text: reader.kind == "remote" ? "Movie Remote" : "Home Assistant reader", tone: .plain)
+                Pill(text: ["remote": "Movie Remote", "assistant": "Home Assistant"][reader.kind] ?? "Home Assistant reader", tone: .plain)
                 Spacer()
                 if canManage && reader.kind == "homeassistant" {
                     Button("Forget", role: .destructive) {
@@ -86,33 +86,36 @@ private struct ReaderRow: View {
                 }
             }
             Text(summary).font(.callout).foregroundStyle(.secondary)
-            Text("Default output (music and books)").font(.caption).foregroundStyle(.secondary)
-            FlowRow {
-                ForEach(state.speakers) { speaker in
-                    Toggle(speaker.name + (speaker.group ? " (group)" : ""), isOn: Binding(
-                        get: { reader.default.contains(speaker.id) },
-                        set: { on in send("readers/\(path)", ["default": next(speaker.id, on)], done: "\(reader.name) saved") }))
-                    .toggleStyle(.checkbox)
+            LabeledContent("Music and books play on") {
+                Menu {
+                    ForEach(state.speakers) { speaker in
+                        Toggle(speaker.name + (speaker.group ? " (group)" : ""), isOn: Binding(
+                            get: { reader.default.contains(speaker.id) },
+                            set: { on in send("readers/\(path)", ["default": next(speaker.id, on)], done: "\(reader.name) saved") }))
+                    }
+                    ForEach(reader.default.filter { id in !state.speakers.contains { $0.id == id } }, id: \.self) { id in
+                        Toggle("\(id) (away)", isOn: Binding(get: { true },
+                            set: { _ in send("readers/\(path)", ["default": next(id, false)], done: "\(reader.name) saved") }))
+                    }
+                    if state.speakers.isEmpty { Text("No speakers found.") }
+                } label: {
+                    Text(chosenSpeakers).lineLimit(1).truncationMode(.tail)
                 }
-                ForEach(reader.default.filter { id in !state.speakers.contains { $0.id == id } }, id: \.self) { id in
-                    Toggle("\(id) (away)", isOn: Binding(get: { true },
-                        set: { _ in send("readers/\(path)", ["default": next(id, false)], done: "\(reader.name) saved") }))
-                    .toggleStyle(.checkbox)
-                }
-                if state.speakers.isEmpty { Text("No speakers found.").foregroundStyle(.secondary) }
+                .frame(maxWidth: 420, alignment: .leading)
+                .help(chosenSpeakers)
             }
             HStack(spacing: 16) {
                 Picker("Movies play on", selection: Binding(
                     get: { reader.moviePlayer ?? "" },
                     set: { send("readers/\(path)", ["movie_player": $0.isEmpty ? NSNull() : $0], done: "\(reader.name) saved") })) {
-                    Text("The default player").tag("")
+                    Text(reader.kind == "homeassistant" ? "Its Home Assistant's" : "The default player").tag("")
                     ForEach(state.players) { Text($0.name).tag($0.id) }
                 }
                 .frame(maxWidth: 320)
                 Picker("Shows Now Playing on", selection: Binding(
                     get: { reader.screen ?? "" },
                     set: { send("readers/\(path)", ["screen": $0.isEmpty ? NSNull() : $0], done: "\(reader.name) saved") })) {
-                    Text("No screen").tag("")
+                    Text(reader.kind == "homeassistant" ? "Its Home Assistant's" : "No screen").tag("")
                     ForEach(screenChoices, id: \.self) { Text($0).tag($0) }
                 }
                 .frame(maxWidth: 320)
@@ -146,14 +149,24 @@ private struct ReaderRow: View {
         return screens
     }
 
-    private var path: String { reader.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? reader.id }
+    private var path: String { reader.id }  // the API escapes it (appendingPathComponent)
 
     private var summary: String {
-        var text = ""
+        var text = reader.kind == "assistant"
+            ? "Every NFC reader in this Home Assistant (phones with its app too) uses these until it has settings of its own. "
+            : ""
         if let now = reader.now { text += "\(now.state == "paused" ? "Paused" : "Playing"): \(now.title) · " }
-        text += "Plays on " + (reader.speakerNames.isEmpty ? "each card's own speaker" : reader.speakerNames.joined(separator: " + "))
+        text += "Plays on " + (reader.speakerNames.isEmpty
+            ? (reader.kind == "homeassistant" ? "its Home Assistant's speakers" : "no speakers yet: choose them below") : reader.speakerNames.joined(separator: " + "))
         if !reader.isDefault && !reader.default.isEmpty { text += " (chosen on the reader)" }
         return text
+    }
+
+    /// The default speakers by name, for the menu's label.
+    private var chosenSpeakers: String {
+        let names = Dictionary(state.speakers.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let list = reader.default.map { names[$0] ?? "\($0) (away)" }
+        return list.isEmpty ? (reader.kind == "homeassistant" ? "Its Home Assistant's" : "No speakers") : list.joined(separator: " + ")
     }
 
     private func next(_ id: String, _ on: Bool) -> [String] {
@@ -177,35 +190,6 @@ private struct ReaderRow: View {
                 model.say(error.localizedDescription, error: true)
             }
             busy = false
-        }
-    }
-}
-
-/// Lays out its children in rows, wrapping to the next line when one is full.
-private struct FlowRow: Layout {
-    var spacing: CGFloat = 10
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? .infinity
-        var x: CGFloat = 0, y: CGFloat = 0, row: CGFloat = 0, widest: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
-            if x > 0 && x + size.width > width { y += row + spacing; x = 0; row = 0 }
-            x += size.width + spacing
-            row = max(row, size.height)
-            widest = max(widest, x - spacing)
-        }
-        return CGSize(width: min(widest, width), height: y + row)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX, y = bounds.minY, row: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
-            if x > bounds.minX && x + size.width > bounds.maxX { y += row + spacing; x = bounds.minX; row = 0 }
-            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            row = max(row, size.height)
         }
     }
 }

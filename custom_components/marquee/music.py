@@ -19,6 +19,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import slugify
 
 from .api import MarqueeAPI, MarqueeAuthError, MarqueeError
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,6 +55,14 @@ def speakers(hass: HomeAssistant) -> list[dict[str, str]]:
         # work whether Marquee reaches Music Assistant directly or through here
         out.append({"entity_id": entry.entity_id, "name": name or entry.entity_id, "player_id": entry.unique_id})
     return out
+
+
+def marquee_players(hass: HomeAssistant) -> dict[str, str]:
+    """Each Marquee's media player here, by the Marquee's pairing ID (the entity's unique ID):
+    Music Assistant plays on Marquee by streaming to it."""
+    return {entry.unique_id: entry.entity_id for entry in er.async_get(hass).entities.values()
+            if entry.platform == DOMAIN and entry.domain == "media_player" and not entry.disabled
+            and "-" not in entry.unique_id}  # a reader's controls are "<reader>-player"
 
 
 def flatten(found: dict[str, Any]) -> list[dict[str, Any]]:
@@ -140,7 +149,8 @@ class MusicLink:
     async def run(self) -> None:
         while True:
             try:
-                jobs = await self.api.music_poll(speakers(self.hass), music_assistant_entry(self.hass) is not None)
+                jobs = await self.api.music_poll(speakers(self.hass), music_assistant_entry(self.hass) is not None,
+                                                 marquee_players(self.hass))
             except MarqueeAuthError:
                 return  # the coordinator asks to pair again
             except MarqueeError as err:

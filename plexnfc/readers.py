@@ -1,7 +1,10 @@
 """NFC readers and where they play.
 
-A reader is a Movie Remote box (``remote:<its pairing ID>``) or an NFC reader in Home
-Assistant, such as a Tessera screen (``ha:<its Home Assistant device ID>``). Each has:
+A reader is a Movie Remote box (``remote:<its pairing ID>``), a paired Home Assistant
+(``home:<its pairing ID>``, kind ``assistant``: every NFC reader in it, phones with the
+Home Assistant app included), or one NFC reader in Home Assistant, such as a Tessera screen
+(``ha:<its Home Assistant device ID>``). A reader in Home Assistant uses its Home
+Assistant's settings for whatever it hasn't been given its own. Each has:
 
 - a **default output**, chosen in the control panel: the speakers (one, or several played
   together) that music and book cards play on when they're held to it;
@@ -23,7 +26,7 @@ import os
 import threading
 import time
 
-KINDS = ("remote", "homeassistant")
+KINDS = ("remote", "assistant", "homeassistant")
 
 
 class ReaderError(Exception):
@@ -92,7 +95,7 @@ class Readers:
     def all(self) -> list[dict]:
         with self._lock:
             return sorted((self._public(k, v) for k, v in self._readers.items()),
-                          key=lambda r: (r["kind"] != "remote", r["name"].casefold()))
+                          key=lambda r: (KINDS.index(r["kind"]), r["name"].casefold()))
 
     def remove(self, reader_id: str) -> None:
         with self._lock:

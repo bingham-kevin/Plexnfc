@@ -1,13 +1,20 @@
-"""Each Marquee player as a media player: what's playing, with pause, play, stop and play media."""
+"""Each Marquee player as a media player: what's playing, with pause, play, stop and play media.
+
+Play media takes a movie (its key, e.g. tmdb-603) or audio: an address, or a media source.
+That's how Music Assistant plays on Marquee (Apple Music too): add these media players to
+Music Assistant's Home Assistant Media Players provider, and it streams to them."""
 from __future__ import annotations
 
 from typing import Any
 
+from homeassistant.components import media_source
 from homeassistant.components.media_player import (
+    BrowseMedia,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
     MediaPlayerState,
     MediaType,
+    async_process_play_media_url,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
@@ -46,10 +53,10 @@ class MarqueePlayer(CoordinatorEntity[MarqueeCoordinator], MediaPlayerEntity):
 
     _attr_has_entity_name = True
     _attr_name = None
-    _attr_media_content_type = MediaType.MOVIE
     _attr_media_image_remotely_accessible = False  # the poster's on the home network
     _attr_supported_features = (MediaPlayerEntityFeature.PAUSE | MediaPlayerEntityFeature.PLAY
-                                | MediaPlayerEntityFeature.STOP | MediaPlayerEntityFeature.PLAY_MEDIA)
+                                | MediaPlayerEntityFeature.STOP | MediaPlayerEntityFeature.PLAY_MEDIA
+                                | MediaPlayerEntityFeature.BROWSE_MEDIA)
 
     def __init__(self, coordinator: MarqueeCoordinator, device_id: str) -> None:
         super().__init__(coordinator)
@@ -73,8 +80,24 @@ class MarqueePlayer(CoordinatorEntity[MarqueeCoordinator], MediaPlayerEntity):
         return STATES.get(self._player["state"], MediaPlayerState.IDLE)
 
     @property
+    def _music(self) -> bool:
+        return self._player.get("media") == "music"
+
+    @property
+    def media_content_type(self) -> str:
+        return MediaType.MUSIC if self._music else MediaType.MOVIE
+
+    @property
     def media_content_id(self) -> str | None:
-        return self._player.get("key")
+        return self._player.get("url") if self._music else self._player.get("key")
+
+    @property
+    def media_artist(self) -> str | None:
+        return self._player.get("artist") or None
+
+    @property
+    def media_album_name(self) -> str | None:
+        return self._player.get("album") or None
 
     @property
     def media_title(self) -> str | None:
@@ -85,15 +108,21 @@ class MarqueePlayer(CoordinatorEntity[MarqueeCoordinator], MediaPlayerEntity):
         return self._player.get("duration") or None
 
     @property
+    def _timed(self) -> bool:
+        return "key" in self._player or self._music
+
+    @property
     def media_position(self) -> int | None:
-        return self._player.get("position") if "key" in self._player else None
+        return self._player.get("position") if self._timed else None
 
     @property
     def media_position_updated_at(self):
-        return self.coordinator.updated if "key" in self._player else None
+        return self.coordinator.updated if self._timed else None
 
     @property
     def media_image_url(self) -> str | None:
+        if self._music:
+            return self._player.get("image") or None
         poster = self._player.get("poster")
         return self.coordinator.api.poster_url(poster) if poster else None
 
@@ -111,14 +140,45 @@ class MarqueePlayer(CoordinatorEntity[MarqueeCoordinator], MediaPlayerEntity):
         await self._call(self.coordinator.api.control(self._player_id, "stop"))
 
     async def async_play_media(self, media_type: str, media_id: str, **kwargs: Any) -> None:
-        """Start a movie by its key, e.g. tmdb-603 (the end of its tag address), from the beginning."""
+        """Start a movie by its key, e.g. tmdb-603 (the end of its tag address), from the
+        beginning; or play audio: an address (as Music Assistant sends) or a media source."""
+        if media_source.is_media_source_id(media_id):
+            resolved = await media_source.async_resolve_media(self.hass, media_id, self.entity_id)
+            media_type, media_id = resolved.mime_type, resolved.url
+        if media_id.startswith(("http://", "https://", "/")):
+            url = async_process_play_media_url(self.hass, media_id)
+            details = audio_details(kwargs.get("extra") or {})
+            if media_type and "/" in str(media_type):
+                details["type"] = media_type
+            await self._call(self.coordinator.api.audio(self._player_id, url, **details))
+            return
         await self._call(self.coordinator.api.play(self._player_id, media_id))
+
+    async def async_browse_media(self, media_content_type: str | None = None,
+                                 media_content_id: str | None = None) -> BrowseMedia:
+        """Home Assistant's media sources (music and sounds), to play here."""
+        return await media_source.async_browse_media(
+            self.hass, media_content_id, content_filter=lambda item: item.media_content_type.startswith("audio/"))
 
     async def _call(self, request) -> None:
         try:
             await request
         except MarqueeError as err:
             raise HomeAssistantError(str(err)) from err
+
+
+def audio_details(extra: dict[str, Any]) -> dict[str, Any]:
+    """What's in a stream, from play media's ``extra`` (``metadata``, as Music Assistant and
+    others send it): title, artist, album, image and duration."""
+    meta = extra.get("metadata") if isinstance(extra.get("metadata"), dict) else extra
+    image = meta.get("imageUrl") or meta.get("image_url") or meta.get("thumb")
+    if not image and isinstance(meta.get("images"), list) and meta["images"]:
+        first = meta["images"][0]
+        image = first.get("url") if isinstance(first, dict) else first
+    out = {"title": meta.get("title"), "artist": meta.get("artist") or meta.get("albumArtist"),
+           "album": meta.get("albumName") or meta.get("album"), "image": image if isinstance(image, str) else None,
+           "duration": meta.get("duration")}
+    return {k: v for k, v in out.items() if v}
 
 
 class ReaderPlayer(ReaderEntity, MediaPlayerEntity):

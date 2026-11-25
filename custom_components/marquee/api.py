@@ -89,6 +89,10 @@ class MarqueeAPI:
     async def play(self, player: str, key: str, resume: bool = False) -> None:
         await self._post("/ha/play", {"player": player, "key": key, "resume": resume})
 
+    async def audio(self, player: str, url: str, **details: Any) -> None:
+        """Play an audio stream on a Marquee, with its title, artist, album, image and duration."""
+        await self._post("/ha/audio", {"player": player, "url": url, **details})
+
     async def _post(self, path: str, body: dict) -> None:
         status, data = await self._request("POST", path, json=body)
         if status == 401:
@@ -98,11 +102,13 @@ class MarqueeAPI:
 
     # ---- music cards (see music.py) -------------------------------------------------
 
-    async def music_poll(self, speakers: list[dict], music_assistant: bool, wait: float = WAIT) -> list[dict]:
-        """Tell the server which speakers Music Assistant has; get the jobs waiting, waiting
-        up to ``wait`` seconds for one."""
+    async def music_poll(self, speakers: list[dict], music_assistant: bool, marquee_players: dict[str, str] | None = None,
+                         wait: float = WAIT) -> list[dict]:
+        """Tell the server which speakers Music Assistant has (and each Marquee's media player
+        here); get the jobs waiting, waiting up to ``wait`` seconds for one."""
         status, data = await self._request("POST", "/ha/music/poll", timeout=wait + 10, params={"wait": str(wait)},
-                                           json={"speakers": speakers, "music_assistant": music_assistant})
+                                           json={"speakers": speakers, "music_assistant": music_assistant,
+                                                 "marquee_players": marquee_players or {}})
         if status == 401:
             raise MarqueeAuthError("Marquee Server doesn't know this Home Assistant any more")
         if status != 200 or not isinstance(data, dict):

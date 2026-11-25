@@ -87,7 +87,7 @@ With a [Movie Remote](esphome/README.md), nothing has to be written on the cards
 
 To link one card, use **Link card** next to the movie under **Movies › Tags**. If the Movie Remote reads a card that isn't linked, the **Cards** page offers to link it. While a scan is going, cards held on a Movie Remote are linked instead of played.
 
-A card can play music or an audiobook instead. **Music › Cards** and **Books › Cards** scan cards for albums, playlists and audiobooks the same way, to play on a chosen speaker; a book card picks up where you left off ([music](docs/music.md#music-cards), [books](docs/books.md#book-cards)). **Music › Book** and **Books › Book** print matching books of covers.
+A card can play music or an audiobook instead. **Music › Cards** and **Books › Cards** scan cards for albums, playlists and audiobooks the same way. A card plays on the speakers of the reader it's held to, and a book card picks up where you left off ([music](docs/music.md#music-cards), [books](docs/books.md#book-cards)). **Music › Book** and **Books › Book** print matching books of covers.
 
 Phones can't read these cards on their own, since there's no address on them. For phones, write the tag URLs as above; a written tag works on the Movie Remote too.
 
@@ -137,6 +137,8 @@ The **Music** section browses and searches music from Music Assistant, Plex, Jel
 The **Books** section plays audiobooks from Audiobookshelf on the same speakers, resumes where you left off and reports progress back. See [docs/books.md](docs/books.md).
 
 Each NFC reader (a Movie Remote, or a reader in Home Assistant such as a Tessera screen) has a **default output**, chosen under **Devices › Readers**: the speakers its music and book cards play on, so a card plays in the room where it's held. On the reader itself (the Movie Remote's speaker screen, or the controls the Home Assistant integration adds for a Tessera screen) you can add or take away speakers, control what's playing, put back the default or make the current speakers the new default. What's chosen there is remembered for the next card.
+
+A paired Home Assistant is listed there too, as soon as it's paired, and is set up the same way as a Movie Remote: its default output, the Marquee player for movies and the Now Playing screen. Every NFC reader in that Home Assistant uses these settings, including phones scanning with the Home Assistant app. Once a reader has read a card, it's listed on its own, and it keeps using the Home Assistant's settings for anything it isn't given itself.
 
 The Marquee app has a **Now Playing** screen for music and books: the cover, a timeline (with chapters for books), the track list and synced lyrics. A reader can also put it on the TV in its room each time a card is held to it. See [Now Playing on the TV](docs/music.md#now-playing-on-the-tv).
 

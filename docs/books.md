@@ -25,11 +25,11 @@ AirPlay speakers start partway through a file with ffmpeg; without ffmpeg on the
 
 ## Book cards
 
-**Books › Cards** links a card to each book, the way **Movies › Cards** does for movies: choose **All books**, **An author's** or **A series**, untick what you don't want, choose the speaker, and **Scan cards**. Hold a blank card on a Movie Remote (or an NFC reader in Home Assistant) as each book comes up.
+**Books › Cards** links a card to each book, the way **Movies › Cards** does for movies: choose **All books**, **An author's** or **A series**, untick what you don't want, and **Scan cards**. Hold a blank card on a Movie Remote (or an NFC reader in Home Assistant) as each book comes up.
 
-To link one card, open the book in **Books › Library** with one speaker chosen and use **Link next card** or **Link card XX-XX-XX-XX**.
+To link one card, open the book in **Books › Library** and use **Link next card** or **Link card XX-XX-XX-XX**.
 
-Tapping a book card plays the book on its speaker from where you left off.
+Tapping a book card plays the book from where you left off, on the speakers of the reader it's held to (its default output under **Devices › Readers**).
 
 ## A printable book of audiobooks
 

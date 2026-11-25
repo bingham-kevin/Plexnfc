@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import socket
+import secrets
 import threading
 import time
 from html import escape
@@ -144,7 +145,13 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                          plex.apple_tvs.credentials_for)
     app.extensions["marquee_music"] = player
     # Marquee on each Apple TV is a speaker too: it plays music and books through the TV
-    player.marquee = MarqueeSpeakers(plex.app_inbox, lambda: marquee_screens(), lambda name: plex.prepare_tv(name))
+    def marquee_assistant_player(name: str) -> str | None:
+        """Marquee's media player in Home Assistant (which Music Assistant can stream to)."""
+        device = next((d for d in plex.app_pairings.devices() if d["kind"] == "tv" and d["name"] == name), None)
+        return bridge.marquee_entity(device["id"]) if device else None
+
+    player.marquee = MarqueeSpeakers(plex.app_inbox, lambda: marquee_screens(), lambda name: plex.prepare_tv(name),
+                                     marquee_assistant_player)
     lyrics = Lyrics(music_library)
     app.extensions["marquee_lyrics"] = lyrics
 
@@ -375,11 +382,44 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             out["lyrics_loading"] = not known
         return out
 
+    def tap_reader(body: dict) -> tuple[dict | None, dict | None]:
+        """For a card read in Home Assistant: the reader it was read on (``reader_id``, if Home
+        Assistant said), and the settings it plays with. A reader without speakers, a movie
+        player or a screen of its own uses its Home Assistant's (the paired one sending this)."""
+        reader = None
+        if isinstance(body.get("reader_id"), str) and body["reader_id"]:
+            reader = readers.seen(f"ha:{body['reader_id']}", str(body.get("reader") or "") or None, "homeassistant")
+        hub = plex.app_pairings.integration_device(bearer())
+        hub = readers.seen(f"home:{hub['id']}", hub["name"], "assistant") if hub else None
+        if reader is None or hub is None:
+            return reader, reader or hub
+        settings = dict(reader)
+        if not reader["speakers"] and hub["speakers"]:
+            settings.update(id=hub["id"], speakers=hub["speakers"])  # its Now Playing follows the hub's speakers
+        if not reader["movie_player"]:
+            settings["movie_player"] = hub["movie_player"]
+        if not reader["screen"]:
+            settings.update(screen=hub["screen"], wake=hub["wake"])
+        return reader, settings
+
     def card_speakers(card: dict, reader: dict | None) -> list[str]:
-        """Where a music card plays: the reader's speakers, if it has any; else the card's own."""
+        """Where a music or book card plays: the speakers of the reader it's held to. Raises
+        MusicError if it has none."""
         if reader and reader["speakers"]:
             return list(reader["speakers"])
-        return [card["speaker"]]
+        if reader:
+            raise MusicError(f"{reader['name']} has no speakers yet. Choose its default output in Marquee, "
+                             "under Devices › Readers.")
+        raise MusicError("Hold the card to a reader to play it")
+
+    def house_speakers() -> list[str]:
+        """For a card started from its QR code (no reader): a paired Home Assistant's speakers,
+        else the first reader's that has some."""
+        with_speakers = [r for r in all_readers() if r["speakers"]]
+        for reader in sorted(with_speakers, key=lambda r: r["kind"] != "assistant"):
+            return list(reader["speakers"])
+        raise MusicError("Hold the card to a reader to play it. Choose the readers' speakers in Marquee, "
+                         "under Devices › Readers.")
 
     def play_in_background(key, client, resume):
         try:
@@ -538,9 +578,20 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             return app.route(rule, **options)(wrapped)
         return decorator
 
+    ha_audio: dict[str, dict] = {}  # a Marquee's name -> the stream Home Assistant (Music Assistant) sent it
+
+    def streaming(name: str, status: dict | None = None) -> dict | None:
+        """The stream Home Assistant sent this Marquee, while the app plays it."""
+        sent = ha_audio.get(name)
+        audio = ((plex.app_inbox.status(name) if status is None else status) or {}).get("audio") or {}
+        if not sent or audio.get("play") != sent["play"] or audio.get("state") not in ("playing", "paused"):
+            return None
+        return {**sent, "state": audio["state"], "position": audio.get("position") or 0}
+
     def marquee_players() -> tuple[list[dict], str]:
-        """Every paired Marquee and what it's playing, with a tag that changes when one
-        starts, pauses or stops something (not as the position moves on)."""
+        """Every paired Marquee and what it's playing (a movie, or music Home Assistant sent),
+        with a tag that changes when one starts, pauses or stops something (not as the
+        position moves on)."""
         players = []
         for d in plex.app_pairings.devices():
             if d["kind"] != "tv":
@@ -551,8 +602,13 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             if player["state"] != "idle" and status.get("key"):
                 player.update(key=status["key"], title=status.get("title") or "", poster=f"/poster/{status['key']}",
                               position=status.get("position") or 0, duration=status.get("duration") or 0)
+            elif stream := streaming(d["name"], status):
+                player.update(state=stream["state"], media="music", url=stream["url"], title=stream["title"],
+                              artist=stream["artist"], album=stream["album"], image=stream["image"],
+                              position=stream["position"], duration=stream["duration"] or 0)
             players.append(player)
-        tag = repr([(p["device_id"], p["name"], p["state"], p.get("key")) for p in players])
+        tag = repr([(p["device_id"], p["name"], p["state"], p.get("key"), p.get("url"), p.get("title"))
+                    for p in players])
         return players, hashlib.sha256(tag.encode()).hexdigest()[:16]
 
     @ha_route("/ha/players")
@@ -586,7 +642,38 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         body = request.get_json(silent=True) or {}
         if body.get("action") not in ("pause", "play", "stop") or not isinstance(body.get("player"), str):
             return jsonify(ok=False, message="Send a player and an action: pause, play or stop"), 400
+        name = body["player"].removeprefix("app:")
+        if streaming(name):  # music Home Assistant sent: the app's own player
+            plex.app_inbox.send(name, {"pause": "audio_pause", "play": "audio_resume", "stop": "audio_stop"}[body["action"]])
+            return jsonify(ok=True)
         plex.control(body["action"], body["player"])
+        return jsonify(ok=True)
+
+    @ha_route("/ha/audio", methods=["POST"])
+    def ha_audio_play():
+        """Play an audio stream (``url``) on a Marquee (``player``: ``app:<name>``), with its
+        ``title``, ``artist``, ``album``, ``image`` and ``duration`` if known: how Music
+        Assistant plays on Marquee, through Marquee's media player in Home Assistant. Opens
+        Marquee on its Apple TV if it isn't open."""
+        body = request.get_json(silent=True) or {}
+        name = str(body.get("player") or "").removeprefix("app:")
+        url = body.get("url")
+        if name not in marquee_screens():
+            return jsonify(ok=False, message="Marquee isn't paired on that device"), 404
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            return jsonify(ok=False, message="Send the address of the audio to play"), 400
+        text = lambda key: str(body.get(key) or "")[:300]  # noqa: E731
+        duration = body.get("duration")
+        stream = {"play": secrets.token_hex(6), "url": url, "title": text("title"), "artist": text("artist"),
+                  "album": text("album"), "image": text("image") or None,
+                  "duration": duration if isinstance(duration, (int, float)) and not isinstance(duration, bool) else None}
+        opened = plex.app_inbox.status(name) is not None
+        ha_audio[name] = stream
+        plex.app_inbox.send(name, "audio", play=stream["play"], url=url, type=text("type") or "audio/mpeg", track=None,
+                            title=stream["title"], artist=stream["artist"], album=stream["album"],
+                            image=stream["image"], duration=stream["duration"], start=0)
+        if not opened:
+            threading.Thread(target=plex.prepare_tv, args=(name,), daemon=True).start()
         return jsonify(ok=True)
 
     @ha_route("/ha/tap", methods=["POST"])
@@ -594,14 +681,12 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         """A card read by an NFC reader in Home Assistant (a Tessera screen, a phone...), sent
         on by the integration with the reader's device (``reader_id``) and name (``reader``):
         link it during a scan, or say what it plays. Music plays on the reader's speakers if it
-        has any (else the card's); for old Music Assistant cards the integration plays it itself
-        (``play``). A movie starts on the reader's Marquee player, else the default one. The
+        has any, else on its Home Assistant's (Devices › Readers), else the card's; for old Music Assistant cards the integration plays it itself
+        (``play``). A movie starts on the reader's Marquee player (or its Home Assistant's), else the default one. The
         answer carries the reader (``reader``: its ID and Tessera ``page``), to show its controls."""
         body = request.get_json(silent=True) or {}
         uid = str(body.get("uid") or "")
-        reader = None
-        if isinstance(body.get("reader_id"), str) and body["reader_id"]:
-            reader = readers.seen(f"ha:{body['reader_id']}", str(body.get("reader") or "") or None, "homeassistant")
+        reader, settings = tap_reader(body)
         about = {"reader": {"id": reader["id"], "page": reader["page"]}} if reader else {}
 
         def answer(**fields):
@@ -612,17 +697,17 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         card = plex.cards.card(uid)
         if card and "music" in card:
             item = card["music"]
-            speaker = music.speaker_name(card["speaker"]) or card.get("speaker_name") or card["speaker"]
-            reply = dict(ok=True, result="music", title=music_title(item),
-                         message=f"Playing {music_title(item)} on {speaker}")
+            reply = dict(ok=True, result="music", title=music_title(item), message=f"Playing {music_title(item)}")
             if "id" in item:  # linked on the Music tab: Marquee plays it
                 try:
-                    reply["message"] = play_card_music(card, speakers=card_speakers(card, reader)).replace("\n", " ")
-                    show_on_screen(reader)
+                    reply["message"] = play_card_music(card, speakers=card_speakers(card, settings)).replace("\n", " ")
+                    show_on_screen(settings)
                 except MusicError as e:
                     return answer(ok=False, result="error", title=music_title(item),
                                   message=f"Couldn't play {music_title(item)}: {e}")
                 return answer(**reply)
+            speaker = music.speaker_name(card["speaker"]) or card.get("speaker_name") or card["speaker"]
+            reply["message"] += f" on {speaker}"
             if music.plays_here():  # connected to Music Assistant directly: play it from here
                 try:
                     music.play(item, card["speaker"])
@@ -634,7 +719,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
             return answer(**reply, play={"uri": item["uri"], "media_type": item["media_type"], "speaker": entity})
         if card:
             movie = plex.find_library_movie(card["key"], card.get("title"), card.get("year"))
-            where = reader["movie_player"] if reader else None
+            where = settings["movie_player"] if settings else None
             threading.Thread(target=play_in_background, daemon=True, args=(movie.key, where, False)).start()
             return answer(ok=True, result="movie", title=movie.title, message=f"Playing {movie.title}")
         if normalize_uid(uid):
@@ -656,7 +741,8 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         and gets the music jobs waiting (``search`` or ``play``), waiting up to 25 s for one."""
         body = request.get_json(silent=True) or {}
         speakers = body.get("speakers") if isinstance(body.get("speakers"), list) else []
-        jobs = bridge.poll(speakers, bool(body.get("music_assistant")), request.args.get("wait", 25, type=float))
+        jobs = bridge.poll(speakers, bool(body.get("music_assistant")), request.args.get("wait", 25, type=float),
+                           body.get("marquee_players"))
         return jsonify(jobs=jobs)
 
     @ha_route("/ha/music/jobs/<int:job_id>", methods=["POST"])
@@ -1144,7 +1230,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         for card in plex.cards.all():
             item = card.get("music") or {}
             if item.get("id") and item["id"] not in out:
-                out[item["id"]] = {"uid": card["uid"], "speaker_name": card.get("speaker_name")}
+                out[item["id"]] = {"uid": card["uid"]}
         return out
 
     @app.get("/book/<any(music, books):kind>")
@@ -1200,7 +1286,7 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         if "id" not in card["music"]:
             return page("Can't play", '<h1 class="err">Link this card again on the Music page</h1>', 400)
         try:
-            message = play_card_music(card)
+            message = play_card_music(card, house_speakers())
         except MusicError as e:
             return page("Can't play", f'<h1 class="err">Can\'t play that</h1><p>{escape(str(e))}</p>', 502)
         title, _, where = message.partition("\n")
@@ -1610,20 +1696,15 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         return jsonify(ok=True, **cards_state())
 
     def checked_music(body: dict) -> dict:
-        """``{"music", "speaker"}`` from the panel, checked, with the speaker's name. The music
-        is an item from the Music tab (any source, any kind of speaker: ``ma:``, ``airplay:``,
-        ``cast:``), or, as before, a Music Assistant item for a Music Assistant player."""
+        """``{"music"}`` from the panel, checked. The music (or book) is an item from the Music
+        or Books tab; it plays on the speakers of the reader the card is held to. As before, a
+        Music Assistant item for a Music Assistant player also needs its ``speaker``."""
         raw = body.get("music")
-        speaker = str(body.get("speaker") or "").strip()
-        if not speaker or len(speaker) > 200:
-            raise ValueError("Choose a speaker")
         if isinstance(raw, dict) and raw.get("id"):
             try:
                 source, kind, ref = split_id(str(raw["id"]))
             except MusicSourceError as e:
                 raise ValueError(str(e)) from None
-            if speaker.split(":", 1)[0] not in ("ma", "airplay", "cast"):
-                raise ValueError("Choose a speaker")
             item = {"id": str(raw["id"]), "kind": kind, "media_type": kind, "name": str(raw.get("name") or "")[:200],
                     "artist": str(raw.get("artist") or "")[:200],
                     "image": raw["image"] if isinstance(raw.get("image"), str) and len(raw["image"]) < 2000 else None}
@@ -1631,17 +1712,18 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
                 raise ValueError("Choose some music")
             if source == "ma":
                 item["uri"] = ref
-            return {"music": item, "speaker": speaker, "speaker_name": player.speaker_name(speaker)}
+            return {"music": item}
+        speaker = str(body.get("speaker") or "").strip()
+        if not speaker or len(speaker) > 200:
+            raise ValueError("Choose a speaker")
         item = music_item(raw)
         return {"music": item, "speaker": speaker, "speaker_name": music.speaker_name(speaker) or speaker}
 
-    def play_card_music(card: dict, wait: float = 4, speakers: list[str] | None = None) -> str:
-        """Start a music card from the Music tab, on its own speaker or on ``speakers`` (a
-        reader's): the box's message. Raises MusicError."""
+    def play_card_music(card: dict, speakers: list[str], wait: float = 4) -> str:
+        """Start a music or book card from the Music or Books tab on ``speakers`` (a reader's):
+        the box's message. Raises MusicError."""
         item = card["music"]
-        speakers = speakers or [card["speaker"]]
-        name = (card.get("speaker_name") or player.speaker_name(card["speaker"])) if speakers == [card["speaker"]] \
-            else " + ".join(player.speaker_name(s) for s in speakers)
+        name = " + ".join(player.speaker_name(s) or s for s in speakers)
         done = threading.Event()
         failed: list = []
 
@@ -1825,12 +1907,12 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
     @panel_route("/cards/link", methods=["POST"])
     def panel_card_link():
         """Link one card (by its ID, such as the last unknown card read) to a movie, or to
-        music (``music`` and ``speaker``)."""
+        music or a book (``music``)."""
         body = panel_body()
         if "music" in body:
             try:
                 m = checked_music(body)
-                plex.cards.link_music(str(body.get("uid", "")), m["music"], m["speaker"], m["speaker_name"])
+                plex.cards.link_music(str(body.get("uid", "")), m["music"], m.get("speaker"), m.get("speaker_name"))
             except ValueError as e:
                 return jsonify(ok=False, message=str(e)), 400
             return jsonify(ok=True, **cards_state())
@@ -1872,13 +1954,16 @@ def create_app(config: Config | None = None, plex: Plex | None = None) -> Flask:
         return jsonify(ok=True)
 
     def all_readers() -> list[dict]:
-        """Every reader: each paired Movie Remote, and the Home Assistant readers that have read a card."""
-        remotes = {f"remote:{d['id']}": d for d in plex.app_pairings.devices() if d["kind"] == "remote"}
-        for reader_id, device in remotes.items():
-            readers.seen(reader_id, device["name"], "remote", touch=False)
+        """Every reader: each paired Movie Remote and Home Assistant, and the readers in Home
+        Assistant that have read a card."""
+        as_reader = {"remote": ("remote", "remote"), "homeassistant": ("home", "assistant")}  # pairing kind: prefix, kind
+        paired = {f"{as_reader[d['kind']][0]}:{d['id']}": (d, as_reader[d["kind"]][1])
+                  for d in plex.app_pairings.devices() if d["kind"] in as_reader}
+        for reader_id, (device, kind) in paired.items():
+            readers.seen(reader_id, device["name"], kind, touch=False)
         for reader in readers.all():
-            if reader["kind"] == "remote" and reader["id"] not in remotes:
-                readers.remove(reader["id"])  # its box was removed
+            if reader["kind"] in ("remote", "assistant") and reader["id"] not in paired:
+                readers.remove(reader["id"])  # its box or Home Assistant was removed
         return readers.all()
 
     @panel_route("/readers")

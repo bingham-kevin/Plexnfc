@@ -165,7 +165,7 @@ function BookView({ id, selected, canManage, unknown, onBack }:
                   <button disabled={noSpeaker || play.isPending} onClick={() => play.mutate({ position: 0 })}>
                     From the start</button>
                 )}
-                <LinkCard item={book} selected={selected} unknown={unknown} />
+                <LinkCard item={book} unknown={unknown} />
               </div>
             )}
             {book.description && <p className="muted small book-description">{book.description}</p>}

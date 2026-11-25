@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { get, type Card, type LibItem, type OpenedItem } from "./api";
 import { useCardAction } from "./hooks";
-import { Art, iconFor, useMusicSources, useSpeakerSelection, useSpeakers } from "./Music";
+import { Art, iconFor, useMusicSources } from "./Music";
 
 type Mode = "album" | "playlist" | "artist" | "book" | "author" | "series";
 const MODES: Record<"music" | "books", [Mode, string][]> = {
@@ -10,18 +10,16 @@ const MODES: Record<"music" | "books", [Mode, string][]> = {
   books: [["book", "All books"], ["author", "An author's"], ["series", "A series"]],
 };
 
-/** Choose albums (or playlists) or audiobooks and a speaker, then scan a card for each in turn. */
+/** Choose albums (or playlists) or audiobooks, then scan a card for each in turn. A card plays on
+ * the speakers of the reader it's held to. */
 export function MediaScanSetup({ section, canManage, cards }:
   { section: "music" | "books"; canManage: boolean; cards: Card[] }) {
   const books = section === "books";
   const sources = useMusicSources();
-  const speakers = useSpeakers();
-  const [chosenSpeakers] = useSpeakerSelection();
   const browsable = (sources.data?.sources ?? []).filter((s) => !s.search_only);
   const [source, setSource] = useState("");
   const [mode, setMode] = useState<Mode>(books ? "book" : "album");
   const [parent, setParent] = useState("");  // the artist, author or series
-  const [speaker, setSpeaker] = useState("");
   const [search, setSearch] = useState("");
   const [skipLinked, setSkipLinked] = useState(true);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -29,9 +27,6 @@ export function MediaScanSetup({ section, canManage, cards }:
   const needsParent = mode === "artist" || mode === "author" || mode === "series";
 
   useEffect(() => { if (!books && !source && browsable.length) setSource(browsable[0].id); }, [browsable.length]);
-  useEffect(() => {
-    if (!speaker && chosenSpeakers.length) setSpeaker(chosenSpeakers[0]);
-  }, [chosenSpeakers.length]);
   useEffect(() => setParent(""), [mode, source]);
 
   // The artists, authors or series to choose from
@@ -65,17 +60,17 @@ export function MediaScanSetup({ section, canManage, cards }:
     return next;
   });
   const start = useCardAction<LibItem[]>(() => "cards/scan", (list) => ({
-    movies: list.map((i) => ({ music: { id: i.id, name: i.name, artist: i.artist, image: i.image }, speaker })),
+    movies: list.map((i) => ({ music: { id: i.id, name: i.name, artist: i.artist, image: i.image } })),
   }));
   const thing = books ? "book" : "album";
-  const speakerList = speakers.data?.speakers.filter((s) => !s.synced_to && !s.limited) ?? [];
 
   return (
     <section className="card">
       <h2>Scan cards</h2>
       <p className="muted">Link blank NFC cards to {books ? "audiobooks" : "albums or playlists"} without writing anything on
-        them. Choose them and the speaker they play on, start the scan, then hold each {thing}'s card on a Movie Remote when
-        it comes up here.{books && " A book card picks up where you left off."}</p>
+        them. Choose them, start the scan, then hold each {thing}'s card on a reader when it comes up here. A card plays on
+        the speakers of the reader it's held to (its default output, under <a href="#devices">Devices › Readers</a>).
+        {books && " A book card picks up where you left off."}</p>
 
       <div className="toolbar">
         {!books && (
@@ -124,18 +119,14 @@ export function MediaScanSetup({ section, canManage, cards }:
       )}
 
       <div className="toolbar">
-        <select value={speaker} onChange={(e) => setSpeaker(e.target.value)} aria-label="Speaker the cards play on">
-          <option value="">Choose the speaker they play on</option>
-          {speakerList.map((s) => <option key={s.id} value={s.id}>{s.name}{s.group ? " (group)" : ""}</option>)}
-        </select>
         <label className="row">
           <input type="checkbox" checked={skipLinked} onChange={(e) => setSkipLinked(e.target.checked)} />
           Skip {thing}s that already have a card
         </label>
       </div>
       <div className="row scan-start">
-        <button className="primary" disabled={!canManage || !queue.length || !speaker || start.isPending}
-                title={!speaker ? "Choose a speaker first" : ""} onClick={() => start.mutate(queue)}>
+        <button className="primary" disabled={!canManage || !queue.length || start.isPending}
+                onClick={() => start.mutate(queue)}>
           {queue.length ? `Scan ${queue.length} card${queue.length === 1 ? "" : "s"}` : "Scan cards"}
         </button>
         {items.data && skipLinked && all.some((i) => picked.has(i.id) && hasCard.has(i.id)) && (

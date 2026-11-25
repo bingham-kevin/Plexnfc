@@ -564,19 +564,22 @@ private struct ItemDetailView: View {
                             .joined(separator: " · ")).foregroundStyle(.secondary)
                         if canManage {
                             HStack {
-                                Button("Play") { play([item.id], "replace") }.buttonStyle(.borderedProminent)
-                                Button("Play Next") { play([item.id], "next") }
-                                Button("Add to Queue") { play([item.id], "add") }
-                                if let unknown {
-                                    Button("Link Card \(unknown)") { link(item, uid: unknown) }
-                                        .disabled(selected.count != 1)
+                                Group {
+                                    Button("Play") { play([item.id], "replace") }.buttonStyle(.borderedProminent)
+                                    Button("Play Next") { play([item.id], "next") }
+                                    Button("Add to Queue") { play([item.id], "add") }
                                 }
-                                Button("Link Next Card") { link(item, uid: nil) }
-                                    .disabled(selected.count != 1)
-                                    .help(selected.count == 1 ? "Then hold a blank card on a Movie Remote or a reader in Home Assistant"
-                                          : "Choose one speaker for the card")
+                                .disabled(selected.isEmpty)
+                                Group {
+                                    if let unknown {
+                                        Button("Link Card \(unknown)") { link(item, uid: unknown) }
+                                    }
+                                    Button("Link Next Card") { link(item, uid: nil) }
+                                        .help("Then hold a blank card on a reader. It plays on that reader's speakers.")
+                                }
+                                .disabled(busy)
                             }
-                            .disabled(selected.isEmpty || busy)
+                            .disabled(busy)
                         }
                     }
                 }
@@ -635,13 +638,12 @@ private struct ItemDetailView: View {
     }
 
     private func link(_ item: LibItem, uid: String?) {
-        guard let speaker = selected.first else { return }
         busy = true
         Task {
             do {
                 let state: CardsState = uid != nil
-                    ? try await model.api.post("cards/link", ["uid": uid!, "music": item.cardBody, "speaker": speaker])
-                    : try await model.api.post("cards/scan", ["movies": [["music": item.cardBody, "speaker": speaker]]])
+                    ? try await model.api.post("cards/link", ["uid": uid!, "music": item.cardBody])
+                    : try await model.api.post("cards/scan", ["movies": [["music": item.cardBody]]])
                 cardsChanged(state)
                 model.libraryVersion += 1
                 model.say(uid.map { "Card \($0) linked" } ?? "Hold a blank card on a reader")
@@ -670,7 +672,7 @@ struct CardScanView: View {
             }
         }) {
             Text("Hold a blank card on a Movie Remote or an NFC reader in Home Assistant for **\(scan.current?.title ?? "the next item")**"
-                 + (scan.current?.speakerName.map { " on \($0)" } ?? "") + ".")
+                 + ".")
             if let last = scan.last { Text("Card \(last.uid) plays \(last.title).").foregroundStyle(.secondary) }
         }
     }

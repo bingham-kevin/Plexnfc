@@ -250,6 +250,12 @@ class AppPairings:
             device_id = self._find(secret, "homeassistant")
             return self._devices[device_id]["name"] if device_id else None
 
+    def integration_device(self, secret: str | None) -> dict | None:
+        """The paired Home Assistant for this secret (its ID and name), or None."""
+        with self._lock:
+            device_id = self._find(secret, "homeassistant")
+            return {"id": device_id, "name": self._devices[device_id]["name"]} if device_id else None
+
     def remote(self, secret: str | None) -> dict | None:
         """The paired Movie Remote (the ESP32 box with a reader and a screen) for this secret,
         or None: its ID, name, and the player its taps and buttons go to (None: the default)."""

@@ -97,8 +97,8 @@ export function MediaBook({ overview, kind }: { overview: Overview; kind: "music
           <button className="primary">Open printable book</button>
         </form>
         <div className="muted">
-          <p>Each page has the cover and a gold circle where its card goes. Hold the circle on a Movie Remote and it
-            plays on the card's speaker{books ? ", picking up where you left off" : ""}. Link cards under{" "}
+          <p>Each page has the cover and a gold circle where its card goes. Hold the circle on a reader and it
+            plays on that reader's speakers{books ? ", picking up where you left off" : ""}. Link cards under{" "}
             <a href={`#${kind}/cards`}>{books ? "Books" : "Music"} › Cards</a> first.</p>
           <p>The QR code plays the card from a phone without NFC. Print with <b>Background graphics</b> on.</p>
         </div>

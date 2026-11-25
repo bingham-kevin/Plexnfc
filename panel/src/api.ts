@@ -348,7 +348,8 @@ export interface Zone {
 /** An NFC reader (a Movie Remote, or a reader in Home Assistant such as a Tessera screen) and where it plays. */
 export interface Reader {
   id: string;
-  kind: "remote" | "homeassistant";
+  /** assistant: a paired Home Assistant, for every reader in it without settings of its own */
+  kind: "remote" | "assistant" | "homeassistant";
   name: string;
   /** The speakers music and book cards play on when held to it, by default */
   default: string[];

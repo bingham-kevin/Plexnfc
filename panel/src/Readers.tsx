@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { get, post, type Overview, type Reader, type ReadersState } from "./api";
 import { useToast } from "./toast";
 
@@ -12,14 +12,14 @@ export function Readers({ overview }: { overview: Overview }) {
   return (
     <section className="card">
       <h2>Readers</h2>
-      <p className="muted">Each NFC reader plays music and book cards on its own speakers, whatever speaker the card
-        was linked with, so a card plays in the room where it's held. Choose its <b>default output</b> here. On the
+      <p className="muted">Each NFC reader plays music and book cards on its own speakers, so a card plays in the
+        room where it's held. Choose its <b>default output</b> here. On the
         reader (a Movie Remote's speaker screen, or the controls Home Assistant gives a Tessera screen) the speakers
         can be changed, and are remembered until <b>Restore default</b>, or <b>Make default</b> keeps them.</p>
       {readers.isError && <p className="err">{readers.error.message}</p>}
       {readers.data && !list.length && (
-        <p className="muted">No readers yet. Pair a Movie Remote above, or hold any card to a reader in Home Assistant
-          (with the Marquee integration) and it shows up here.</p>
+        <p className="muted">No readers yet. Pair a Movie Remote or Home Assistant (with the Marquee integration)
+          above. Each reader in Home Assistant also shows up here once it reads a card.</p>
       )}
       <div className="readers">
         {list.map((r) => <ReaderCard key={r.id} reader={r} state={readers.data!} canManage={overview.can_manage} />)}
@@ -27,6 +27,10 @@ export function Readers({ overview }: { overview: Overview }) {
     </section>
   );
 }
+
+const KIND_LABELS: Record<Reader["kind"], string> = {
+  remote: "Movie Remote", assistant: "Home Assistant", homeassistant: "Home Assistant reader",
+};
 
 function ReaderCard({ reader, state, canManage }: { reader: Reader; state: ReadersState; canManage: boolean }) {
   const client = useQueryClient();
@@ -53,10 +57,11 @@ function ReaderCard({ reader, state, canManage }: { reader: Reader; state: Reade
     <div className="reader">
       <div className="row between">
         <div>
-          <b>{reader.name}</b> <span className={`kind ${reader.kind}`}>{reader.kind === "remote" ? "Movie Remote" : "Home Assistant reader"}</span>
+          <b>{reader.name}</b> <span className={`kind ${reader.kind}`}>{KIND_LABELS[reader.kind]}</span>
           <div className="muted small">
             {reader.now ? `${reader.now.state === "paused" ? "Paused" : "Playing"}: ${reader.now.title} · ` : ""}
-            Plays on {reader.speaker_names.join(" + ") || "each card's own speaker"}
+            {reader.kind === "assistant" && "Every NFC reader in this Home Assistant (phones with its app too) uses these until it has settings of its own. "}
+            Plays on {reader.speaker_names.join(" + ") || (reader.kind === "homeassistant" ? "its Home Assistant's speakers" : "no speakers yet: choose them below")}
             {!reader.is_default && reader.default.length > 0 && " (chosen on the reader)"}
           </div>
         </div>
@@ -67,33 +72,25 @@ function ReaderCard({ reader, state, canManage }: { reader: Reader; state: Reade
         )}
       </div>
       <fieldset disabled={!canManage || save.isPending}>
-        <legend className="muted small">Default output (music and books)</legend>
         <div className="row wrap">
-          {state.speakers.map((s) => (
-            <label key={s.id} className={`speaker-pick ${reader.default.includes(s.id) ? "on" : ""}`}>
-              <input type="checkbox" checked={reader.default.includes(s.id)} onChange={() => toggle(s.id)} />
-              {s.name}{s.group ? " (group)" : ""}
-            </label>
-          ))}
-          {missing.map((s) => (
-            <label key={s} className="speaker-pick on" title="Not found right now">
-              <input type="checkbox" checked onChange={() => toggle(s)} />{s} (away)
-            </label>
-          ))}
-          {!state.speakers.length && <span className="muted">No speakers found.</span>}
+          <label className="row">Music and books play on
+            <SpeakerSelect label={`Speakers for ${reader.name}`} chosen={reader.default} missing={missing}
+                           speakers={state.speakers} onToggle={toggle}
+                           empty={reader.kind === "homeassistant" ? "Its Home Assistant's" : "No speakers"} />
+          </label>
         </div>
         <div className="row wrap">
           <label className="row">Movies play on
             <select value={reader.movie_player ?? ""} aria-label={`Movie player for ${reader.name}`}
                     onChange={(e) => save.mutate({ movie_player: e.target.value || null })}>
-              <option value="">The default player</option>
+              <option value="">{reader.kind === "homeassistant" ? "Its Home Assistant's" : "The default player"}</option>
               {state.players.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </label>
           <label className="row">Shows Now Playing on
             <select value={reader.screen ?? ""} aria-label={`Now Playing screen for ${reader.name}`}
                     onChange={(e) => save.mutate({ screen: e.target.value || null })}>
-              <option value="">No screen</option>
+              <option value="">{reader.kind === "homeassistant" ? "Its Home Assistant's" : "No screen"}</option>
               {state.screens.map((s) => <option key={s} value={s}>{s}</option>)}
               {reader.screen && !state.screens.includes(reader.screen) && <option value={reader.screen}>{reader.screen} (away)</option>}
             </select>
@@ -116,5 +113,43 @@ function ReaderCard({ reader, state, canManage }: { reader: Reader; state: Reade
         </div>
       </fieldset>
     </div>
+  );
+}
+
+/** A dropdown of speakers with a checkbox each: several can be chosen, played together. */
+function SpeakerSelect({ label, chosen, missing, speakers, onToggle, empty }: {
+  label: string; chosen: string[]; missing: string[]; speakers: ReadersState["speakers"];
+  onToggle: (id: string) => void; empty: string;
+}) {
+  const ref = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      const el = ref.current;
+      if (el?.open && (e instanceof KeyboardEvent ? e.key === "Escape" : !el.contains(e.target as Node))) el.open = false;
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", close); };
+  }, []);
+  const names = new Map(speakers.map((s) => [s.id, s.name]));
+  const summary = chosen.map((id) => names.get(id) ?? `${id} (away)`).join(" + ") || empty;
+  return (
+    <details className="multi-select" ref={ref}>
+      <summary aria-label={label} title={summary}><span>{summary}</span></summary>
+      <div className="multi-select-menu" role="group" aria-label={label}>
+        {speakers.map((s) => (
+          <label key={s.id} className={chosen.includes(s.id) ? "on" : ""}>
+            <input type="checkbox" checked={chosen.includes(s.id)} onChange={() => onToggle(s.id)} />
+            {s.name}{s.group ? " (group)" : ""}
+          </label>
+        ))}
+        {missing.map((s) => (
+          <label key={s} className="on" title="Not found right now">
+            <input type="checkbox" checked onChange={() => onToggle(s)} />{s} (away)
+          </label>
+        ))}
+        {!speakers.length && <span className="muted">No speakers found.</span>}
+      </div>
+    </details>
   );
 }

@@ -57,8 +57,8 @@ class Cards:
     # ---- the cards ------------------------------------------------------------
 
     def card(self, uid: str) -> dict | None:
-        """What a card plays: a movie (``{"key", "title"}``) or music (with ``music``,
-        ``speaker`` and ``speaker_name``), or None."""
+        """What a card plays: a movie (``{"key", "title"}``) or music or a book (with
+        ``music``; an old Music Assistant card also has ``speaker`` and ``speaker_name``), or None."""
         with self._lock:
             card = self._cards.get(normalize_uid(uid) or "")
             return dict(card) if card else None
@@ -94,19 +94,22 @@ class Cards:
             self._save()
         return before["title"] if before and before["key"] != key else None
 
-    def link_music(self, uid: str, item: dict, speaker: str, speaker_name: str | None = None) -> str | None:
-        """Make the card play music (a ``music_item``) on a Music Assistant speaker. Returns
-        the title it played before, if another."""
+    def link_music(self, uid: str, item: dict, speaker: str | None = None,
+                   speaker_name: str | None = None) -> str | None:
+        """Make the card play music or a book (a ``music_item``). It plays on the speakers of
+        the reader it's held to; only an old Music Assistant card (no ``id``) keeps a speaker
+        of its own. Returns the title it played before, if another."""
         uid = normalize_uid(uid)
         if uid is None:
             raise ValueError("That isn't a card ID")
-        if not str(speaker).strip():  # a Music Assistant player ID (or, from before, an entity)
+        speaker = str(speaker or "").strip() if not item.get("id") else ""
+        if not item.get("id") and not speaker:  # a Music Assistant player ID (or, from before, an entity)
             raise ValueError("Choose a speaker")
         title = music_title(item)
         with self._lock:
             before = self._cards.get(uid)
             self._cards[uid] = {"key": f"music:{item.get('id') or item['uri']}", "title": title, "music": item,
-                                "speaker": speaker, "speaker_name": speaker_name or speaker,
+                                **({"speaker": speaker, "speaker_name": speaker_name or speaker} if speaker else {}),
                                 "linked": int(time.time())}
             self._save()
         return before["title"] if before and before["title"] != title else None
@@ -122,9 +125,11 @@ class Cards:
 
     def start_scan(self, movies: list[dict]) -> dict:
         """Link the next cards read to these movies (``{"key", "title"}``), in order. An item
-        can be music instead: ``{"music": <music_item>, "speaker", "speaker_name"}``."""
+        can be music or a book instead: ``{"music": <music_item>}`` (with ``speaker`` and
+        ``speaker_name`` for an old Music Assistant item)."""
         movies = [{"key": f"music:{m['music'].get('id') or m['music']['uri']}", "title": music_title(m["music"]), "music": m["music"],
-                   "speaker": str(m["speaker"]), "speaker_name": str(m.get("speaker_name") or m["speaker"])}
+                   **({"speaker": str(m["speaker"]), "speaker_name": str(m.get("speaker_name") or m["speaker"])}
+                      if m.get("speaker") else {})}
                   if "music" in m else
                   {"key": str(m["key"]), "title": str(m.get("title") or m["key"]),
                    **({"year": m["year"]} if isinstance(m.get("year"), int) else {})}
@@ -184,7 +189,7 @@ class Cards:
                 return {"message": f"That card is {last['title']}.\nUse the next card.", "result": "repeat"}
             movie = s["movies"][s["index"]]
         if "music" in movie:
-            moved_from = self.link_music(uid, movie["music"], movie["speaker"], movie.get("speaker_name"))
+            moved_from = self.link_music(uid, movie["music"], movie.get("speaker"), movie.get("speaker_name"))
         else:
             moved_from = self.link(uid, movie["key"], movie["title"], movie.get("year"))
         with self._lock:
